@@ -1,0 +1,11 @@
+body { font-family: -apple-system, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+h1 { margin-bottom: 0.2rem; }
+.hint { color: #666; margin-top: 0; }
+section { margin-bottom: 2.5rem; padding-bottom: 1rem; border-bottom: 1px solid #eee; }
+label { display: block; margin-top: 0.8rem; font-weight: 600; font-size: 0.9rem; }
+textarea, input[type=text], input[type=number] { width: 100%; box-sizing: border-box; padding: 0.4rem; margin-top: 0.2rem; }
+.row { display: flex; gap: 0.6rem; align-items: center; margin-top: 0.8rem; }
+button { padding: 0.5rem 1rem; cursor: pointer; }
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+#status { color: #2a7a2a; }

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>职位自动搜索</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<h1>职位自动搜索</h1>
+<p class="hint">每天定时自动搜索 Indeed / LinkedIn，新职位存入下方待审核列表（不自动写追踪表，也不调用AI打分）。</p>
+
+<section>
+  <h2>搜索设置</h2>
+  <label>关键词（每行一个）</label>
+  <textarea id="keywords" rows="4"></textarea>
+  <label>城市（每行一个，留空可搜远程）</label>
+  <textarea id="locations" rows="3"></textarea>
+  <label>Indeed 国家代码 (country_indeed)</label>
+  <input id="country_indeed" type="text">
+  <label>每个关键词+城市组合返回条数</label>
+  <input id="results_wanted" type="number" min="1" max="100">
+  <label>每天定时时间（本机时间）</label>
+  <div class="row">
+    <input id="schedule_hour" type="number" min="0" max="23" style="width:70px"> 时
+    <input id="schedule_minute" type="number" min="0" max="59" style="width:70px"> 分
+  </div>
+  <label>去重用的追踪表路径（可选，JD匹配追踪表.xlsx 的完整本地路径）</label>
+  <input id="tracker_xlsx_path" type="text" placeholder="/Users/xxx/Downloads/JD匹配追踪表.xlsx">
+  <div class="row">
+    <button onclick="saveConfig()">保存设置</button>
+    <button onclick="runNow()">立即搜索一次</button>
+  </div>
+  <p id="status"></p>
+</section>
+
+<section>
+  <h2>待审核新职位</h2>
+  <div class="row">
+    <button onclick="loadJobs()">刷新</button>
+    <select id="statusFilter" onchange="loadJobs()">
+      <option value="new">新</option>
+      <option value="reviewed">已看过</option>
+      <option value="dismissed">已忽略</option>
+      <option value="">全部</option>
+    </select>
+  </div>
+  <table id="jobsTable">
+    <thead>
+      <tr><th>职位</th><th>公司</th><th>地点</th><th>来源</th><th>发现时间</th><th>操作</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>最近运行记录</h2>
+  <table id="runsTable">
+    <thead>
+      <tr><th>时间</th><th>关键词</th><th>找到</th><th>新增</th><th>去重跳过</th><th>错误</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
