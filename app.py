@@ -4,6 +4,7 @@ from flask import Flask, jsonify, render_template, request
 
 from config import load_config, save_config
 from models import init_db, list_jobs, list_runs, set_job_status
+from pipeline import analyze_and_record_safe
 from scheduler import start_scheduler, reschedule
 from scraper import run_search_once
 
@@ -28,7 +29,7 @@ def update_config():
     cfg = load_config()
     data = request.get_json(force=True)
 
-    for key in ("country_indeed", "tracker_xlsx_path"):
+    for key in ("country_indeed", "tracker_xlsx_path", "base_resume_path", "resume_output_dir", "anthropic_model"):
         if key in data:
             cfg[key] = data[key]
     for key in ("results_wanted", "schedule_hour", "schedule_minute"):
@@ -63,6 +64,15 @@ def update_job_status(job_id):
         return jsonify({"error": "invalid status"}), 400
     set_job_status(job_id, status)
     return jsonify({"ok": True})
+
+
+@app.route("/api/jobs/<int:job_id>/analyze", methods=["POST"])
+def analyze_job_route(job_id):
+    try:
+        result = analyze_and_record_safe(job_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/runs", methods=["GET"])

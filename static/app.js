@@ -7,6 +7,8 @@ async function loadConfig() {
   document.getElementById('schedule_hour').value = cfg.schedule_hour;
   document.getElementById('schedule_minute').value = cfg.schedule_minute;
   document.getElementById('tracker_xlsx_path').value = cfg.tracker_xlsx_path;
+  document.getElementById('base_resume_path').value = cfg.base_resume_path;
+  document.getElementById('resume_output_dir').value = cfg.resume_output_dir;
 }
 
 async function saveConfig() {
@@ -18,6 +20,8 @@ async function saveConfig() {
     schedule_hour: document.getElementById('schedule_hour').value,
     schedule_minute: document.getElementById('schedule_minute').value,
     tracker_xlsx_path: document.getElementById('tracker_xlsx_path').value,
+    base_resume_path: document.getElementById('base_resume_path').value,
+    resume_output_dir: document.getElementById('resume_output_dir').value,
   };
   await fetch('/api/config', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
   setStatus('设置已保存');
@@ -43,18 +47,35 @@ async function loadJobs() {
   tbody.innerHTML = '';
   for (const j of jobs) {
     const tr = document.createElement('tr');
+    const matchCell = j.overall_match != null
+      ? `${Math.round(j.overall_match * 100)}%`
+      : (j.analysis_error ? `<span title="${j.analysis_error}">失败</span>` : '—');
     tr.innerHTML = `
       <td><a href="${j.job_url}" target="_blank">${j.title}</a></td>
       <td>${j.company}</td>
       <td>${j.location || ''}</td>
       <td>${j.site || ''}</td>
       <td>${j.first_seen}</td>
+      <td>${matchCell}</td>
       <td>
+        <button onclick="analyzeJob(${j.id})">自动分析</button>
         <button onclick="setJobStatus(${j.id}, 'reviewed')">已看过</button>
         <button onclick="setJobStatus(${j.id}, 'dismissed')">忽略</button>
       </td>`;
     tbody.appendChild(tr);
   }
+}
+
+async function analyzeJob(id) {
+  setStatus('分析中，可能需要几十秒...');
+  const res = await fetch(`/api/jobs/${id}/analyze`, { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok) {
+    setStatus(`分析失败：${data.error}`);
+  } else {
+    setStatus(`分析完成：匹配度 ${Math.round(data.overall_match * 100)}%${data.resume_path ? '，已生成定制简历: ' + data.resume_path : ''}`);
+  }
+  loadJobs();
 }
 
 async function setJobStatus(id, status) {

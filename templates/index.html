@@ -24,13 +24,25 @@
     <input id="schedule_hour" type="number" min="0" max="23" style="width:70px"> 时
     <input id="schedule_minute" type="number" min="0" max="59" style="width:70px"> 分
   </div>
-  <label>去重用的追踪表路径（可选，JD匹配追踪表.xlsx 的完整本地路径）</label>
+  <label>去重/自动分析写入用的追踪表路径（留空默认 ~/Downloads/JD匹配追踪表.xlsx）</label>
   <input id="tracker_xlsx_path" type="text" placeholder="/Users/xxx/Downloads/JD匹配追踪表.xlsx">
   <div class="row">
     <button onclick="saveConfig()">保存设置</button>
     <button onclick="runNow()">立即搜索一次</button>
   </div>
   <p id="status"></p>
+</section>
+
+<section>
+  <h2>自动分析设置（需要 ANTHROPIC_API_KEY 环境变量）</h2>
+  <p class="hint">点击每条职位的"自动分析"按钮会调用 Claude API 计算匹配度、写入追踪表，匹配度≥70%时还会生成定制简历+cover letter。会产生API调用费用。</p>
+  <label>基础简历文件路径（留空默认 ~/Downloads/Cathy_Yang_Resume_EN_AI.docx）</label>
+  <input id="base_resume_path" type="text" placeholder="/Users/xxx/Downloads/Cathy_Yang_Resume_EN_AI.docx">
+  <label>定制简历保存目录（留空默认跟基础简历同目录）</label>
+  <input id="resume_output_dir" type="text">
+  <div class="row">
+    <button onclick="saveConfig()">保存设置</button>
+  </div>
 </section>
 
 <section>
@@ -46,7 +58,7 @@
   </div>
   <table id="jobsTable">
     <thead>
-      <tr><th>职位</th><th>公司</th><th>地点</th><th>来源</th><th>发现时间</th><th>操作</th></tr>
+      <tr><th>职位</th><th>公司</th><th>地点</th><th>来源</th><th>发现时间</th><th>匹配度</th><th>操作</th></tr>
     </thead>
     <tbody></tbody>
   </table>

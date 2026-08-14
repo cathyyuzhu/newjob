@@ -13,8 +13,13 @@ DEFAULT_CONFIG = {
     "sites": ["indeed", "linkedin"],
     "schedule_hour": 8,
     "schedule_minute": 0,
-    # 与 jd-resume-matcher 技能共用的追踪表路径，用于去重。留空则不跟已投递记录去重。
+    # 与 jd-resume-matcher 技能共用的追踪表路径，用于去重、以及自动分析结果的写入目标。
+    # 留空则去重时不跟已投递记录比对；自动分析写入时留空会用 ~/Downloads/JD匹配追踪表.xlsx。
     "tracker_xlsx_path": "",
+    # 自动分析开关：由用户在页面上对每条待审核职位手动点"自动分析"触发，这里只是路径配置。
+    "base_resume_path": "",  # 留空则用 ~/Downloads/Cathy_Yang_Resume_EN_AI.docx
+    "resume_output_dir": "",  # 留空则跟 base_resume_path 同目录
+    "anthropic_model": "claude-sonnet-5",
 }
 
 

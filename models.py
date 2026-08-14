@@ -23,12 +23,25 @@ def init_db():
             job_url TEXT,
             date_posted TEXT,
             keyword TEXT,
+            jd_text TEXT,
             first_seen TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'new',
-            dedupe_key TEXT NOT NULL UNIQUE
+            dedupe_key TEXT NOT NULL UNIQUE,
+            overall_match REAL,
+            resume_path TEXT,
+            analysis_error TEXT
         )
         """
     )
+    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+    for col, ddl in (
+        ("jd_text", "ALTER TABLE jobs ADD COLUMN jd_text TEXT"),
+        ("overall_match", "ALTER TABLE jobs ADD COLUMN overall_match REAL"),
+        ("resume_path", "ALTER TABLE jobs ADD COLUMN resume_path TEXT"),
+        ("analysis_error", "ALTER TABLE jobs ADD COLUMN analysis_error TEXT"),
+    ):
+        if col not in existing_cols:
+            conn.execute(ddl)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS search_runs (
@@ -65,8 +78,8 @@ def insert_job(conn, job):
         return False
     conn.execute(
         """
-        INSERT INTO jobs (title, company, location, site, job_url, date_posted, keyword, first_seen, status, dedupe_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+        INSERT INTO jobs (title, company, location, site, job_url, date_posted, keyword, jd_text, first_seen, status, dedupe_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
         """,
         (
             job["title"],
@@ -76,11 +89,29 @@ def insert_job(conn, job):
             job.get("job_url", ""),
             job.get("date_posted", ""),
             job.get("keyword", ""),
+            job.get("jd_text", ""),
             datetime.now().isoformat(timespec="seconds"),
             dedupe_key,
         ),
     )
     return True
+
+
+def get_job(job_id):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_job_analysis(job_id, status, overall_match=None, resume_path=None, error=None):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE jobs SET status = ?, overall_match = ?, resume_path = ?, analysis_error = ? WHERE id = ?",
+        (status, overall_match, resume_path, error, job_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 def log_run(conn, keywords, found, added, skipped_duplicate, error=None):

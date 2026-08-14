@@ -75,6 +75,7 @@ def run_search_once():
                     "job_url": str(row.get("job_url") or ""),
                     "date_posted": str(row.get("date_posted") or ""),
                     "keyword": keyword,
+                    "jd_text": str(row.get("description") or ""),
                 }
                 if insert_job(conn, job):
                     total_added += 1
