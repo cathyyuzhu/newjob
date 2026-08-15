@@ -29,28 +29,11 @@ npm install -g @anthropic-ai/claude-code
 claude --version
 ```
 
-## 4. VPN / 代理配置
+## 4. VPN / 代理配置（Cursor 里 Claude Code 登录/授权用）
 
-因为账号/网络环境的原因，命令行工具和 Cursor 默认不会走浏览器已经在用的系统代理，需要手动配置。
+Cursor 自己触发的网络请求默认不会走系统代理，导致登录 Claude Code 时报错（连接被拒绝，或提示地区不支持）。**有效解决办法**：
 
 - 本机 VPN 客户端的**系统代理服务地址**：`127.0.0.1:7897`（在 VPN 客户端的"系统代理设置"页面可以看到，如果换了VPN软件或重装，端口号可能会变，以软件里实际显示的为准）
-
-### 4.1 终端里用（临时，仅当前窗口有效）
-
-```powershell
-$env:HTTPS_PROXY = "http://127.0.0.1:7897"
-$env:HTTP_PROXY = "http://127.0.0.1:7897"
-```
-
-### 4.2 终端里用（永久，所有新开窗口都生效）
-
-```powershell
-[System.Environment]::SetEnvironmentVariable("HTTPS_PROXY", "http://127.0.0.1:7897", "User")
-[System.Environment]::SetEnvironmentVariable("HTTP_PROXY", "http://127.0.0.1:7897", "User")
-```
-设置后需要**重启电脑**才彻底生效。
-
-### 4.3 Cursor 里用（关键：Cursor 自己不会自动走系统代理）
 
 `Ctrl+Shift+P` → **Preferences: Open User Settings (JSON)** → 在 `settings.json` 里加：
 
@@ -59,13 +42,13 @@ $env:HTTP_PROXY = "http://127.0.0.1:7897"
 "http.proxySupport": "on"
 ```
 
-保存后**完全退出重启 Cursor**（不是 Reload Window）才会生效。这一步解决了"浏览器登录能走代理，但 Cursor 里 Claude Code 登录/授权一直 403 或提示地区不支持"的问题——因为 Cursor 触发的网络请求默认不会用系统代理，必须在 Cursor 自己的设置里显式配置。
+保存后**完全退出重启 Cursor**（不是 Reload Window）才会生效。
 
 ## 5. 在 Cursor 里用 Claude Code
 
 装了官方插件 **"Claude Code for VS Code"**（Anthropic 发布）。两种使用方式：
 
-- **终端方式**：在 Cursor 集成终端里 `cd` 到项目目录，设置好代理（见上面4.1/4.2），执行 `claude`
+- **终端方式**：在 Cursor 集成终端里 `cd` 到项目目录，执行 `claude`
 - **插件面板方式**：`Ctrl+Shift+P` 搜 "Claude Code"，选对应命令打开侧边栏/面板
 
 已知问题：
