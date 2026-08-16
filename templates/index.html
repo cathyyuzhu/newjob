@@ -2,78 +2,289 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>职位自动搜索</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<h1>职位自动搜索</h1>
-<p class="hint">每天定时自动搜索 Indeed / LinkedIn，新职位存入下方待审核列表（不自动写追踪表，也不调用AI打分）。</p>
+<div class="app-shell">
 
-<section>
-  <h2>搜索设置</h2>
-  <label>关键词（每行一个）</label>
-  <textarea id="keywords" rows="4"></textarea>
-  <label>城市（每行一个，留空可搜远程）</label>
-  <textarea id="locations" rows="3"></textarea>
-  <label>Indeed 国家代码 (country_indeed)</label>
-  <input id="country_indeed" type="text">
-  <label>每个关键词+城市组合返回条数</label>
-  <input id="results_wanted" type="number" min="1" max="100">
-  <label>每天定时时间（本机时间）</label>
-  <div class="row">
-    <input id="schedule_hour" type="number" min="0" max="23" style="width:70px"> 时
-    <input id="schedule_minute" type="number" min="0" max="59" style="width:70px"> 分
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg>
+      </div>
+      <div>
+        <h1>职位自动搜索</h1>
+        <div class="sub">每日自动抓取 Indeed / LinkedIn 新职位，一键 AI 匹配分析</div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button class="btn btn-primary btn-sm" id="runNowBtn" onclick="runNow()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        智能搜索
+      </button>
+      <button class="btn btn-primary btn-sm" id="aiAnalyzeAllBtn" onclick="toggleAnalyzeAll()" title="批量AI分析所有待审核职位（包括历史积压），再点一次可停止">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>
+        <span id="aiAnalyzeAllBtnLabel">AI分析</span>
+      </button>
+      <button class="btn btn-secondary btn-sm" id="interviewBtn" onclick="openInterviewModal()" title="通用面试题库：自我介绍、通用问题、STAR 故事">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
+        面试题库
+      </button>
+      <button class="icon-btn" id="moreBtn" title="更多" onclick="openMoreModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="stat-grid">
+    <div class="stat-card accent-new clickable" id="statCardNew" data-status="new" onclick="filterByStatus('new')" title="点击筛选「新」，再点一次恢复「全部」">
+      <div class="label">待审核</div>
+      <div class="value" id="statNew">–</div>
+    </div>
+    <div class="stat-card accent-ok clickable" id="statCardReviewed" data-status="reviewed" onclick="filterByStatus('reviewed')" title="点击筛选「已收藏」，再点一次恢复「全部」">
+      <div class="label">已收藏</div>
+      <div class="value" id="statReviewed">–</div>
+    </div>
+    <div class="stat-card clickable" id="statCardDismissed" data-status="dismissed" onclick="filterByStatus('dismissed')" title="点击筛选「已忽略」，再点一次恢复「全部」">
+      <div class="label">已忽略</div>
+      <div class="value" id="statDismissed">–</div>
+    </div>
+    <div class="stat-card clickable" id="statCardLastRun" onclick="openMoreModal('runs')" title="点击查看运行记录">
+      <div class="label">最近一次运行</div>
+      <div class="value" id="statLastRun" style="font-size:0.95rem;">–</div>
+    </div>
   </div>
-  <label>去重/自动分析写入用的追踪表路径（留空默认 ~/Downloads/JD匹配追踪表.xlsx）</label>
-  <input id="tracker_xlsx_path" type="text" placeholder="/Users/xxx/Downloads/JD匹配追踪表.xlsx">
-  <div class="row">
-    <button onclick="saveConfig()">保存设置</button>
-    <button onclick="runNow()">立即搜索一次</button>
+
+  <!-- ===== Jobs (main content) ===== -->
+  <section id="panel-jobs">
+    <div class="filter-bar">
+      <div class="chip-group" id="originChips">
+        <button class="chip active" data-origin="foreign" title="外企 + 未分析/判断不出的职位">🌍 外企</button>
+        <button class="chip" data-origin="domestic" title="仅显示AI分析判定为中国大陆本土公司的职位">🇨🇳 国内公司</button>
+        <button class="chip" data-origin="">全部</button>
+      </div>
+      <!-- 分割线后面的"重点关注"是独立的开关筛选（可跟外企/国内公司任意组合），
+           不属于上面那组三选一的chip，所以单独放一个 chip-group -->
+      <span class="chip-divider" aria-hidden="true"></span>
+      <div class="chip-group">
+        <button class="chip" id="starredChip" onclick="toggleStarredFilter()" title="只看标记了「重点关注」的职位，再点一次取消">⭐ 重点关注</button>
+      </div>
+      <div class="chip-group" id="appStatusChips">
+        <button class="chip active" data-appstatus="">投递状态：全部</button>
+        <button class="chip" data-appstatus="not_applied">待投</button>
+        <button class="chip" data-appstatus="applied">已投递</button>
+        <button class="chip" data-appstatus="interviewing">面试中</button>
+        <button class="chip" data-appstatus="offer">Offer</button>
+        <button class="chip" data-appstatus="rejected">已拒绝</button>
+        <button class="chip" data-appstatus="declined">已婉拒</button>
+      </div>
+      <div class="search-box">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="jobSearch" type="text" placeholder="搜索职位或公司…" oninput="renderJobs()">
+      </div>
+      <button class="btn btn-secondary btn-sm" id="refetchAllJdBtn" onclick="refetchAllJd(this)" title="重新抓取所有待审核里JD正文缺失的职位（后台进行）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
+        全部重新获取JD
+      </button>
+      <button class="btn btn-secondary btn-sm" id="classifyOriginBtn" onclick="classifyCompanyOrigin(this)" title="批量判断所有还没识别过国籍的公司（只看公司名，不用等JD/完整分析，后台进行）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
+        识别公司国籍
+      </button>
+    </div>
+
+    <div id="jobsSkeleton" class="skeleton" style="display:none;">
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+    </div>
+    <div class="job-list" id="jobList"></div>
+    <div class="empty-state" id="jobsEmpty" style="display:none;">
+      <div class="icon">📭</div>
+      <div class="title">暂时没有职位</div>
+      <div class="desc">点击右上角"智能搜索"，或调整筛选条件试试。</div>
+    </div>
+  </section>
+
+</div>
+
+<div class="modal-overlay" id="moreModalOverlay" onclick="if(event.target===this) closeMoreModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <nav class="tabs modal-tabs">
+        <button class="tab-btn active" data-moretab="settings" onclick="switchMoreTab('settings')">设置</button>
+        <button class="tab-btn" data-moretab="runs" onclick="switchMoreTab('runs')">运行记录</button>
+      </nav>
+      <button class="icon-btn" onclick="closeMoreModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+
+      <!-- ===== Settings subtab ===== -->
+      <section class="tab-panel active" id="moreSubpanel-settings">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>搜索设置</h2>
+              <p>按关键词 × 城市定时自动抓取 Indeed / LinkedIn 新职位，去重后存入待审核列表。</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>关键词（每行一个）</label>
+              <textarea id="keywords" rows="4" placeholder="Senior Product Manager&#10;AI产品经理"></textarea>
+            </div>
+            <div class="field">
+              <label>城市（每行一个，留空一行表示不限地点/远程）</label>
+              <textarea id="locations" rows="4" placeholder="Beijing&#10;Shanghai&#10;Remote"></textarea>
+            </div>
+            <div class="field">
+              <label>Indeed 国家代码</label>
+              <input id="country_indeed" type="text" placeholder="china">
+            </div>
+            <div class="field">
+              <label>每个关键词+城市组合返回条数</label>
+              <input id="results_wanted" type="number" min="1" max="100">
+            </div>
+            <div class="field">
+              <label>只抓取最近几天内发布的职位（留空或0表示不限）</label>
+              <input id="days_old" type="number" min="0" max="365" placeholder="30">
+            </div>
+            <div class="field">
+              <label>每天定时时间（本机时间）</label>
+              <div class="time-row">
+                <label class="switch-row">
+                  <input id="schedule_enabled" type="checkbox">
+                  <span>开启</span>
+                </label>
+                <input id="schedule_hour" type="number" min="0" max="23">
+                <span>时</span>
+                <input id="schedule_minute" type="number" min="0" max="59">
+                <span>分</span>
+              </div>
+              <p class="field-hint">关闭后不会每天自动运行，仍可手动点"立即搜索"</p>
+            </div>
+            <div class="field span-2">
+              <label>去重 / 自动分析写入用的追踪表路径</label>
+              <input id="tracker_xlsx_path" type="text" placeholder="留空默认 ~/Downloads/JD匹配追踪表.xlsx">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>自动分析设置</h2>
+              <p>需要设置 <code>ANTHROPIC_API_KEY</code>（Claude）或 <code>DEEPSEEK_API_KEY</code>（DeepSeek）环境变量，用哪个由 <code>config.json</code> 里的 <code>llm_provider</code> 字段决定（暂无界面开关，需直接编辑该文件）。点击职位的"AI 分析"会调用对应 API 计算匹配度并写入追踪表，匹配度 ≥70% 时还会生成定制简历 + cover letter（会产生 API 调用费用）。</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field span-2">
+              <label>基础简历文件路径</label>
+              <input id="base_resume_path" type="text" placeholder="留空默认 ~/Downloads/Cathy_Yang_Resume_EN_AI.docx">
+            </div>
+            <div class="field span-2">
+              <label>定制简历保存目录</label>
+              <input id="resume_output_dir" type="text" placeholder="留空默认跟基础简历同目录">
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>Easy Apply 自动回答设置</h2>
+              <p>LinkedIn Easy Apply 半自动投递遇到筛选问题时，会用这里配置的答案自动填写并点"下一步"；遇到下面没覆盖到的问题会停在那一步，等你手动填。不会自动点击最终的"提交申请"，这一步永远需要你自己确认。</p>
+            </div>
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>工作签证 / 工作授权</label>
+              <input id="ea_work_authorization" type="text" placeholder="例如：无需公司担保工作签证">
+            </div>
+            <div class="field">
+              <label>期望薪资</label>
+              <input id="ea_expected_salary" type="text" placeholder="例如：30k-40k RMB/月">
+            </div>
+            <div class="field">
+              <label>入职时间 / Notice Period</label>
+              <input id="ea_notice_period" type="text" placeholder="例如：1个月内到岗">
+            </div>
+            <div class="field span-2">
+              <label>其它常见问题（每行一条，格式：问题关键词=答案）</label>
+              <textarea id="ea_extra_answers" rows="4" placeholder="是否愿意出差=愿意&#10;英语水平=流利&#10;是否有相关认证=否"></textarea>
+              <p class="field-hint">自动化会用"问题关键词"去匹配 Easy Apply 表单里问题的文字，包含这个关键词就填对应答案；没匹配上任何一行才会停下来</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card-footer" style="margin-top:-0.4rem;">
+          <button class="btn btn-primary" id="saveConfigBtn" onclick="saveConfig()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+            保存设置
+          </button>
+          <span id="configSavedHint" style="font-size:0.82rem;color:var(--success);display:none;">已保存</span>
+        </div>
+      </section>
+
+      <!-- ===== Runs subtab ===== -->
+      <section class="tab-panel" id="moreSubpanel-runs">
+        <div class="table-wrap">
+          <table id="runsTable">
+            <thead>
+              <tr><th>时间</th><th>关键词</th><th>找到</th><th>新增</th><th>去重跳过</th><th>不相关跳过</th><th>状态</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+    </div>
   </div>
-  <p id="status"></p>
-</section>
+</div>
 
-<section>
-  <h2>自动分析设置（需要 ANTHROPIC_API_KEY 环境变量）</h2>
-  <p class="hint">点击每条职位的"自动分析"按钮会调用 Claude API 计算匹配度、写入追踪表，匹配度≥70%时还会生成定制简历+cover letter。会产生API调用费用。</p>
-  <label>基础简历文件路径（留空默认 ~/Downloads/Cathy_Yang_Resume_EN_AI.docx）</label>
-  <input id="base_resume_path" type="text" placeholder="/Users/xxx/Downloads/Cathy_Yang_Resume_EN_AI.docx">
-  <label>定制简历保存目录（留空默认跟基础简历同目录）</label>
-  <input id="resume_output_dir" type="text">
-  <div class="row">
-    <button onclick="saveConfig()">保存设置</button>
+<div class="modal-overlay" id="jobDetailModalOverlay" onclick="if(event.target===this) closeJobDetailModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="jobDetailModalTitle"></h3>
+      <button class="icon-btn" onclick="closeJobDetailModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <nav class="tabs modal-tabs">
+      <button class="tab-btn active" data-detailtab="analysis" onclick="switchDetailTab('analysis')">匹配分析</button>
+      <button class="tab-btn" data-detailtab="interview" onclick="switchDetailTab('interview')">🎤 面试准备</button>
+    </nav>
+    <div class="modal-body">
+      <section class="tab-panel active" id="detailSubpanel-analysis"></section>
+      <section class="tab-panel" id="detailSubpanel-interview"></section>
+    </div>
   </div>
-</section>
+</div>
 
-<section>
-  <h2>待审核新职位</h2>
-  <div class="row">
-    <button onclick="loadJobs()">刷新</button>
-    <select id="statusFilter" onchange="loadJobs()">
-      <option value="new">新</option>
-      <option value="reviewed">已看过</option>
-      <option value="dismissed">已忽略</option>
-      <option value="">全部</option>
-    </select>
+<div class="modal-overlay" id="interviewModalOverlay" onclick="if(event.target===this) closeInterviewModal()">
+  <div class="modal modal-wide">
+    <div class="modal-head">
+      <h3>🎤 通用面试题库</h3>
+      <button class="icon-btn" onclick="closeInterviewModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="interviewModalBody"></div>
   </div>
-  <table id="jobsTable">
-    <thead>
-      <tr><th>职位</th><th>公司</th><th>地点</th><th>来源</th><th>发现时间</th><th>匹配度</th><th>操作</th></tr>
-    </thead>
-    <tbody></tbody>
-  </table>
-</section>
+</div>
 
-<section>
-  <h2>最近运行记录</h2>
-  <table id="runsTable">
-    <thead>
-      <tr><th>时间</th><th>关键词</th><th>找到</th><th>新增</th><th>去重跳过</th><th>错误</th></tr>
-    </thead>
-    <tbody></tbody>
-  </table>
-</section>
+<div class="toast-stack" id="toastStack"></div>
 
+<!-- interview.js 放在 app.js 前面：app.js 文件末尾就直接跑初始化（loadJobs 等），
+     而它渲染职位卡片时会调用 interview.js 里的 interviewPrepBadgeHtml()，
+     反过来放会依赖"网络回调一定晚于同步脚本执行"这个隐式时序，太脆。 -->
+<script src="/static/interview.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

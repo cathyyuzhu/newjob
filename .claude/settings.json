@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://127.0.0.1:5050/*)",
+      "Bash(curl -s \"http://127.0.0.1:5050/*)",
+      "Bash(curl -sf http://127.0.0.1:5050/*)",
+      "Bash(tasklist *)",
+      "Bash(pip show *)",
+      "Bash(.venv/Scripts/python.exe tests/run_all.py)",
+      "Bash(node --check static/*)"
+    ]
+  }
+}

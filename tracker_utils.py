@@ -68,12 +68,13 @@ HEADERS = [
     "相关经验年限", "行业背景", "薪资范围",
     "团队规模/汇报线", "地理位置/远程要求", "状态/下一步",
     "简历优化内容", "简历存储路径", "Cover Letter",
+    "公司简介",
 ]
 
 COL_WIDTHS = {
     "A": 26, "B": 12, "C": 12, "D": 12, "E": 34, "F": 42,
     "G": 30, "H": 28, "I": 18, "J": 26, "K": 16, "L": 26, "M": 18, "N": 26,
-    "O": 34, "P": 30, "Q": 50,
+    "O": 34, "P": 30, "Q": 50, "R": 40,
 }
 
 # 重要：颜色必须用8位ARGB且alpha=FF（不透明）。
@@ -128,9 +129,31 @@ def _new_workbook():
     return wb
 
 
+def _migrate_headers(ws):
+    """给已存在的旧追踪表补上后续新增的表头列（只在行末追加，不改动已有列的位置/内容），
+    这样老文件不需要手动删掉重建就能兼容新加的字段（比如后来加的"公司简介"列）。"""
+    for col_idx, h in enumerate(HEADERS, start=1):
+        c = ws.cell(row=1, column=col_idx)
+        if c.value == h:
+            continue
+        if c.value:  # 已有其它内容（不该发生，HEADERS只在末尾追加），跳过避免误覆盖
+            continue
+        c.value = h
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = BORDER
+        col_letter = c.column_letter
+        if col_letter in COL_WIDTHS:
+            ws.column_dimensions[col_letter].width = COL_WIDTHS[col_letter]
+
+
 def _ensure_workbook(path):
     if os.path.exists(path):
-        return load_workbook(path, rich_text=True)
+        wb = load_workbook(path, rich_text=True)
+        ws = wb["JD匹配追踪表"] if "JD匹配追踪表" in wb.sheetnames else wb.active
+        _migrate_headers(ws)
+        return wb
     return _new_workbook()
 
 
@@ -154,9 +177,20 @@ def add_entry(
     resume_optimization_bullets=None,  # list[str]，简历改了哪些地方；情况B/未生成简历时传None
     resume_path=None,                  # str，定制简历的完整保存路径；未生成时传None
     cover_letter=None,                 # str，cover letter全文（含换行），未生成时传None
+    company_overview=None,             # str，公司简介（LLM基于自身知识生成的简要介绍）；未知时传None
 ):
     wb = _ensure_workbook(path)
     ws = wb["JD匹配追踪表"] if "JD匹配追踪表" in wb.sheetnames else wb.active
+
+    # 重新分析同一个职位（公司+职位名称一致）时，先删掉旧行再插入新行，避免表里出现
+    # 同一职位的重复记录——重复行不仅让表格变乱，list_entries() 读回来构建
+    # company+title -> 记录 的索引时还会被旧行覆盖，导致网页弹窗反而显示回退分析前的
+    # 旧数据（比如翻译成中文之前的英文内容）。
+    company_col = HEADERS.index("公司") + 1
+    title_col = HEADERS.index("职位名称") + 1
+    for row in reversed(list(ws.iter_rows(min_row=2, max_row=ws.max_row))):
+        if row[company_col - 1].value == company and row[title_col - 1].value == job_title:
+            ws.delete_rows(row[0].row)
 
     # 在表头下方插入一行新记录，已有记录自动下移（最新公司永远在最上面）
     ws.insert_rows(2)
@@ -180,6 +214,7 @@ def add_entry(
         "简历优化内容": _bullets_plain(resume_optimization_bullets) if resume_optimization_bullets else "未生成定制简历",
         "简历存储路径": resume_path or "—",
         "Cover Letter": cover_letter or "未生成",
+        "公司简介": company_overview or "未获取到公司简介",
     }
 
     max_lines = 1
@@ -220,6 +255,89 @@ def add_entry(
 
     wb.save(path)
     return path
+
+
+def _plain_bullets_to_list(val):
+    """反解 _bullets_plain() 写入的 "• xxx\\n• yyy" 格式为 ["xxx", "yyy"]。
+    未生成/占位值（"未生成定制简历"、"未生成"、"—"等不带项目符号的值）原样按单条返回。"""
+    if not val or not isinstance(val, str):
+        return []
+    lines = [l.strip() for l in val.split("\n") if l.strip()]
+    return [l[2:] if l.startswith("• ") else l for l in lines]
+
+
+def _rich_requirements_to_items(val):
+    """反解 _bullets_rich() 写入的 CellRichText，还原为 [{"text":..., "is_gap":bool}, ...]。"""
+    if val is None:
+        return []
+    if isinstance(val, str):
+        return [{"text": l, "is_gap": False} for l in _plain_bullets_to_list(val)]
+    items = []
+    for block in val:
+        text = block.text if hasattr(block, "text") else str(block)
+        is_gap = bool(getattr(block, "font", None) and block.font.color and block.font.color.rgb == "FFFF0000")
+        text = text.strip()
+        if text.startswith("• "):
+            text = text[2:]
+        if text:
+            items.append({"text": text, "is_gap": is_gap})
+    return items
+
+
+def list_entries(path):
+    """按追踪表当前的行顺序（最新的在最上面）返回结构化的记录列表，供网页展示用。
+    文件不存在时返回空列表。"""
+    if not os.path.exists(path):
+        return []
+    wb = load_workbook(path, rich_text=True)
+    ws = wb["JD匹配追踪表"] if "JD匹配追踪表" in wb.sheetnames else wb.active
+    idx = {h: i for i, h in enumerate(HEADERS)}
+
+    def _cell(row, header):
+        """按表头名安全取值：旧追踪表文件可能还没有后来新加的列（比如"公司简介"），
+        行的实际长度可能比当前 HEADERS 短，直接按下标取会越界报错。"""
+        i = idx[header]
+        return row[i].value if i < len(row) else None
+
+    entries = []
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        title_cell = row[idx["职位名称"]]
+        company = _cell(row, "公司")
+        if not company and not title_cell.value:
+            continue
+
+        apply_date = row[idx["投递日期"]].value
+        if hasattr(apply_date, "date"):  # datetime -> date（去掉openpyxl读回来时带的00:00:00时间部分）
+            apply_date = apply_date.date()
+        resume_path = row[idx["简历存储路径"]].value
+        cover_letter = row[idx["Cover Letter"]].value
+        resume_bullets_raw = row[idx["简历优化内容"]].value
+        company_overview = _cell(row, "公司简介")
+
+        entries.append(
+            {
+                "job_title": title_cell.value,
+                "job_url": title_cell.hyperlink.target if title_cell.hyperlink else None,
+                "company": company,
+                "overall_match": row[idx["总体匹配度"]].value,
+                "apply_date": apply_date.isoformat() if hasattr(apply_date, "isoformat") else apply_date,
+                "job_content_bullets": _plain_bullets_to_list(row[idx["职位内容"]].value),
+                "requirement_items": _rich_requirements_to_items(row[idx["任职要求"]].value),
+                "skill_matched_bullets": _plain_bullets_to_list(row[idx["技能匹配度-匹配的"]].value),
+                "skill_gap_bullets": _plain_bullets_to_list(row[idx["技能匹配度-未达标的"]].value),
+                "experience_years": row[idx["相关经验年限"]].value,
+                "industry_bullets": _plain_bullets_to_list(row[idx["行业背景"]].value),
+                "salary": row[idx["薪资范围"]].value,
+                "team_bullets": _plain_bullets_to_list(row[idx["团队规模/汇报线"]].value),
+                "location": row[idx["地理位置/远程要求"]].value,
+                "status": row[idx["状态/下一步"]].value,
+                "resume_optimization_bullets": [] if resume_bullets_raw == "未生成定制简历" else _plain_bullets_to_list(resume_bullets_raw),
+                "resume_path": None if resume_path in (None, "—") else resume_path,
+                "cover_letter": None if cover_letter in (None, "未生成") else cover_letter,
+                "company_overview": None if company_overview in (None, "未获取到公司简介") else company_overview,
+            }
+        )
+    return entries
 
 
 def list_existing_jobs(path):
