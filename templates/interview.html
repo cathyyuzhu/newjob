@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>通用面试题库</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app-shell">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
+      </div>
+      <div>
+        <h1>通用面试题库</h1>
+        <div class="sub">跨职位复用的个人标准答案，每题中英文各一版；AI 起草只填你没改过的条目</div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <a class="btn btn-secondary btn-sm" href="/">← 返回职位列表</a>
+      <button class="btn btn-secondary btn-sm" onclick="toggleAssistant()" title="让 AI 看整个题库挑毛病：故事有没有重复、缺哪一类、哪几题答得空">
+        💬 题库助手
+      </button>
+      <!-- 起草按钮放在 topbar 而不是内容区顶部：题库滚起来很长，放里面滚到底就看不见了 -->
+      <button class="btn btn-primary btn-sm" id="bankGenerateBtn" onclick="generateBankDraft(this)" title="根据简历起草初稿，分自我介绍/通用问题/STAR 故事三段生成；已经改过的条目不会被覆盖">
+        ✨ AI 起草 / 补充
+      </button>
+      <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+      </button>
+    </div>
+  </header>
+
+  <section id="bankRoot"></section>
+
+</div>
+
+<aside class="bank-assistant" id="bankAssistant"></aside>
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="/static/common.js"></script>
+<script src="/static/bank.js"></script>
+</body>
+</html>

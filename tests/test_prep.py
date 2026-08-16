@@ -113,8 +113,10 @@ assert "【未达标】必须持有ITIL认证" in p
 assert "【已达标】5年以上B端产品经验" in p
 assert "【公司简介】一家做AI基础设施的公司" in p
 assert "【总体匹配度】78%" in p
-assert calls[0]["max_tokens"] == 8192, calls[0]["max_tokens"]
-print("prompt reuses existing analysis ok, max_tokens =", calls[0]["max_tokens"])
+# 同 test_bank.py：max_tokens 必须是 None（不设上限），设死值会被推理模型的思维链
+# 吃光额度，正文截断成半截 JSON。
+assert calls[0]["max_tokens"] is None, calls[0]["max_tokens"]
+print("prompt reuses existing analysis ok, max_tokens 不设上限")
 
 # ---- 3. 多份历史 + 轮次标签
 pipeline.generate_interview_prep_safe(job_id, round_label="二面")
@@ -219,6 +221,24 @@ assert by_id[job_id]["has_interview_prep"] is True
 assert by_id[empty_id]["has_interview_prep"] is False
 assert by_id[job_id]["interview_prep_state"] is None
 print("GET endpoints + /api/jobs enrichment ok")
+
+# 单条职位接口：面试准备页只关心一条，没必要跟主页一样把整个列表拉回来再 find
+# （生成期间每隔几秒就要查一次状态）。字段要跟列表接口对得上。
+one = client.get(f"/api/jobs/{job_id}").get_json()
+assert one["id"] == job_id and one["title"] == by_id[job_id]["title"]
+assert one["has_interview_prep"] is True and one["interview_prep_state"] is None
+assert client.get(f"/api/jobs/{empty_id}").get_json()["has_interview_prep"] is False
+assert client.get("/api/jobs/99999").status_code == 404
+print("single job endpoint ok")
+
+# ---- 7b. 面试准备是独立页面，不再是详情弹窗里的 tab
+r = client.get(f"/jobs/{job_id}/interview")
+assert r.status_code == 200
+page = r.data.decode("utf-8")
+assert f"window.PREP_JOB_ID = {job_id};" in page, "职位 id 要由后端注入模板"
+assert "/static/interview.js" in page and 'id="prepRoot"' in page
+assert client.get("/jobs/99999/interview").status_code == 404
+print("interview prep page ok")
 
 # ---- 8. 删除
 r = client.delete(f"/api/interview_preps/{preps[0]['id']}")

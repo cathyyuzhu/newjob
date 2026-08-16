@@ -211,24 +211,42 @@ def get_interview_prep_states():
 # 全局同一时刻最多只该有一次起草在跑（重复跑除了浪费钱，两次结果还会互相覆盖）。
 _bank_generating = False
 
+# 上一次起草失败的原因。面试准备失败时会往 interview_preps 落一行 error，题库没有这么
+# 一张"每次生成一行"的表，失败了除了服务端日志没有任何出口——前端只看得到 generating
+# 从 true 翻成 false，会把失败当成"跑完了"，弹一个绿色的"起草完成"配一个空题库
+# （真实发生过：起草连炸三次，用户以为是自己等得不够久）。放在内存里够用，这条错误只在
+# "刚点完起草"的上下文里有意义，重启丢掉不影响什么。
+_bank_error = None
+
 
 def start_bank_generation():
     """抢占式地标记"开始起草"。已经在跑则返回 False，调用方据此拒绝这次请求——
     检查和置位在同一个锁里完成，避免连点两下时两个请求都通过了检查。"""
-    global _bank_generating
+    global _bank_generating, _bank_error
     with _lock:
         if _bank_generating:
             return False
         _bank_generating = True
+        # 新一轮开始就清掉上一轮的错误，不然它会一直挂在界面上，让人分不清这条报错
+        # 说的是刚点的这次还是上次。
+        _bank_error = None
         return True
 
 
-def finish_bank_generation():
-    global _bank_generating
+def finish_bank_generation(error=None):
+    """标记起草结束。error 有值表示这一轮失败了，原因留着给前端显示。"""
+    global _bank_generating, _bank_error
     with _lock:
         _bank_generating = False
+        _bank_error = error
 
 
 def bank_generating():
     with _lock:
         return _bank_generating
+
+
+def bank_error():
+    """上一次起草的失败原因（成功或没跑过则为 None）。"""
+    with _lock:
+        return _bank_error

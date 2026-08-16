@@ -8,60 +8,9 @@ let starredOnly = false;
 let trackerEntries = [];
 let trackerIndex = {};
 
-// ---------- theme ----------
-const SUN_PATHS = '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>';
-const MOON_PATHS = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
-
-function effectiveIsDark() {
-  const forced = document.documentElement.getAttribute('data-theme');
-  if (forced) return forced === 'dark';
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
-}
-
-function updateThemeIcon() {
-  const icon = document.getElementById('themeIcon');
-  icon.innerHTML = effectiveIsDark() ? SUN_PATHS : MOON_PATHS;
-}
-
-function initTheme() {
-  const saved = localStorage.getItem('theme');
-  if (saved) document.documentElement.setAttribute('data-theme', saved);
-  updateThemeIcon();
-}
-
-function toggleTheme() {
-  const next = effectiveIsDark() ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  localStorage.setItem('theme', next);
-  updateThemeIcon();
-}
-
-// ---------- toasts ----------
-const TOAST_ICONS = {
-  success: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>',
-  error: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg>',
-  info: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
-};
-
-function showToast(message, type = 'info', timeout = 4000) {
-  const stack = document.getElementById('toastStack');
-  const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.innerHTML = `<span class="toast-icon">${TOAST_ICONS[type] || TOAST_ICONS.info}</span><span>${escapeHtml(message)}</span>`;
-  stack.appendChild(el);
-  setTimeout(() => {
-    el.classList.add('leaving');
-    setTimeout(() => el.remove(), 200);
-  }, timeout);
-}
-
 // ---------- helpers ----------
-function escapeHtml(str) {
-  return String(str ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
-}
-
+// 主题切换 / toast / escapeHtml / setBtnLoading / restoreBtn / bulletListHtml 都在
+// common.js 里（三个页面共用），本文件只留职位列表专属的部分。
 function safeUrl(url) {
   if (typeof url === 'string' && /^https?:\/\//i.test(url)) return url;
   return '#';
@@ -73,17 +22,6 @@ function normalizeStr(s) {
 
 function dedupeKey(company, title) {
   return `${normalizeStr(company)}::${normalizeStr(title)}`;
-}
-
-function setBtnLoading(btn, loadingText) {
-  btn.dataset.originalHtml = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = `<span class="spinner"></span>${loadingText}`;
-}
-
-function restoreBtn(btn) {
-  if (btn.dataset.originalHtml) btn.innerHTML = btn.dataset.originalHtml;
-  btn.disabled = false;
 }
 
 // ---------- more modal (settings / runs) ----------
@@ -681,7 +619,7 @@ async function setApplicationStatus(id, applicationStatus) {
     showToast(`投递状态已更新为「${APPLICATION_STATUS_LABELS[applicationStatus] || applicationStatus}」`, 'success', 2000);
     if (data.interview_prep_started) {
       // 后端已经起了后台线程在生成，这里只负责告知 + 安排轮询，等生成完卡片上会出现 🎤 标记
-      showToast('已开始生成这条职位的面试准备材料，完成后可点开职位卡片查看', 'info', 6000);
+      showToast('已开始生成这条职位的面试准备材料，完成后卡片上会出现 🎤 标记', 'info', 6000);
       pollInterviewPrepUntilDone(id);
     }
   } catch (e) {
@@ -716,31 +654,41 @@ async function loadRuns() {
 }
 
 // ---------- job detail modal ----------
-function bulletListHtml(items) {
-  if (!items || !items.length) return '<div class="plain-text" style="color:var(--text-faint);">（无）</div>';
-  return `<ul class="bullet-list">${items.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}</ul>`;
-}
-
 function reqListHtml(items) {
   if (!items || !items.length) return '<div class="plain-text" style="color:var(--text-faint);">（无）</div>';
   return `<ul class="req-list">${items.map((it) => `<li class="${it.is_gap ? 'gap' : ''}">${escapeHtml(it.text)}</li>`).join('')}</ul>`;
 }
 
-// 详情弹窗当前打开的是哪条职位——面试准备 tab 是懒加载的（切过去才请求接口），
-// 需要知道给谁加载；也供 interview.js 里的"重新生成"等操作取用。
-let currentDetailJobId = null;
-
-function switchDetailTab(name) {
-  document.querySelectorAll('#jobDetailModalOverlay .tab-btn').forEach((b) => {
-    b.classList.toggle('active', b.dataset.detailtab === name);
-  });
-  document.querySelectorAll('#jobDetailModalOverlay .tab-panel').forEach((p) => {
-    p.classList.toggle('active', p.id === `detailSubpanel-${name}`);
-  });
-  if (name === 'interview') loadInterviewPrep(currentDetailJobId);
+// 把投递状态改成"面试中"会触发后台生成面试准备材料。这里跟进到跑完为止，好让卡片上的
+// 🎤 标记自己冒出来，不用用户手动刷新。真正看内容是在 /jobs/<id>/interview 页面上，
+// 那边有自己的轮询，跟这条互不相干。
+function pollInterviewPrepUntilDone(jobId, elapsed = 0) {
+  if (elapsed > 300000) return; // 最多跟5分钟，超时就不管了，用户手动刷新也能看到
+  setTimeout(async () => {
+    let done = true;
+    try {
+      const fresh = await (await fetch(`/api/jobs/${jobId}`)).json();
+      done = fresh.interview_prep_state !== 'generating';
+    } catch (e) {
+      done = false;
+    }
+    if (done) loadJobs();
+    else pollInterviewPrepUntilDone(jobId, elapsed + 5000);
+  }, 5000);
 }
 
-function openJobDetailModal(jobId, tab) {
+// 职位卡片上的 🎤 标记：有面试准备材料就点进那条职位的面试准备页。
+// （以前这里是打开详情弹窗并切到"面试准备"tab，现在面试准备是独立页面了。）
+function interviewPrepBadgeHtml(job) {
+  if (job.interview_prep_state === 'generating') {
+    return '<span class="match-pill prep-pill" title="正在生成面试准备材料">🎤 准备中…</span>';
+  }
+  if (!job.has_interview_prep) return '';
+  return `<a class="match-pill prep-pill done" href="/jobs/${job.id}/interview"
+    title="已有面试准备材料，点击查看" onclick="event.stopPropagation()">🎤 面试准备</a>`;
+}
+
+function openJobDetailModal(jobId) {
   const job = allJobs.find((j) => j.id === jobId);
   if (!job) return;
   const e = trackerIndex[dedupeKey(job.company, job.title)] || null;
@@ -748,14 +696,14 @@ function openJobDetailModal(jobId, tab) {
     showToast('未在追踪表中找到匹配的分析详情，可能追踪表文件路径已更改', 'error');
     return;
   }
-  currentDetailJobId = jobId;
 
   document.getElementById('jobDetailModalTitle').textContent = `${(e && e.job_title) || job.title || ''} · ${(e && e.company) || job.company || ''}`;
+  document.getElementById('jobDetailPrepLink').href = `/jobs/${jobId}/interview`;
 
   const jobUrl = (e && e.job_url) || job.job_url;
   const body = !e ? `
     ${jobUrl ? `<div class="detail-section"><a class="job-title" href="${safeUrl(jobUrl)}" target="_blank" rel="noopener noreferrer">查看原职位页面 ↗</a></div>` : ''}
-    <div class="detail-section"><div class="plain-text" style="color:var(--text-faint);">未在追踪表中找到这条职位的匹配分析记录（可能追踪表路径变了，或还没跑过 AI 分析）。面试准备不受影响，可切到右边的标签页查看。</div></div>
+    <div class="detail-section"><div class="plain-text" style="color:var(--text-faint);">未在追踪表中找到这条职位的匹配分析记录（可能追踪表路径变了，或还没跑过 AI 分析）。面试准备不受影响，点右上角「🎤 面试准备」查看。</div></div>
   ` : `
     ${jobUrl ? `<div class="detail-section"><a class="job-title" href="${safeUrl(jobUrl)}" target="_blank" rel="noopener noreferrer">查看原职位页面 ↗</a></div>` : ''}
     <div class="detail-section">
@@ -820,17 +768,11 @@ function openJobDetailModal(jobId, tab) {
     </div>
   `;
   document.getElementById('detailSubpanel-analysis').innerHTML = body;
-  // 面试准备面板先清空，等 switchDetailTab('interview') 懒加载，避免每次打开分析详情
-  // 都白跑一次接口，也避免上一条职位的内容一闪而过。
-  document.getElementById('detailSubpanel-interview').innerHTML = '';
   document.getElementById('jobDetailModalOverlay').classList.add('active');
-  switchDetailTab(tab || 'analysis');
 }
 
 function closeJobDetailModal() {
   document.getElementById('jobDetailModalOverlay').classList.remove('active');
-  stopInterviewPrepPoll();
-  currentDetailJobId = null;
 }
 
 // ---------- init ----------

@@ -7,6 +7,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file
 from config import load_config, save_config
 from easy_apply import EasyApplyError, EasyApplyInProgress, run_easy_apply
 from job_state import (
+    bank_error,
     bank_generating,
     easy_apply_opening,
     finish_bank_generation,
@@ -25,6 +26,7 @@ from models import (
     add_bank_item,
     delete_bank_item,
     delete_interview_prep,
+    get_bank_item,
     get_job,
     get_latest_interview_prep,
     init_db,
@@ -41,6 +43,8 @@ from models import (
 from pipeline import (
     analyze_and_record_safe,
     analyze_pending_jobs,
+    chat_bank_answer,
+    chat_bank_assistant,
     classify_company_origins,
     find_tracker_entry,
     generate_bank_draft,
@@ -62,6 +66,22 @@ init_db()
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+# 面试相关的两块内容各自是独立页面，不再是主页上的弹窗：都属于"坐下来看很久 / 一边看一边改"
+# 的场景，而弹窗有三个硬伤——生成是后台跑的但轮询跟弹窗生命周期绑死、内容长却被塞进
+# max-height:92vh 的内滚容器、没有 URL 没法单独开一个标签页挂着。理由详见
+# spec/tech-solution.md。「匹配分析」相反，是在列表里扫一眼就关，继续留在弹窗里。
+@app.route("/interview")
+def interview_bank_page():
+    return render_template("interview.html")
+
+
+@app.route("/jobs/<int:job_id>/interview")
+def job_interview_page(job_id):
+    if not get_job(job_id):
+        abort(404)
+    return render_template("job_interview.html", job_id=job_id)
 
 
 @app.route("/api/config", methods=["GET"])
@@ -201,6 +221,18 @@ def get_jobs():
         job["interview_prep_state"] = prep_states.get(job["id"])
         job["has_interview_prep"] = job["id"] in prep_job_ids
     return jsonify(jobs)
+
+
+@app.route("/api/jobs/<int:job_id>", methods=["GET"])
+def get_job_route(job_id):
+    """单条职位。面试准备页只关心一条职位，没必要跟主页一样把整个列表拉回来再 find——
+    尤其是生成期间每隔几秒就要查一次状态。字段跟列表接口保持一致。"""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "职位不存在"}), 404
+    job["interview_prep_state"] = get_interview_prep_states().get(job_id)
+    job["has_interview_prep"] = job_id in job_ids_with_interview_prep()
+    return jsonify(job)
 
 
 @app.route("/api/jobs/<int:job_id>/status", methods=["POST"])
@@ -407,17 +439,30 @@ def delete_interview_prep_route(prep_id):
 
 @app.route("/api/interview/bank", methods=["GET"])
 def get_bank_route():
-    return jsonify({"items": list_bank_items(), "generating": bank_generating()})
+    # error 是上一次起草的失败原因：起草在后台线程里跑，失败了只有这一条路能告诉前端，
+    # 否则前端只看到 generating 变 false，会把失败渲染成"起草完成"。
+    return jsonify(
+        {"items": list_bank_items(), "generating": bank_generating(), "error": bank_error()}
+    )
 
 
 def _bank_generation_background():
+    error = None
     try:
         stats = generate_bank_draft()
         logging.info("interview bank draft done: %s", stats)
-    except Exception:
+        # 三段里只挂了一两段：另外几段的内容已经入库了，不能当成整体成功一声不吭，
+        # 也不该当成整体失败——把挂掉的那几段单独说清楚，用户再点一次就只补这几段。
+        if stats.get("failed_sections"):
+            error = "部分内容起草失败：" + "；".join(stats["failed_sections"]) + (
+                "（其余部分已经生成好了，可以再点一次「AI 起草 / 补充」只补这几段）"
+            )
+    except Exception as e:
         logging.exception("interview bank draft failed")
+        # str(e) 对空消息的异常会是空串，那样前端拿到 error 却没话可说，退到类名。
+        error = str(e) or e.__class__.__name__
     finally:
-        finish_bank_generation()
+        finish_bank_generation(error)
 
 
 @app.route("/api/interview/bank/generate", methods=["POST"])
@@ -465,6 +510,51 @@ def delete_bank_item_route(item_id):
     if not delete_bank_item(item_id):
         return jsonify({"error": "条目不存在"}), 404
     return jsonify({"ok": True})
+
+
+# ------------------------------------------------- 题库：跟 AI 对话完善答案
+#
+# 这两个接口**同步返回**，不像起草那样后台线程 + 轮询：单轮只改一道题的一个语言版本，
+# 输出量比起草小一个数量级，等待在十几秒到一分钟量级，app.run(threaded=True) 本来就能
+# 并发处理。再套一层 job_state 标志和轮询是过度设计。
+#
+# 对话历史由前端每轮带回来（不落库，见 spec/tech-solution.md），所以要当成不可信输入：
+# interview.sanitize_chat_history() 会滤掉脏数据并只保留最后若干条，防止历史无限长把
+# token 烧光。
+
+
+@app.route("/api/interview/bank/<int:item_id>/chat", methods=["POST"])
+def bank_item_chat_route(item_id):
+    item = get_bank_item(item_id)
+    if not item:
+        return jsonify({"error": "条目不存在"}), 404
+    data = request.get_json(force=True)
+    lang = data.get("lang") or "zh"
+    message = (data.get("message") or "").strip()
+    if lang not in ("zh", "en"):
+        return jsonify({"error": "lang 只能是 zh 或 en"}), 400
+    if not message:
+        return jsonify({"error": "说点什么吧"}), 400
+    try:
+        return jsonify(chat_bank_answer(item, lang, message, history=data.get("history")))
+    except Exception as e:
+        logging.exception("bank item chat failed")
+        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+
+
+@app.route("/api/interview/bank/chat", methods=["POST"])
+def bank_assistant_chat_route():
+    """全局题库助手：只做跨题诊断，响应里刻意没有 answer 字段——它不改写具体答案，
+    改写走上面那个按条目的接口（那边才知道要回填哪一条）。"""
+    data = request.get_json(force=True)
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "说点什么吧"}), 400
+    try:
+        return jsonify(chat_bank_assistant(message, history=data.get("history")))
+    except Exception as e:
+        logging.exception("bank assistant chat failed")
+        return jsonify({"error": str(e) or e.__class__.__name__}), 500
 
 
 @app.route("/api/runs", methods=["GET"])

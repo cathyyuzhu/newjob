@@ -465,18 +465,15 @@ tr:hover td { background: var(--bg-subtle); }
 @keyframes toast-out { to { opacity: 0; transform: translateX(12px); } }
 
 /* ---------- Interview prep ---------- */
-/* 职位详情弹窗的两个标签（匹配分析 / 面试准备）横在 modal-head 和 modal-body 之间，
-   跟"更多"弹窗把标签放进 modal-head 的排法不同——这里 modal-head 已经被动态的
-   职位标题占满了，标签只能单独占一行。 */
-#jobDetailModalOverlay .modal-tabs {
-  padding: 0 1.3rem; border-bottom: 1px solid var(--border); flex-shrink: 0;
-}
+/* 面试准备页顶部副标题里的"查看原职位页面"链接 */
+.sub a.job-link { color: var(--primary); text-decoration: none; font-weight: 600; margin-left: 0.4rem; }
+.sub a.job-link:hover { text-decoration: underline; }
 
 .prep-pill {
   background: var(--accent-soft); color: var(--accent);
   font-size: 0.75rem; font-weight: 700; white-space: nowrap;
 }
-.prep-pill.done { cursor: pointer; }
+.prep-pill.done { cursor: pointer; text-decoration: none; }
 .prep-pill.done:hover { filter: brightness(0.95); }
 
 .prep-toolbar {
@@ -519,14 +516,22 @@ tr:hover td { background: var(--bg-subtle); }
   padding: 0 0.65rem 0.6rem 1.55rem; border-top: 1px solid var(--border); padding-top: 0.5rem;
 }
 
-/* 题库弹窗要放长文本编辑框，比默认的详情弹窗宽一些 */
-.modal.modal-wide { max-width: 860px; }
-
+/* ---------- 通用面试题库（/interview） ---------- */
 .bank-count {
   display: inline-block; margin-left: 0.4rem;
   font-size: 0.72rem; background: var(--bg-subtle); color: var(--text-muted);
   border-radius: 999px; padding: 0.05rem 0.42rem; font-weight: 700;
 }
+
+/* 题目卡片：不折叠、永远展开。以前是 <details>，保存一次就会连带把所有展开的题收回去。 */
+.bank-item {
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-subtle); padding: 0.7rem 0.8rem; margin-bottom: 0.6rem;
+}
+.bank-item-head {
+  display: flex; align-items: flex-start; gap: 0.5rem;
+}
+.bank-q { font-size: 0.9rem; font-weight: 600; line-height: 1.45; }
 .bank-badge {
   margin-left: auto; flex-shrink: 0;
   font-size: 0.68rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 999px;
@@ -535,17 +540,70 @@ tr:hover td { background: var(--bg-subtle); }
 .bank-badge.ai { background: var(--bg-subtle); color: var(--text-faint); }
 
 .bank-label {
-  display: block; margin: 0.5rem 0 0.2rem;
+  display: block; margin: 0.6rem 0 0.2rem;
   font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em; color: var(--text-faint);
 }
+/* 高度由 JS 的 autoGrow() 跟着内容算（overflow 关掉、手动拖也关掉），
+   框里永远不出现滚动条——长答案挤在固定高度的小框里滚动是这页以前最难用的地方。 */
 .bank-answer {
-  width: 100%; padding: 0.5rem 0.6rem; font-size: 0.85rem; line-height: 1.55;
-  font-family: inherit; resize: vertical;
+  width: 100%; padding: 0.5rem 0.6rem; font-size: 0.85rem; line-height: 1.6;
+  font-family: inherit; resize: none; overflow-y: hidden; min-height: 5.5rem;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg-elevated); color: var(--text);
 }
 .bank-answer:focus { outline: none; border-color: var(--primary); }
-.bank-actions { display: flex; align-items: center; gap: 0.35rem; margin-top: 0.5rem; }
+.bank-actions { display: flex; align-items: center; gap: 0.35rem; margin-top: 0.6rem; flex-wrap: wrap; }
+
+/* ---------- 跟 AI 对话完善答案 ---------- */
+.bank-chat {
+  margin-top: 0.7rem; padding-top: 0.7rem; border-top: 1px dashed var(--border);
+}
+.bank-chat-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem; }
+.bank-chat-hint { font-size: 0.75rem; color: var(--text-faint); line-height: 1.5; }
+.bank-chat-empty {
+  font-size: 0.78rem; color: var(--text-faint); line-height: 1.6;
+  padding: 0.5rem 0.1rem;
+}
+.bank-chat-msgs {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  max-height: 26rem; overflow-y: auto; margin-bottom: 0.5rem;
+}
+.bank-chat-msg {
+  font-size: 0.83rem; line-height: 1.6; padding: 0.45rem 0.65rem;
+  border-radius: var(--radius-sm); max-width: 90%; white-space: pre-wrap;
+}
+.bank-chat-msg.user { align-self: flex-end; background: var(--primary-soft); color: var(--primary); }
+.bank-chat-msg.ai { align-self: flex-start; background: var(--bg-elevated); border: 1px solid var(--border); }
+.bank-chat-msg.error { align-self: flex-start; background: var(--danger-soft); color: var(--danger); }
+.bank-chat-msg.pending { display: flex; align-items: center; gap: 0.4rem; color: var(--text-faint); }
+/* AI 给的整版改写：跟它那句"我改了什么"分开显示，白底 + pre-wrap 才看得出分段 */
+.bank-chat-draft {
+  margin: 0.45rem 0; padding: 0.5rem 0.6rem; white-space: pre-wrap;
+  font-size: 0.82rem; line-height: 1.65;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.bank-chat-input { display: flex; gap: 0.4rem; align-items: flex-end; }
+.bank-chat-input textarea {
+  flex: 1; padding: 0.45rem 0.6rem; font-size: 0.83rem; font-family: inherit;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elevated); color: var(--text); resize: vertical;
+}
+.bank-chat-input textarea:focus { outline: none; border-color: var(--primary); }
+
+/* 全局题库助手：右侧停靠，不遮住正在改的题目 */
+.bank-assistant {
+  display: none; position: fixed; top: 0; right: 0; bottom: 0; z-index: 900;
+  width: min(24rem, 92vw); flex-direction: column;
+  background: var(--bg-elevated); border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+}
+.bank-assistant.open { display: flex; }
+.bank-assistant-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.9rem; border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+.bank-assistant .bank-chat-msgs { flex: 1; max-height: none; padding: 0 0.9rem; }
+.bank-assistant .bank-chat-input { padding: 0.7rem 0.9rem; border-top: 1px solid var(--border); }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 720px) {
@@ -556,4 +614,10 @@ tr:hover td { background: var(--bg-subtle); }
   .search-box { max-width: none; margin-left: 0; }
   .detail-grid { grid-template-columns: 1fr; }
   .prep-round-input { width: 100%; }
+  /* 窄屏放不下右侧停靠栏，改成从底部升起的抽屉 */
+  .bank-assistant {
+    top: auto; left: 0; width: auto; height: 70vh;
+    border-left: none; border-top: 1px solid var(--border);
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
 }

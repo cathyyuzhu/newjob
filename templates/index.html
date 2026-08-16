@@ -28,10 +28,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>
         <span id="aiAnalyzeAllBtnLabel">AI分析</span>
       </button>
-      <button class="btn btn-secondary btn-sm" id="interviewBtn" onclick="openInterviewModal()" title="通用面试题库：自我介绍、通用问题、STAR 故事">
+      <a class="btn btn-secondary btn-sm" id="interviewBtn" href="/interview" title="通用面试题库：自我介绍、通用问题、STAR 故事">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
         面试题库
-      </button>
+      </a>
       <button class="icon-btn" id="moreBtn" title="更多" onclick="openMoreModal()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
@@ -250,41 +250,28 @@
 
 <div class="modal-overlay" id="jobDetailModalOverlay" onclick="if(event.target===this) closeJobDetailModal()">
   <div class="modal">
+    <!-- 这个弹窗只放「匹配分析」：在列表里扫一眼决定投不投，看完就关。
+         「面试准备」要看很久、要单独开着，是独立页面 /jobs/<id>/interview，
+         从右上角那个按钮进去（原来它是这里的第二个 tab）。 -->
     <div class="modal-head">
       <h3 id="jobDetailModalTitle"></h3>
-      <button class="icon-btn" onclick="closeJobDetailModal()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-      </button>
+      <div style="display:flex; align-items:center; gap:0.4rem;">
+        <a class="btn btn-secondary btn-sm" id="jobDetailPrepLink" href="#">🎤 面试准备 →</a>
+        <button class="icon-btn" onclick="closeJobDetailModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
     </div>
-    <nav class="tabs modal-tabs">
-      <button class="tab-btn active" data-detailtab="analysis" onclick="switchDetailTab('analysis')">匹配分析</button>
-      <button class="tab-btn" data-detailtab="interview" onclick="switchDetailTab('interview')">🎤 面试准备</button>
-    </nav>
     <div class="modal-body">
-      <section class="tab-panel active" id="detailSubpanel-analysis"></section>
-      <section class="tab-panel" id="detailSubpanel-interview"></section>
+      <section id="detailSubpanel-analysis"></section>
     </div>
-  </div>
-</div>
-
-<div class="modal-overlay" id="interviewModalOverlay" onclick="if(event.target===this) closeInterviewModal()">
-  <div class="modal modal-wide">
-    <div class="modal-head">
-      <h3>🎤 通用面试题库</h3>
-      <button class="icon-btn" onclick="closeInterviewModal()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-    <div class="modal-body" id="interviewModalBody"></div>
   </div>
 </div>
 
 <div class="toast-stack" id="toastStack"></div>
 
-<!-- interview.js 放在 app.js 前面：app.js 文件末尾就直接跑初始化（loadJobs 等），
-     而它渲染职位卡片时会调用 interview.js 里的 interviewPrepBadgeHtml()，
-     反过来放会依赖"网络回调一定晚于同步脚本执行"这个隐式时序，太脆。 -->
-<script src="/static/interview.js"></script>
+<!-- common.js 放在前面：里面是 escapeHtml / showToast / 主题这些 app.js 一上来就要用的东西。 -->
+<script src="/static/common.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

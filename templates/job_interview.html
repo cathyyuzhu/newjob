@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>面试准备</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app-shell">
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
+      </div>
+      <div>
+        <h1 id="prepJobTitle">面试准备</h1>
+        <div class="sub">
+          公司背景 · 预测面试题 · 缺口应对话术 · 反问清单
+          <a class="job-link" id="prepJobUrl" href="#" target="_blank" rel="noopener noreferrer">查看原职位页面 ↗</a>
+        </div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <a class="btn btn-secondary btn-sm" href="/">← 返回职位列表</a>
+      <a class="btn btn-secondary btn-sm" href="/interview" title="跨职位通用的自我介绍、通用问题、STAR 故事">🎤 通用题库</a>
+      <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+      </button>
+    </div>
+  </header>
+
+  <section id="prepRoot"></section>
+
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<!-- 职位 id 由后端注入，省得前端再从 URL 里解析一遍 -->
+<script>window.PREP_JOB_ID = {{ job_id }};</script>
+<script src="/static/common.js"></script>
+<script src="/static/interview.js"></script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from datetime import datetime
 
@@ -403,6 +404,14 @@ def list_bank_items():
     return [dict(r) for r in rows]
 
 
+def get_bank_item(item_id):
+    """单条题库条目，没有就返回 None。对话接口要拿题目原文和当前答案喂给 prompt。"""
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM interview_bank WHERE id = ?", (item_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def add_bank_item(category, question, answer=None, answer_en=None, user_edited=1, sort_order=None):
     """新增一条。默认 user_edited=1——手动加的题就是用户自己的内容，
     不该被之后的 AI 起草覆盖掉。"""
@@ -455,13 +464,35 @@ def delete_bank_item(item_id):
     return cur.rowcount
 
 
+# 归一化问题文字时要抹掉的东西：所有空白 + 中英文标点。
+# 之所以抹这么狠：合并靠"这道题是不是已经有了"来判断，而 LLM 每次生成的措辞都会飘一点，
+# 光是「未来3-5年你的职业规划是什么？」→「未来 3-5 年职业规划是什么？」这种只差空格的
+# 改写，就会让完全相等的字符串比较失手，同一道题在题库里堆成两条。实测起草两次，
+# 16 条变 28 条、只有 4 条对上了。抹掉标点和空白之后这类飘动就吃掉了。
+_BANK_Q_NOISE_RE = re.compile(
+    r"[\s　。，、；：？！…—～·「」『』（）【】《》"
+    r"\.,;:?!\-–—_/\\|<>\[\]\(\)\{\}'\"`~@#$%^&*+=]+"
+)
+
+
+def normalize_bank_question(text):
+    """把问题文字压成用来判重的 key（抹掉空白/标点、英文转小写）。
+
+    只用于匹配，不改动库里存的原文——展示还是用 AI 或用户写的那句原话。
+    注意它吃不掉真正的改写（「为什么离开上一家？」vs「为什么离开上一家 / 这次为什么想看
+    外部机会？」归一化后仍是两个 key），那一层靠起草 prompt 把已有题目喂回给
+    模型、要求复用原措辞来解决。两层配合才能让"重新起草"真的是补充而不是堆重复。
+    """
+    return _BANK_Q_NOISE_RE.sub("", (text or "")).lower()
+
+
 def replace_ai_bank_items(items):
     """把一批 AI 起草的条目合并进题库。items: [{category, question, answer, answer_en}]。
 
     合并规则（这张表最重要的一条逻辑）：
-    - 同类别下问题文字相同的已有条目，只有在 user_edited=0（用户没改过）时才更新答案；
-      用户手改过的一律跳过——AI 初稿只是起点，改过的才是"我的标准答案"，重新起草
-      是为了补充没想到的问题，不是把用户的心血冲掉。
+    - 同类别下问题**归一化后**相同的已有条目（见 normalize_bank_question），只有在
+      user_edited=0（用户没改过）时才更新答案；用户手改过的一律跳过——AI 初稿只是起点，
+      改过的才是"我的标准答案"，重新起草是为了补充没想到的问题，不是把用户的心血冲掉。
     - 没有对应条目的直接新增。
     - 不删除任何已有条目（AI 这次没生成到的题可能是用户手动加的，不能当成"过期"清掉）。
     返回 {"updated": n, "added": n, "skipped": n}——skipped 是被 user_edited 保护住的条数，
@@ -469,18 +500,31 @@ def replace_ai_bank_items(items):
     """
     conn = get_conn()
     existing = {}
-    for row in conn.execute("SELECT id, category, question, user_edited FROM interview_bank"):
-        existing[(row["category"], (row["question"] or "").strip())] = row
+    # 按 id 升序遍历：库里可能已经躺着归一化后重复的历史数据（这个 bug 修之前堆进去的），
+    # 那种情况下认最早的那条，行为才是确定的。
+    for row in conn.execute(
+        "SELECT id, category, question, user_edited FROM interview_bank ORDER BY id"
+    ):
+        existing.setdefault((row["category"], normalize_bank_question(row["question"])), row)
 
     now = datetime.now().isoformat(timespec="seconds")
     stats = {"updated": 0, "added": 0, "skipped": 0}
     next_order = {}
+    seen_in_batch = set()
     for item in items:
         category = item.get("category")
         question = (item.get("question") or "").strip()
         if category not in BANK_CATEGORIES or not question:
             continue
-        row = existing.get((category, question))
+        key = (category, normalize_bank_question(question))
+        if not key[1]:
+            continue  # 问题只剩标点，当成空题跳过
+        # 同一批里出现两道归一化后一样的题时，只认第一道——否则这一次起草自己就会往库里
+        # 插两条重复的。
+        if key in seen_in_batch:
+            continue
+        seen_in_batch.add(key)
+        row = existing.get(key)
         if row is not None:
             if row["user_edited"]:
                 stats["skipped"] += 1

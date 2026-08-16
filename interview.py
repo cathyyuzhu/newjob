@@ -8,9 +8,11 @@ import json
 
 import llm
 
-# 面试准备一次要出 10-15 道题（每题还带答题要点和简历依据）+ 缺口话术 + 反问清单，
-# 输出量明显大于匹配分析，用默认的 4096 会被截断成不完整的 JSON 直接解析失败。
-PREP_MAX_TOKENS = 8192
+# 面试准备/题库的输出量都明显大于匹配分析（十几道题各带答题要点，或者几个完整的 STAR 故事）。
+# 这里刻意不设 max_tokens 上限（None = 用各家 provider 自己的上限）——踩过的坑详见
+# llm._call_deepseek 里的说明：推理模型的 max_tokens 是「推理 + 输出」共用额度，
+# 设一个看起来很宽裕的 8192 反而会让推理吃光额度、正文只剩几十个 token。
+PREP_MAX_TOKENS = None
 
 PREP_PROMPT = """你是一个资深的面试辅导教练，帮候选人准备一场具体的面试。
 
@@ -168,11 +170,22 @@ def dumps(content):
 
 # ---------------------------------------------------------------- 通用题库
 
-# 题库一次要出自我介绍中英双版 + 8-12 道通用题 + 3-5 个 STAR 故事（故事都是完整段落），
-# 输出量跟单职位准备材料差不多，同样不能用默认的 4096。
-BANK_MAX_TOKENS = 8192
+# 同 PREP_MAX_TOKENS：不设上限，理由见上面那条注释。
+BANK_MAX_TOKENS = None
 
-BANK_PROMPT = """你是一个资深的面试辅导教练，帮候选人准备**跨公司通用**的面试答案库
+# 起草和对话改写共用的写作规范。抽成常量是为了让"AI 起草出来的答案"和"跟 AI 聊完改写出来的
+# 答案"长一个样——两边各写一份的话，聊几轮之后答案的结构就会跟题库里其它条目对不上。
+_BANK_ANSWER_RULES = """- **中英文各一版**：`answer_zh` 是中文版，`answer_en` 是面向外企面试的
+  自然英文表达（按英文母语者的说法组织，不是中文版的逐字直译，允许两版详略略有不同）。
+- **必须分段**：答案不能是一整坨。段落之间空一行，在 JSON 字符串里就是写成 `\\n\\n`
+  （JSON 里的换行必须用 `\\n` 转义，绝对不能直接敲真实换行，否则整段 JSON 解析不了）。
+- **不能编造**：所有答案必须基于简历里真实存在的经历和数据，不能编造未发生的经历、
+  不能夸大数据。简历信息不足以支撑某道题时，在答案里如实留出待补充的部分
+  （用「（此处需你补充：…）」标注），不要虚构。
+- 除了 `answer_en` 之外，其余内容一律用中文；公司名、产品名、技术/工具名等专有名词保留英文原文。"""
+
+# 三份起草 prompt 共用的开头（简历 + 目标岗位 + 已有题目）。
+_BANK_HEADER = """你是一个资深的面试辅导教练，帮候选人准备**跨公司通用**的面试答案库
 （不针对某一家具体公司，是每场面试都用得上的那些标准问题）。
 
 ## 候选人简历原文（每行前面的 [数字] 是段落索引，忽略即可，不要在输出里保留）：
@@ -181,75 +194,386 @@ BANK_PROMPT = """你是一个资深的面试辅导教练，帮候选人准备**�
 ## 候选人正在找的岗位方向
 {target_roles}
 
+## 这一类里题库已经有的题目
+{existing_block}
+"""
+
+# 复用已有措辞的约束。只保留"照抄原文"这一条——原来还有一条"必须抄同一个类别下的那一条"，
+# 是单次调用同时出三类题时模型串类别才需要的；现在一次调用只出一类，模型压根看不到别的
+# 类别的题目，那条约束没有存在意义了。
+_BANK_REUSE_RULE = """- **你要出的题只要跟上面「题库已经有的题目」是同一个意思，`question` 就必须
+  一字不差地照抄那一条的原文**（连标点、空格、有没有句号、有没有"你"字都不能改）。系统靠问题
+  文字判断这是不是同一道题，措辞变一点就会被当成新题、在题库里堆出两条意思重复的。真正的新题
+  才自己起标题。"""
+
+BANK_INTRO_PROMPT = _BANK_HEADER + """
 ## 任务
+写一段 60-90 秒口播的自我介绍。结构分三段：
 
-1. **self_intro 自我介绍**：写一段 60-90 秒口播的自我介绍（`zh` 中文版 + `en` 英文版，
-   英文版是面向外企面试的自然英文表达，不是中文版的逐字直译）。结构：当前角色和年限 →
-   最能代表能力的 1-2 段经历（带具体成果数据）→ 为什么在看上面这个方向的机会。
-   要口语化、能念出来，不要写成书面简历摘要。
+1. 当前角色、年限、擅长的方向
+2. 最能代表能力的 1-2 段经历，带具体成果数据
+3. 为什么在看上面那个方向的机会
 
-2. **items 通用问题**：8-12 道几乎每场面试都会遇到的通用问题，结合这份简历给出候选人
-   自己的答案（不是通用模板套话）。要覆盖这些方向（可按简历情况增减）：
-   为什么离开上一家 / 为什么想来这个方向 / 未来3-5年职业规划 / 最大的优势 /
-   最大的短板 / 讲一次失败或做错的决策 / 你怎么定义这个岗位做得好 / 期望薪资怎么谈 /
-   还有哪些在看的机会。
-   答案要具体到简历里的真实经历，长度控制在口头回答 60-90 秒的量。
-
-3. **star_stories 核心故事库**：从简历里提炼 3-5 个可以反复复用的完整故事，用
-   情境 → 任务 → 行动 → 结果 的结构完整写出来（每个故事一段完整的话，不是要点）。
-   尽量覆盖不同类型：从0到1做成一件事 / 推动跨部门协作或说服他人 / 处理冲突或危机 /
-   数据驱动的决策 / 一次失败和从中学到什么。
-   `question` 字段写"面试官通常会用什么问题引出这个故事"，`answer` 写故事本身。
+要口语化、能直接念出来，不要写成书面的简历摘要。
 
 ## 硬性约束
-- 全部用中文输出（只有 self_intro 的 `en` 字段是英文）。
-- **所有答案必须基于简历里真实存在的经历和数据，不能编造未发生的经历、不能夸大数据。**
-  简历信息不足以支撑某道题时，答案里如实留出待用户补充的部分（用「（此处需你补充：…）」标注），
-  不要虚构。
+{answer_rules}
 
 ## 输出格式
 只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
 {{
-  "self_intro": {{"zh": "...", "en": "..."}},
-  "items": [{{"question": "为什么离开上一家？", "answer": "..."}}],
-  "star_stories": [{{"question": "讲一个你从0到1做成一件事的例子", "answer": "..."}}]
+  "answer_zh": "第一段…\\n\\n第二段…\\n\\n第三段…",
+  "answer_en": "First paragraph…\\n\\nSecond paragraph…\\n\\nThird paragraph…"
 }}
 """
 
+BANK_COMMON_PROMPT = _BANK_HEADER + """
+## 任务
+出 8-12 道几乎每场面试都会遇到的通用问题，结合这份简历给出候选人**自己的**答案
+（不是通用模板套话）。要覆盖这些方向（可按简历情况增减）：
+为什么离开上一家 / 为什么想来这个方向 / 未来3-5年职业规划 / 最大的优势 / 最大的短板 /
+讲一次失败或做错的决策 / 你怎么定义这个岗位做得好 / 期望薪资怎么谈 / 还有哪些在看的机会。
+
+每道题的答案分 2-4 段：第一段先把结论或态度说清楚，后面几段展开具体经历和数据。
+整体长度控制在口头回答 60-90 秒的量。
+
+## 硬性约束
+{answer_rules}
+{reuse_rule}
+
+## 输出格式
+只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
+{{
+  "items": [
+    {{"question": "为什么离开上一家？", "answer_zh": "…\\n\\n…", "answer_en": "…\\n\\n…"}}
+  ]
+}}
+"""
+
+BANK_STAR_PROMPT = _BANK_HEADER + """
+## 任务
+从简历里提炼 3-5 个可以反复复用的完整故事。尽量覆盖不同类型：从0到1做成一件事 /
+推动跨部门协作或说服他人 / 处理冲突或危机 / 数据驱动的决策 / 一次失败和从中学到什么。
+
+`question` 写"面试官通常会用什么问题引出这个故事"，答案写故事本身。
+
+每个故事**固定分成四段**，每段以下面的标签开头：
+- 中文版：「情境：」「任务：」「行动：」「结果：」
+- 英文版：`Situation:` `Task:` `Action:` `Result:`
+
+结果那一段尽量落到简历里真实存在的数据上。
+
+## 硬性约束
+{answer_rules}
+{reuse_rule}
+
+## 输出格式
+只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
+{{
+  "items": [
+    {{"question": "讲一个你从0到1做成一件事的例子",
+      "answer_zh": "情境：…\\n\\n任务：…\\n\\n行动：…\\n\\n结果：…",
+      "answer_en": "Situation: …\\n\\nTask: …\\n\\nAction: …\\n\\nResult: …"}}
+  ]
+}}
+"""
+
+# 起草分三次调用，一次只出一个类别。这么拆的原因见 spec/tech-solution.md：双语+分段之后
+# 单次输出量会翻倍，一次性出完容易顶到 max_tokens 上限被截断；分开跑还有两个好处——
+# 一段失败不影响另外两段，而且每段跑完能立刻入库让用户看到进度（见 pipeline.generate_bank_draft）。
+BANK_SECTIONS = (
+    {"key": "self_intro", "label": "自我介绍", "prompt": BANK_INTRO_PROMPT},
+    {"key": "common", "label": "通用问题", "prompt": BANK_COMMON_PROMPT},
+    {"key": "star_story", "label": "STAR 故事库", "prompt": BANK_STAR_PROMPT},
+)
+
 SELF_INTRO_QUESTION = "自我介绍（60-90秒）"
 
+_NO_EXISTING = "（题库现在是空的，这是第一次起草，下面那条「照抄原文」的约束不用管。）"
 
-def generate_bank(resume_text, target_roles=None, model=None, provider="anthropic"):
-    """生成通用题库初稿。返回可以直接喂给 models.replace_ai_bank_items() 的扁平列表
-    [{category, question, answer, answer_en}]——三种 category 在 prompt 输出里是三个
-    不同形状的字段，这里统一拍平，让存储层只认一种结构。"""
+# 喂回给 prompt 时每个 category 的标题，要跟"任务"那三段的字段名对得上，模型才知道
+# 哪一条属于哪个字段。
+_BANK_CATEGORY_LABELS = (
+    ("self_intro", "self_intro 自我介绍"),
+    ("common", "items 通用问题"),
+    ("star_story", "star_stories 核心故事库"),
+)
+
+
+def build_existing_block(items):
+    """把题库里已有的问题**按类别分组**列成一段喂给 prompt。
+
+    为什么要喂回去：合并是按问题文字判重的（见 models.replace_ai_bank_items），而模型每次
+    自己起的标题都不一样——「为什么离开上一家？」下一轮就写成「为什么离开上一家 / 这次为什么
+    想看外部机会？」，归一化也救不了这种改写，结果"补充新题"变成"堆重复题"。把已有题目连
+    原文措辞一起给它看、让它复用，是唯一能从源头解决改写的办法。
+
+    为什么要分组：实测只给一个不分类别的大列表时，模型会**串类别**——把 common 里那条
+    「讲一次你失败或做错决策的经历。」的措辞拿去当 star_story 的标题，同时给 common 另起
+    一个「讲一次失败或做错决策的经历。」（少一个"你"），于是两个类别各多出一条重复。
+    "失败/做错决策"这道题本来就同时存在于通用题和故事库里，不告诉它哪条属于哪个字段，
+    它就只能猜。
+
+    items 接受 [{category, question}]（直接喂 models.list_bank_items() 的结果即可）。
+    """
+    grouped = {}
+    for it in items or []:
+        q = ((it.get("question") if isinstance(it, dict) else it) or "").strip()
+        cat = it.get("category") if isinstance(it, dict) else None
+        if q:
+            grouped.setdefault(cat, [])
+            if q not in grouped[cat]:
+                grouped[cat].append(q)
+
+    parts = []
+    for key, label in _BANK_CATEGORY_LABELS:
+        if grouped.get(key):
+            parts.append(f"【{label}】\n" + "\n".join(f"- {q}" for q in grouped[key]))
+    # 兜底：category 不在已知三类里的（理论上不会有），单独列出来别丢了
+    for key, qs in grouped.items():
+        if key not in dict(_BANK_CATEGORY_LABELS) and qs:
+            parts.append("【其它】\n" + "\n".join(f"- {q}" for q in qs))
+    return "\n\n".join(parts) if parts else _NO_EXISTING
+
+
+def _format_roles(target_roles):
+    return "、".join(r for r in (target_roles or []) if r) or "（未指定，请从简历本身推断）"
+
+
+def get_bank_section(section_key):
+    for section in BANK_SECTIONS:
+        if section["key"] == section_key:
+            return section
+    raise RuntimeError(f"未知的题库类别：{section_key}")
+
+
+def generate_bank_section(
+    section_key, resume_text, target_roles=None, existing_items=None, model=None, provider="anthropic"
+):
+    """起草**一个类别**的题库条目。返回可以直接喂给 models.replace_ai_bank_items() 的扁平
+    列表 [{category, question, answer, answer_en}]——自我介绍在 prompt 输出里是单个对象、
+    另外两类是数组，这里统一拍平，让存储层只认一种结构。
+
+    existing_items 应该只传**这个类别**已有的条目（调用方过滤好），用来让模型复用已有措辞、
+    不要每轮换个说法（见 build_existing_block）。
+    """
     if not resume_text:
         raise RuntimeError("未能读取基础简历文件，请确认 config.json 中 base_resume_path 是否正确。")
 
-    roles = "、".join(r for r in (target_roles or []) if r) or "（未指定，请从简历本身推断）"
-    prompt = BANK_PROMPT.format(resume_text=resume_text, target_roles=roles)
+    section = get_bank_section(section_key)
+    prompt = section["prompt"].format(
+        resume_text=resume_text,
+        target_roles=_format_roles(target_roles),
+        existing_block=build_existing_block(existing_items),
+        answer_rules=_BANK_ANSWER_RULES,
+        reuse_rule=_BANK_REUSE_RULE,
+    )
     result = llm.ask_json(prompt, provider=provider, model=model, max_tokens=BANK_MAX_TOKENS)
     if not isinstance(result, dict):
-        raise RuntimeError("LLM 返回的题库内容格式不对，请重试一次。")
+        raise RuntimeError(f"LLM 返回的「{section['label']}」内容格式不对，请重试一次。")
 
     items = []
-    intro = result.get("self_intro") or {}
-    if intro.get("zh") or intro.get("en"):
-        items.append(
-            {
-                "category": "self_intro",
-                "question": SELF_INTRO_QUESTION,
-                "answer": intro.get("zh"),
-                "answer_en": intro.get("en"),
-            }
-        )
-    for it in result.get("items") or []:
-        if (it.get("question") or "").strip():
-            items.append({"category": "common", "question": it["question"].strip(), "answer": it.get("answer")})
-    for st in result.get("star_stories") or []:
-        if (st.get("question") or "").strip():
-            items.append({"category": "star_story", "question": st["question"].strip(), "answer": st.get("answer")})
+    if section_key == "self_intro":
+        if result.get("answer_zh") or result.get("answer_en"):
+            items.append(
+                {
+                    "category": "self_intro",
+                    "question": SELF_INTRO_QUESTION,
+                    "answer": result.get("answer_zh"),
+                    "answer_en": result.get("answer_en"),
+                }
+            )
+    else:
+        for it in result.get("items") or []:
+            question = (it.get("question") or "").strip()
+            if question:
+                items.append(
+                    {
+                        "category": section_key,
+                        "question": question,
+                        "answer": it.get("answer_zh"),
+                        "answer_en": it.get("answer_en"),
+                    }
+                )
 
     if not items:
-        raise RuntimeError("LLM 没有返回任何题库内容，请重试一次。")
+        raise RuntimeError(f"LLM 没有返回任何「{section['label']}」内容，请重试一次。")
     return items
+
+
+# ------------------------------------------------------- 题库：跟 AI 对话完善答案
+
+# 对话是同步返回的（不像起草那样后台跑 + 轮询）：单轮只改一道题的一个语言版本，输出量比
+# 起草小一个数量级，等待在十几秒到一分钟量级，再套一层后台线程 + 状态轮询是过度设计。
+BANK_CHAT_MAX_TOKENS = None
+
+# 前端不落库、每轮把完整历史发回来，所以这里必须自己设上限，否则聊得越久 token 烧得越多。
+BANK_CHAT_HISTORY_LIMIT = 20
+
+_LANG_LABELS = {"zh": "中文版", "en": "英文版（English）"}
+
+BANK_CHAT_SYSTEM = """你是一个资深的面试辅导教练，正在陪候选人逐字打磨面试题库里的**某一道题**的答案。
+
+## 候选人简历原文（每行前面的 [数字] 是段落索引，忽略即可，不要在输出里保留）：
+{resume_text}
+
+## 候选人正在找的岗位方向
+{target_roles}
+
+## 正在打磨的题目
+{question}
+
+## 这道题当前的{lang_label}答案
+{current_answer}
+
+## 你的工作方式
+- 候选人会告诉你哪里不满意（太长、太空、想突出某段经历、想换个角度…）。你要**改写整版答案**，
+  而不是只给零散建议——他会一键把你给的版本替换进去。
+- 每轮都基于「当前答案」和之前几轮的共识来改，不要推翻重来，也不要把上一轮已经改好的地方改回去。
+- 这一轮只需要改**{lang_label}**这一版，不要输出另一种语言的版本。
+- 如果候选人这轮只是在问问题、或者你认为不需要改动，就把 `answer` 给 null，只在 `reply` 里回答他。
+
+## 硬性约束
+- **必须分段**：段落之间空一行，在 JSON 字符串里写成 `\\n\\n`（JSON 里的换行必须用 `\\n` 转义，
+  绝对不能直接敲真实换行，否则整段 JSON 解析不了）。
+- **不能编造**：只能用简历里真实存在的经历和数据，不能编造未发生的经历、不能夸大数据。
+  需要候选人自己补充的信息，用「（此处需你补充：…）」标注出来问他，不要替他虚构。
+- 英文版要写成英文母语者的自然表达，不是中文的逐字直译。
+- `reply` 用中文写，一到两句话说清这轮改了什么、为什么这么改。
+
+## 输出格式
+只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
+{{
+  "reply": "把开头的背景压成一句，把三个结果数据提到前面，整体从 100 秒压到 70 秒左右。",
+  "answer": "改写后的完整答案…\\n\\n…（不需要改写时给 null）"
+}}
+"""
+
+BANK_ASSISTANT_SYSTEM = """你是一个资深的面试辅导教练，正在帮候选人**整体检查**他的通用面试题库。
+
+## 候选人简历原文（每行前面的 [数字] 是段落索引，忽略即可，不要在输出里保留）：
+{resume_text}
+
+## 候选人正在找的岗位方向
+{target_roles}
+
+## 题库现状（每条答案可能被截断，够你判断即可）
+{bank_block}
+
+## 你的工作方式
+你负责的是**跨题目的诊断**，典型问题：几个 STAR 故事是不是在讲同一件事、覆盖面缺哪一类
+（比如没有"处理冲突"的故事）、哪几道题答得空洞没有数据、自我介绍和通用题的说法有没有互相打架、
+按他找的岗位方向还缺哪些常见题。
+
+**你不负责改写具体答案**。需要动某一道题时，明确点出是哪一道题（用题目原文），告诉他去那道题
+自己的对话框里改——那边的教练看得到完整答案，改出来的版本可以一键替换。
+
+## 硬性约束
+- 只能基于上面的简历和题库现状判断，不要编造候选人没有的经历。
+- 用中文回答，说话直接、给具体的下一步动作，不要写成泛泛的鼓励。
+
+## 输出格式
+只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
+{{"reply": "你的诊断和建议"}}
+"""
+
+_EMPTY_ANSWER = "（这道题现在还没有答案，需要你从零帮他写一版。）"
+
+
+def sanitize_chat_history(history):
+    """把前端传来的对话历史洗成 llm.chat() 能吃的样子。
+
+    对话不落库、每轮由前端把完整历史发回来，所以这里既要防脏数据（角色写错、content 不是
+    字符串），也要卡长度——聊得越久历史越长，不截断的话 token 会一路涨上去。只留最后
+    BANK_CHAT_HISTORY_LIMIT 条：面试答案的打磨基本都在最近几轮里收敛，更早的上下文
+    在 system prompt 里的「当前答案」中已经体现了。
+    """
+    clean = []
+    for msg in history or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            clean.append({"role": role, "content": content})
+    return clean[-BANK_CHAT_HISTORY_LIMIT:]
+
+
+def _chat(system, history, message, model, provider):
+    messages = sanitize_chat_history(history) + [{"role": "user", "content": message}]
+    result = llm.chat_json(
+        messages, provider=provider, model=model, system=system, max_tokens=BANK_CHAT_MAX_TOKENS
+    )
+    if not isinstance(result, dict) or not (result.get("reply") or "").strip():
+        raise RuntimeError("LLM 返回的对话内容不完整（缺少 reply），请再说一次。")
+    return result
+
+
+def chat_bank_answer(
+    question,
+    current_answer,
+    lang,
+    message,
+    history=None,
+    resume_text=None,
+    target_roles=None,
+    model=None,
+    provider="anthropic",
+):
+    """陪聊一轮，返回 {"reply": str, "answer": str|None}。
+
+    answer 为 None 表示这轮没有给出新版本（候选人只是在问问题，或者教练认为不用改），
+    前端据此决定要不要显示「用这版替换答案」按钮。
+    """
+    if lang not in _LANG_LABELS:
+        raise RuntimeError(f"不支持的语言：{lang}（只能是 zh 或 en）")
+    if not resume_text:
+        raise RuntimeError("未能读取基础简历文件，请确认 config.json 中 base_resume_path 是否正确。")
+
+    system = BANK_CHAT_SYSTEM.format(
+        resume_text=resume_text,
+        target_roles=_format_roles(target_roles),
+        question=question,
+        lang_label=_LANG_LABELS[lang],
+        current_answer=(current_answer or "").strip() or _EMPTY_ANSWER,
+    )
+    result = _chat(system, history, message, model, provider)
+    answer = result.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        answer = None
+    return {"reply": result["reply"], "answer": answer}
+
+
+def build_bank_block(items, answer_limit=500):
+    """把整个题库压成一段喂给全局助手。答案截断是为了控制 token——助手做的是跨题诊断
+    （故事重不重复、覆盖面缺什么），看开头几百字足够判断，不需要每条都读全。"""
+    parts = []
+    for key, label in _BANK_CATEGORY_LABELS:
+        rows = [i for i in (items or []) if i.get("category") == key]
+        if not rows:
+            continue
+        lines = []
+        for row in rows:
+            answer = (row.get("answer") or "").strip() or "（还没有答案）"
+            if len(answer) > answer_limit:
+                answer = answer[:answer_limit] + "…（已截断）"
+            lines.append(f"- 【题】{row.get('question', '')}\n  【答】{answer}")
+        parts.append(f"【{label}】\n" + "\n".join(lines))
+    return "\n\n".join(parts) if parts else "（题库现在是空的。）"
+
+
+def chat_bank_assistant(
+    bank_items, message, history=None, resume_text=None, target_roles=None, model=None, provider="anthropic"
+):
+    """全局题库助手：只做跨题诊断，不改写具体答案（改写走 chat_bank_answer）。
+    返回 {"reply": str}——刻意不带 answer 字段，前端也就不会出现"采用"按钮。"""
+    if not resume_text:
+        raise RuntimeError("未能读取基础简历文件，请确认 config.json 中 base_resume_path 是否正确。")
+
+    system = BANK_ASSISTANT_SYSTEM.format(
+        resume_text=resume_text,
+        target_roles=_format_roles(target_roles),
+        bank_block=build_bank_block(bank_items),
+    )
+    result = _chat(system, history, message, model, provider)
+    return {"reply": result["reply"]}

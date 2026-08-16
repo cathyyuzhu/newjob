@@ -25,6 +25,7 @@ from job_state import (
 from models import (
     get_job,
     insert_interview_prep,
+    list_bank_items,
     list_jobs_missing_company_origin,
     list_jobs_missing_jd,
     list_jobs_needing_analysis,
@@ -411,10 +412,62 @@ def generate_interview_prep_safe(job_id, round_label=None):
     try:
         return generate_interview_prep(job_id, round_label=round_label)
     except Exception as e:
-        insert_interview_prep(job_id, error=str(e), round_label=round_label)
+        # 失败行也记下 provider/model：排查"是不是换了个模型才开始炸"这类问题时，
+        # 光有错误信息不够，得知道当时用的是谁。
+        provider, model = llm.resolve(load_config())
+        insert_interview_prep(
+            job_id, error=str(e), round_label=round_label, provider=provider, model=model
+        )
         raise
     finally:
         finish_interview_prep(job_id)
+
+
+def _bank_context():
+    """题库相关的三个入口（起草 / 每题对话 / 全局助手）都要的同一套上下文：
+    简历原文、目标岗位方向、provider+model。抽出来免得三处各抄一遍解析逻辑。"""
+    cfg = load_config()
+    base_resume_path = cfg.get("base_resume_path") or os.path.expanduser(
+        "~/Downloads/Cathy_Yang_Resume_EN_AI.docx"
+    )
+    provider, model = llm.resolve(cfg)
+    # 找工作的方向直接用搜索关键词——用户搜什么岗位就是在准备什么岗位的面试，
+    # 不额外加一个配置项让用户填第二遍。
+    return read_resume_text(base_resume_path), cfg.get("keywords"), provider, model
+
+
+def chat_bank_answer(item, lang, message, history=None):
+    """跟 AI 聊一轮、打磨某一道题的答案。同步返回 {"reply", "answer"}。
+
+    刻意**不写库**：AI 给的改写版只是候选，用户在页面上点「采用」再点「保存」才会落库。
+    这样聊崩了也不会毁掉已经写好的答案。
+    """
+    resume_text, target_roles, provider, model = _bank_context()
+    return interview.chat_bank_answer(
+        item["question"],
+        item["answer_en"] if lang == "en" else item["answer"],
+        lang,
+        message,
+        history=history,
+        resume_text=resume_text,
+        target_roles=target_roles,
+        model=model,
+        provider=provider,
+    )
+
+
+def chat_bank_assistant(message, history=None):
+    """全局题库助手：看整个题库做跨题诊断，返回 {"reply"}。同样不写库。"""
+    resume_text, target_roles, provider, model = _bank_context()
+    return interview.chat_bank_assistant(
+        list_bank_items(),
+        message,
+        history=history,
+        resume_text=resume_text,
+        target_roles=target_roles,
+        model=model,
+        provider=provider,
+    )
 
 
 def generate_bank_draft():
@@ -422,16 +475,41 @@ def generate_bank_draft():
 
     调用方（app.py）负责先用 job_state.start_bank_generation() 抢占，跑完
     finish_bank_generation()——起草是全局单例操作，不像面试准备那样按职位区分。
-    返回 replace_ai_bank_items() 的统计（新增/更新/因用户改过而跳过各多少条）。"""
-    cfg = load_config()
-    base_resume_path = cfg.get("base_resume_path") or os.path.expanduser(
-        "~/Downloads/Cathy_Yang_Resume_EN_AI.docx"
-    )
-    resume_text = read_resume_text(base_resume_path)
-    provider, model = llm.resolve(cfg)
-    # 找工作的方向直接用搜索关键词——用户搜什么岗位就是在准备什么岗位的面试，
-    # 不额外加一个配置项让用户填第二遍。
-    items = interview.generate_bank(
-        resume_text, target_roles=cfg.get("keywords"), model=model, provider=provider
-    )
-    return replace_ai_bank_items(items)
+
+    三个类别（自我介绍 / 通用问题 / STAR 故事库）**分三次调用 LLM、每段跑完立刻入库**：
+    - 分三次是因为答案改成中英双语 + 分段之后，一次性出完的输出量会顶到 max_tokens 上限
+      被截断（见 interview.BANK_SECTIONS 上面的注释）；
+    - 每段单独入库是为了让前端 5 秒一次的轮询能看到题库一段一段填出来，而不是干等
+      5-10 分钟什么都没有；
+    - 一段炸了不影响另外两段，失败原因收进 failed_sections 一起返回给调用方去提示用户。
+
+    返回 {"updated","added","skipped","failed_sections"}。三段全失败时抛异常，
+    让 app.py 走原来那条"起草失败"的路径。
+    """
+    resume_text, target_roles, provider, model = _bank_context()
+
+    stats = {"updated": 0, "added": 0, "skipped": 0, "failed_sections": []}
+    for section in interview.BANK_SECTIONS:
+        key = section["key"]
+        try:
+            items = interview.generate_bank_section(
+                key,
+                resume_text,
+                target_roles=target_roles,
+                # 把这一类已有的题目原文喂回去，让模型复用措辞、只补真正的新题。少了这一步，
+                # 重新起草会因为模型换了说法而堆出一批意思重复的题（实测 16 条能变 28 条）。
+                # 每轮重新查一次库：前一段刚写进去的内容要对后一段可见。
+                existing_items=[i for i in list_bank_items() if i["category"] == key],
+                model=model,
+                provider=provider,
+            )
+            merged = replace_ai_bank_items(items)
+            for k in ("updated", "added", "skipped"):
+                stats[k] += merged[k]
+        except Exception as e:
+            logging.exception("interview bank section %s failed", key)
+            stats["failed_sections"].append(f"{section['label']}：{e}")
+
+    if len(stats["failed_sections"]) == len(interview.BANK_SECTIONS):
+        raise RuntimeError("；".join(stats["failed_sections"]))
+    return stats
