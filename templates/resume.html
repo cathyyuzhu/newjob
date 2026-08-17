@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>我的简历</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app-shell">
+
+  <header class="topbar">
+    <div class="brand">
+      <div>
+        <h1>我的简历</h1>
+        <div class="sub">整个应用只认这一份简历：匹配分析、面试准备、题库起草读的都是它</div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <select class="model-select" id="reviewModelSelect" title="简历体检用哪个模型"
+        onchange="setTaskModel('resume_review', this.value, this)"></select>
+      <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- 四块都由 resume.js 渲染进来，模板只留容器：内容形态差别很大（未上传时是一个
+       大的上传引导，上传后是文件信息卡），写死在模板里反而要靠 display:none 来回切 -->
+  <section id="resumeFileCard"></section>
+  <section id="resumeReviewCard"></section>
+  <section id="resumeEditsCard"></section>
+  <section id="tailoredCard"></section>
+
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="/static/common.js"></script>
+<script src="/static/resume.js"></script>
+</body>
+</html>

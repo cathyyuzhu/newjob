@@ -43,6 +43,24 @@ def request_stop():
         _queued_ids.clear()
 
 
+def discard_job(job_id):
+    """把单条职位标成"结果作废"，用于用户在这条职位正在分析时把它标记成"已忽略"。
+
+    跟 request_stop() 的区别就是这个函数刻意不做的两件事：不设 _stop_event、不清空
+    _queued_ids。用户忽略的是这一条职位，不是整批——排在后面的职位应该照常轮到、照常
+    分析。分析循环（pipeline.analyze_pending_jobs）跑完当前这条后会 continue 到下一条，
+    而当前这条的LLM结果会在 analyze_and_record() 里的 should_discard() 检查处被丢掉
+    （不写库/不写追踪表/不生成简历），跟没跑过一样。
+
+    正在跑的那次LLM调用本身没法中断（同步阻塞的HTTP请求，钱也已经花出去了），这里只
+    保证结果不落地；同时立刻把它从 _analyzing_ids/_queued_ids 里摘掉，前端下一次刷新
+    就不会再看到这条职位挂着"AI分析中…"。"""
+    with _lock:
+        _discard_ids.add(job_id)
+        _analyzing_ids.discard(job_id)
+        _queued_ids.discard(job_id)
+
+
 def stop_requested():
     return _stop_event.is_set()
 
@@ -116,6 +134,75 @@ def get_states():
     with _lock:
         states = {jid: "queued" for jid in _queued_ids}
         states.update({jid: "analyzing" for jid in _analyzing_ids})
+        return states
+
+
+# 定制简历 + Cover Letter 生成的进程内状态。跟上面的 queued/analyzing 完全同构（一个
+# 排队集合 + 一个"当前正在跑哪条" + 一个停止标志），但刻意分开两套：材料生成从AI匹配
+# 分析里拆出来之后（用户点按钮才生成，见 pipeline.generate_materials_for_job），两件事
+# 可以同时在跑——一批职位在后台分析的同时，用户完全可能对另一条已分析完的职位点"生成
+# 材料"。共用同一组状态会让前端分不清某条职位到底是在分析还是在生成材料，"停止"也会
+# 互相误伤。
+_materials_queued_ids = set()
+_materials_current_id = None
+_materials_stop_event = threading.Event()
+
+
+def request_materials_stop():
+    """批量生成材料的"停止"。跟 request_stop() 一样，正在跑的那一条没法中断，但不同的是
+    这里不做"事后丢弃"——材料生成是用户明确点出来的，那条已经花掉的钱换回来的简历/cover
+    letter 留着总比扔掉有用，用户不想要直接重新生成就行。"""
+    _materials_stop_event.set()
+    with _lock:
+        _materials_queued_ids.clear()
+
+
+def materials_stop_requested():
+    return _materials_stop_event.is_set()
+
+
+def reset_materials_stop():
+    _materials_stop_event.clear()
+
+
+def mark_materials_queued(job_ids):
+    with _lock:
+        _materials_queued_ids.update(job_ids)
+
+
+def clear_materials_queued(job_ids):
+    with _lock:
+        _materials_queued_ids.difference_update(job_ids)
+
+
+def start_materials(job_id):
+    global _materials_current_id
+    with _lock:
+        _materials_queued_ids.discard(job_id)
+        _materials_current_id = job_id
+
+
+def finish_materials(job_id):
+    global _materials_current_id
+    with _lock:
+        if _materials_current_id == job_id:
+            _materials_current_id = None
+        _materials_queued_ids.discard(job_id)
+
+
+def materials_in_progress(job_id):
+    """这条职位是不是已经有一次材料生成在跑/在排队了——用于挡住重复点击（单条按钮
+    和批量按钮可能撞在一起，重复跑除了浪费钱还会两次写同一个docx文件）。"""
+    with _lock:
+        return job_id == _materials_current_id or job_id in _materials_queued_ids
+
+
+def get_materials_states():
+    """返回 {job_id: 'queued' | 'generating'}，供 /api/jobs 附带给前端。"""
+    with _lock:
+        states = {jid: "queued" for jid in _materials_queued_ids}
+        if _materials_current_id is not None:
+            states[_materials_current_id] = "generating"
         return states
 
 

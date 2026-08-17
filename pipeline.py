@@ -1,30 +1,42 @@
+import json
 import logging
 import os
 import time
 from datetime import date
 
 import interview
+import job_chat
 import llm
-from analyzer import analyze_job, classify_companies
+import resume_review
+import resume_store
+from analyzer import analyze_job, classify_companies, generate_materials
 from config import load_config
 from job_state import (
     clear_batch_current,
     clear_discard,
+    clear_materials_queued,
     clear_queued,
     finish_analyzing,
     finish_interview_prep,
+    finish_materials,
     in_progress_ids,
+    mark_materials_queued,
     mark_queued,
+    materials_in_progress,
+    materials_stop_requested,
+    reset_materials_stop,
     reset_stop,
     set_batch_current,
     should_discard,
     start_analyzing,
     start_interview_prep,
+    start_materials,
     stop_requested,
 )
 from models import (
     get_job,
     insert_interview_prep,
+    insert_resume_review,
     list_bank_items,
     list_jobs_missing_company_origin,
     list_jobs_missing_jd,
@@ -35,12 +47,13 @@ from models import (
     update_job_company_origin,
     update_job_error,
     update_job_jd_text,
+    update_job_materials,
 )
 from relevance import title_looks_relevant as _title_looks_relevant
 from relevance import location_looks_relevant as _location_looks_relevant
 from resume_docx import read_resume_text, write_tailored_resume
 from scraper import refetch_job_jd
-from tracker_utils import add_entry, list_entries
+from tracker_utils import add_entry, list_entries, update_entry_fields
 
 JD_MISSING_ERROR = "未获取到JD正文，已跳过AI分析（可点击「重新获取」重试抓取）"
 
@@ -59,14 +72,12 @@ def analyze_and_record(job_id):
         raise ValueError(JD_MISSING_ERROR)
 
     cfg = load_config()
-    base_resume_path = cfg.get("base_resume_path") or os.path.expanduser(
-        "~/Downloads/Cathy_Yang_Resume_EN_AI.docx"
-    )
+    base_resume_path = resume_store.require_base_resume()
     tracker_path = cfg.get("tracker_xlsx_path") or os.path.expanduser(
         "~/Downloads/JD匹配追踪表.xlsx"
     )
     resume_output_dir = cfg.get("resume_output_dir") or os.path.dirname(base_resume_path)
-    provider, model = llm.resolve(cfg)
+    provider, model = llm.resolve_task(cfg, "analysis")
 
     resume_text = read_resume_text(base_resume_path)
 
@@ -89,23 +100,17 @@ def analyze_and_record(job_id):
 
     overall = result["overall_match"]
     requirement_items = [(item["text"], bool(item["is_gap"])) for item in result.get("requirement_items", [])]
-
-    resume_path = None
-    cover_letter = result.get("cover_letter") or None
-    resume_bullets = result.get("resume_optimization_bullets") or None
     status = f"自动分析完成，匹配度{overall:.0%}"
 
-    if overall >= 0.7 and result.get("needs_customization") and result.get("resume_paragraph_edits"):
-        if resume_text is None:
-            status += "；匹配度达标但未找到基础简历文件，未生成定制简历"
-        else:
-            fname = f"Cathy_Yang_Resume_EN_{_safe_filename_part(job['company'])}_{_safe_filename_part(job['title'])[:40]}.docx"
-            resume_path = os.path.join(resume_output_dir, fname)
-            write_tailored_resume(base_resume_path, resume_path, result["resume_paragraph_edits"])
-    elif overall >= 0.7:
-        status += "；判定不需要生成定制简历"
-    else:
-        status += "；低于70%阈值，未自动生成简历"
+    # 定制简历 + cover letter 不再是分析的副产品（见 analyzer.py 顶部说明和
+    # generate_materials_for_job）——职位这会儿还在"待审核"，用户没决定要不要投，不该
+    # 顺手把材料生成的钱也花了。这里把库里已有的材料原样带回追踪表：add_entry() 会先删掉
+    # 同公司+职位的旧行再插入新行（见 tracker_utils.add_entry 的说明），不传的话，重新
+    # 跑一次分析会把之前用户点按钮生成好的简历/cover letter 从追踪表里连带抹掉。
+    resume_path = job.get("resume_path")
+    cover_letter = job.get("cover_letter")
+    resume_bullets_raw = job.get("resume_bullets")
+    resume_bullets = json.loads(resume_bullets_raw) if resume_bullets_raw else None
 
     add_entry(
         path=tracker_path,
@@ -136,6 +141,11 @@ def analyze_and_record(job_id):
 
 
 def analyze_and_record_safe(job_id):
+    # 开始之前先清一次丢弃标记：这条职位可能是在"排队中"（还没轮到分析）时被标记过
+    # 忽略——job_state.discard_job() 那时候会往 _discard_ids 里加一条，但这一轮分析
+    # 根本没跑起来，永远走不到本函数 finally 里的清理。留着不清的话，用户后来改主意、
+    # 对同一条职位手动点"AI 分析"，会莫名其妙被 should_discard() 当场丢弃结果。
+    clear_discard(job_id)
     start_analyzing(job_id)
     try:
         return analyze_and_record(job_id)
@@ -153,7 +163,7 @@ def analyze_and_record_safe(job_id):
         clear_discard(job_id)
 
 
-def queue_pending_jobs(job_ids=None, limit=None):
+def queue_pending_jobs(job_ids=None, limit=None, enforce_relevance=True):
     """筛选出一批需要自动分析的职位并标成"排队中"（见 job_state.mark_queued），不实际
     调用LLM——纯本地DB读取+内存操作，很快，特意跟真正的分析循环（analyze_pending_jobs）
     拆开，好让调用方（app.py 的 /api/search/run）能在HTTP请求线程里同步调用它，在响应
@@ -174,6 +184,10 @@ def queue_pending_jobs(job_ids=None, limit=None):
         所有还没分析成功过的职位——包括历史积压，用于程序启动时的一次性补跑（配合
         limit）或顶部"AI分析"按钮手动触发全量分析（不传 limit）。
     limit：最多排队几条，None 表示不限。
+    enforce_relevance：是否做上面那道标题/地点粗筛。默认做（自动搜索抓回来的东西鱼龙
+        混杂）；手动贴链接入库的职位传 False——那是用户自己一条条挑出来的，用当前搜索
+        关键词/城市去质疑它没有道理（贴一条深圳的岗、或者标题措辞跟关键词不沾边的岗，
+        粗筛会直接把它挡在分析之外，用户只会看到这条职位躺在待审核里永远没有匹配度）。
     返回待分析的职位（dict）列表，供调用方传给 analyze_pending_jobs 执行真正的分析。
 
     调用即代表"要开始一个新批次"，顺带把上一次可能残留的"停止分析"标志清掉（见
@@ -193,7 +207,8 @@ def queue_pending_jobs(job_ids=None, limit=None):
         j for j in candidates
         if j["id"] not in in_progress
         and (j.get("jd_text") or "").strip()
-        and _title_looks_relevant(j) and _location_looks_relevant(j, configured_locations)
+        and (not enforce_relevance
+             or (_title_looks_relevant(j) and _location_looks_relevant(j, configured_locations)))
     ]
     skipped = len(candidates) - len(relevant)
     if skipped:
@@ -231,7 +246,18 @@ def analyze_pending_jobs(job_ids=None, limit=None, jobs=None):
     to_analyze 是排队时的快照，一个批次（尤其是顶部"AI分析"按钮不限量的全量批次）
     可能要跑很久，轮到某条职位真正分析前，重新查一次它现在的状态——如果用户这段
     等待期间已经把它标记"已忽略"，就跳过、不再浪费一次LLM调用（已忽略的职位不需要
-    继续参与自动分析；用户如果后悔了，仍可以对着它手动点单条"AI 分析"）。"""
+    继续参与自动分析；用户如果后悔了，仍可以对着它手动点单条"AI 分析"）。
+
+    还没上传简历时直接返回 0，不排队也不报错：这个函数有三个调用方（HTTP 触发的后台
+    线程、程序启动时的积压补跑、每日定时任务），后两个没有用户守在屏幕前，让它们对着
+    几十条职位各抛一次"没有简历"只会刷满日志、并给每条职位盖上"分析失败"的红标。
+    真正需要提示用户的那条路径（前端点按钮）已经在 app.py 里先拦过并返回 need_resume 了。"""
+    if not resume_store.has_base_resume():
+        logging.info("skip auto-analyze: no base resume uploaded yet")
+        if jobs:
+            clear_queued([j["id"] for j in jobs])
+        return 0
+
     to_analyze = jobs if jobs is not None else queue_pending_jobs(job_ids=job_ids, limit=limit)
     analyzed = 0
     for i, job in enumerate(to_analyze):
@@ -281,7 +307,8 @@ def classify_company_origins(job_ids=None):
 
     companies = sorted({(j.get("company") or "").strip() for j in jobs if (j.get("company") or "").strip()})
     cfg = load_config()
-    provider, model = llm.resolve(cfg)
+    # 公司国籍分类跟着"匹配分析"那一档走：都是每条职位都要跑一次的批量活儿，成本优先。
+    provider, model = llm.resolve_task(cfg, "analysis")
 
     origin_by_company = {}
     for i in range(0, len(companies), _COMPANY_ORIGIN_BATCH_SIZE):
@@ -339,6 +366,159 @@ def refetch_missing_jd_jobs():
     return {"attempted": len(jobs), "refetched": refetched}
 
 
+# ---------------------------------------------------------------- 材料生成（定制简历 + Cover Letter）
+#
+# 从AI匹配分析里拆出来的独立一步：分析只回答"值不值得看"，这里回答"决定投了，材料
+# 怎么写"，由用户点按钮触发（单条 generate_materials_for_job，批量 generate_materials_batch），
+# 不再随匹配度自动触发。
+
+
+def generate_materials_for_job(job_id):
+    """给一条已经分析过的职位生成定制简历 + cover letter，写入 jobs 表和追踪表。
+    返回 {"resume_path", "cover_letter", "resume_bullets"}。"""
+    job = get_job(job_id)
+    if not job:
+        raise ValueError(f"job {job_id} not found")
+    if job.get("overall_match") is None:
+        # 材料生成要用到分析结论做参考（技能缺口等），还没分析过就点这个按钮，
+        # 用户大概率是搞混了流程；报错比默默跑一次"裸"生成更清楚。
+        raise ValueError("请先完成 AI 分析，再生成定制简历和 Cover Letter")
+    if not (job.get("jd_text") or "").strip():
+        raise ValueError(JD_MISSING_ERROR)
+
+    cfg = load_config()
+    base_resume_path = resume_store.require_base_resume()
+    resume_output_dir = cfg.get("resume_output_dir") or os.path.dirname(base_resume_path)
+    provider, model = llm.resolve_task(cfg, "materials")
+    resume_text = read_resume_text(base_resume_path)
+
+    analysis = find_tracker_entry(job["company"], job["title"])
+    analysis_context = _summarize_analysis_for_materials(analysis)
+
+    result = generate_materials(
+        company=job["company"],
+        title=job["title"],
+        jd_text=job.get("jd_text") or "",
+        resume_text=resume_text,
+        analysis_context=analysis_context,
+        model=model,
+        provider=provider,
+    )
+
+    resume_path = None
+    if result["needs_customization"] and result["resume_paragraph_edits"]:
+        fname = f"Cathy_Yang_Resume_EN_{_safe_filename_part(job['company'])}_{_safe_filename_part(job['title'])[:40]}.docx"
+        resume_path = os.path.join(resume_output_dir, fname)
+        write_tailored_resume(base_resume_path, resume_path, result["resume_paragraph_edits"])
+
+    cover_letter = result["cover_letter"]
+    resume_bullets = result["resume_optimization_bullets"] or None
+    resume_bullets_json = json.dumps(resume_bullets, ensure_ascii=False) if resume_bullets else None
+
+    update_job_materials(job_id, resume_path=resume_path, cover_letter=cover_letter, resume_bullets=resume_bullets_json)
+
+    # 追踪表是这条职位分析结论唯一的落地位置（jobs 表不存完整分析结果），材料生成完了
+    # 要同步过去，不然网页详情页和追踪表看到的是两份不一致的材料。找不到对应行不算失败——
+    # 追踪表可能被移走/改过路径，材料本身已经落库成功了（见 update_entry_fields 的说明）。
+    try:
+        tracker_path = cfg.get("tracker_xlsx_path") or os.path.expanduser("~/Downloads/JD匹配追踪表.xlsx")
+        update_entry_fields(
+            tracker_path,
+            company=job["company"],
+            job_title=job["title"],
+            resume_optimization_bullets=resume_bullets,
+            resume_path=resume_path,
+            cover_letter=cover_letter,
+        )
+    except Exception:
+        logging.exception("材料生成后同步追踪表失败（材料本身已经落库，不影响本次结果）")
+
+    return {"resume_path": resume_path, "cover_letter": cover_letter, "resume_bullets": resume_bullets}
+
+
+def _summarize_analysis_for_materials(analysis):
+    if not analysis:
+        return ""
+    parts = []
+    if analysis.get("skill_gap_bullets"):
+        parts.append("技能缺口：" + "；".join(analysis["skill_gap_bullets"]))
+    gaps = [i["text"] for i in (analysis.get("requirement_items") or []) if i.get("is_gap")]
+    if gaps:
+        parts.append("未达标的任职要求：" + "；".join(gaps))
+    return "\n".join(parts)
+
+
+def generate_materials_for_job_safe(job_id):
+    """带状态标记的外层包装（对应 analyze_and_record_safe 的角色）。失败不落库任何错误字段
+    ——材料生成失败不该影响这条职位已有的匹配分析结果，调用方（app.py）自己决定怎么提示。"""
+    start_materials(job_id)
+    try:
+        return generate_materials_for_job(job_id)
+    finally:
+        finish_materials(job_id)
+
+
+def generate_materials_batch(job_ids):
+    """批量生成材料，串行跑（同一份基础简历文件，并发写 docx 没有意义还容易踩踏）。
+    跟 analyze_pending_jobs 同一个结构：每条前检查停止标志、单条失败不中断整批。
+    已经生成过材料（resume_path 或 cover_letter 有值）的职位会被跳过，避免"批量生成"
+    在大范围筛选下把已经生成好的材料重新烧一遍钱——想重新生成用单条按钮的「重新生成」。
+    返回 {"generated", "skipped", "failed"}。"""
+    reset_materials_stop()
+    candidates = []
+    skipped = 0
+    for jid in job_ids:
+        job = get_job(jid)
+        if not job:
+            continue
+        if job.get("resume_path") or job.get("cover_letter"):
+            skipped += 1
+            continue
+        candidates.append(job)
+
+    mark_materials_queued([j["id"] for j in candidates])
+    generated = 0
+    failed = 0
+    for i, job in enumerate(candidates):
+        if materials_stop_requested():
+            clear_materials_queued([j["id"] for j in candidates[i:]])
+            break
+        current = get_job(job["id"])
+        if not current or current["status"] == "dismissed":
+            clear_materials_queued([job["id"]])
+            continue
+        try:
+            generate_materials_for_job_safe(job["id"])
+            generated += 1
+        except Exception:
+            logging.exception("batch materials generation failed for job %s", job["id"])
+            failed += 1
+    return {"generated": generated, "skipped": skipped, "failed": failed}
+
+
+# ---------------------------------------------------------------- 职位AI对话
+
+
+def chat_about_job(job_id, message, history=None):
+    """职位详情页的自由问答，同步返回一段回复文本。不落库——见 job_chat.py 顶部说明。
+    「记进备注」由前端拿到这段回复文本后，走通用的 POST /api/jobs/<id>/notes（source=chat）
+    存下来，不需要这里再单独包一个存储入口。"""
+    job = get_job(job_id)
+    if not job:
+        raise ValueError(f"job {job_id} not found")
+    cfg = load_config()
+    provider, model = llm.resolve_task(cfg, "job_chat")
+    resume_text = None
+    try:
+        resume_text = read_resume_text(resume_store.require_base_resume())
+    except Exception:
+        pass  # 没传简历也能聊，只是少了简历背景这层上下文
+    analysis = find_tracker_entry(job["company"], job["title"])
+    return job_chat.chat_about_job(
+        job, analysis, resume_text, message, history=history, model=model, provider=provider
+    )
+
+
 # ---------------------------------------------------------------- 面试准备
 
 
@@ -373,10 +553,8 @@ def generate_interview_prep(job_id, round_label=None):
         raise ValueError(JD_MISSING_ERROR)
 
     cfg = load_config()
-    base_resume_path = cfg.get("base_resume_path") or os.path.expanduser(
-        "~/Downloads/Cathy_Yang_Resume_EN_AI.docx"
-    )
-    provider, model = llm.resolve(cfg)
+    base_resume_path = resume_store.require_base_resume()
+    provider, model = llm.resolve_task(cfg, "interview_prep")
     resume_text = read_resume_text(base_resume_path)
 
     # 已有的匹配分析结论（任职要求逐条 is_gap、技能缺口、公司简介）作为输入，不重新解析JD
@@ -414,7 +592,7 @@ def generate_interview_prep_safe(job_id, round_label=None):
     except Exception as e:
         # 失败行也记下 provider/model：排查"是不是换了个模型才开始炸"这类问题时，
         # 光有错误信息不够，得知道当时用的是谁。
-        provider, model = llm.resolve(load_config())
+        provider, model = llm.resolve_task(load_config(), "interview_prep")
         insert_interview_prep(
             job_id, error=str(e), round_label=round_label, provider=provider, model=model
         )
@@ -423,14 +601,71 @@ def generate_interview_prep_safe(job_id, round_label=None):
         finish_interview_prep(job_id)
 
 
+# ---------------------------------------------------------------- 简历体检 / 优化版
+
+
+def run_resume_review():
+    """跑一次简历体检并落库，返回 {"review_id", "content", "fingerprint"}。
+
+    同步执行（不进 job_state 那套内存队列）：只有一次 LLM 调用，而且是用户在「我的简历」
+    页点一个按钮触发的、就守在那儿等结果——跟单条职位的 analyze_and_record 一样的形态，
+    不值得为它再引一套后台状态机。
+    """
+    base_resume_path = resume_store.require_base_resume()
+    cfg = load_config()
+    provider, model = llm.resolve_task(cfg, "resume_review")
+    fingerprint = resume_store.fingerprint(base_resume_path)
+    resume_text = read_resume_text(base_resume_path)
+
+    try:
+        content = resume_review.review_resume(
+            resume_text=resume_text,
+            # 跟 _bank_context() 同一个理由：搜什么岗位就是在往什么岗位改简历，
+            # 不额外加一个配置项让用户把目标方向填第二遍。
+            target_roles=cfg.get("keywords"),
+            model=model,
+            provider=provider,
+        )
+    except Exception as e:
+        insert_resume_review(error=str(e), fingerprint=fingerprint, provider=provider, model=model)
+        raise
+
+    review_id = insert_resume_review(
+        content_json=json.dumps(content, ensure_ascii=False),
+        fingerprint=fingerprint,
+        provider=provider,
+        model=model,
+    )
+    return {"review_id": review_id, "content": content, "fingerprint": fingerprint}
+
+
+def build_optimized_resume(edits):
+    """把用户勾选的那几条改写建议写成一份"优化版"docx，返回输出路径。
+
+    复用 write_tailored_resume（跟定制简历同一个函数）：按段落索引替换文本、保留首个 run
+    的格式，所以用户原来的字体/字号/加粗都还在，不会拿到一份被重排过的简历。
+    """
+    base_resume_path = resume_store.require_base_resume()
+    clean = [
+        {"index": e["index"], "text": e["text"]}
+        for e in (edits or [])
+        if isinstance(e, dict) and isinstance(e.get("index"), int) and (e.get("text") or "").strip()
+    ]
+    if not clean:
+        raise ValueError("没有勾选任何要应用的改写建议。")
+
+    output_path = resume_store.optimized_path()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    write_tailored_resume(base_resume_path, output_path, clean)
+    return output_path
+
+
 def _bank_context():
     """题库相关的三个入口（起草 / 每题对话 / 全局助手）都要的同一套上下文：
     简历原文、目标岗位方向、provider+model。抽出来免得三处各抄一遍解析逻辑。"""
     cfg = load_config()
-    base_resume_path = cfg.get("base_resume_path") or os.path.expanduser(
-        "~/Downloads/Cathy_Yang_Resume_EN_AI.docx"
-    )
-    provider, model = llm.resolve(cfg)
+    base_resume_path = resume_store.require_base_resume()
+    provider, model = llm.resolve_task(cfg, "interview_bank")
     # 找工作的方向直接用搜索关键词——用户搜什么岗位就是在准备什么岗位的面试，
     # 不额外加一个配置项让用户填第二遍。
     return read_resume_text(base_resume_path), cfg.get("keywords"), provider, model

@@ -37,7 +37,10 @@ def init_db():
             analysis_error TEXT,
             company_origin TEXT,
             application_status TEXT NOT NULL DEFAULT 'not_applied',
-            starred INTEGER NOT NULL DEFAULT 0
+            starred INTEGER NOT NULL DEFAULT 0,
+            tags TEXT,
+            cover_letter TEXT,
+            resume_bullets TEXT
         )
         """
     )
@@ -61,6 +64,18 @@ def init_db():
         # 阶段就先标上关注。SQLite 没有布尔类型，用 INTEGER 0/1，NOT NULL DEFAULT 0 让历史行
         # 自动回填成"未关注"。
         ("starred", "ALTER TABLE jobs ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"),
+        # 用户自定义标签，逗号分隔存一列（如 "AI,remote"）。没有做成 tags/job_tags 关联表：
+        # 单用户本地库、一条职位撑死挂几个标签，筛选是在前端内存里对 allJobs 做的，关联表
+        # 换来的只有多一次 JOIN 和一套增删同步逻辑。标签文本本身不允许含逗号（见 app.py
+        # 的 /api/jobs/<id>/tags 校验），所以 split(",") 就是可靠的解析方式。
+        ("tags", "ALTER TABLE jobs ADD COLUMN tags TEXT"),
+        # Cover letter 全文和简历优化要点（JSON数组）。以前这两样只写进 JD匹配追踪表.xlsx，
+        # 网页要知道某条职位有没有 cover letter，只能把整张 Excel 拉下来重新解析一遍——列表页
+        # 每 4 秒轮询一次，代价完全不成比例。材料改成按需生成之后更需要落库：生成完要立刻
+        # 反映到界面上，不能依赖 Excel 有没有被别的程序占用。追踪表照旧写，那是给
+        # jd-resume-matcher 技能和用户自己看的另一份产物。
+        ("cover_letter", "ALTER TABLE jobs ADD COLUMN cover_letter TEXT"),
+        ("resume_bullets", "ALTER TABLE jobs ADD COLUMN resume_bullets TEXT"),
     ):
         if col not in existing_cols:
             conn.execute(ddl)
@@ -117,6 +132,41 @@ def init_db():
             user_edited INTEGER NOT NULL DEFAULT 0,
             sort_order INTEGER NOT NULL DEFAULT 0,
             updated_at TEXT NOT NULL
+        )
+        """
+    )
+    # 职位备注：一条职位可以有很多条，来源分"手写"和"从AI对话里一键记下来的"。做成表而不是
+    # jobs 表上一个 notes 大文本字段，是因为这几件事塞进一个字段就都做不了：单条删除、按时间
+    # 倒序、标出哪条是AI说的（AI的话不该跟自己的判断混成一段无从分辨的文本）。职位AI对话本身
+    # 不落库（跟题库对话保持同一个决策），notes 就是那场对话唯一的沉淀出口——用户觉得有用的
+    # 那一段点一下存下来，面试准备页也读同一份。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS job_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_notes_job ON job_notes(job_id)")
+    # 简历体检结果：整份简历的诊断 + 逐段改写建议。跟 interview_preps 同一个模式（含失败
+    # 也落一行），但不挂 job_id——体检是针对简历本身的，跟具体投哪家无关。
+    # resume_fingerprint 存体检那一刻简历文件的 mtime+size：用户换了简历之后，旧体检结论
+    # 里的段落索引就对不上新文件了，前端靠它提示"简历已更新，建议重新体检"，而不是拿着
+    # 过期建议去改一份不存在的段落。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resume_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            resume_fingerprint TEXT,
+            content_json TEXT,
+            error TEXT,
+            llm_provider TEXT,
+            llm_model TEXT
         )
         """
     )
@@ -293,6 +343,82 @@ def set_job_starred(job_id, starred):
     conn.close()
 
 
+def set_job_tags(job_id, tags):
+    """写入标签。tags 传字符串列表，空列表写 NULL（而不是空字符串），让"没有标签"在库里
+    只有一种表示，前端判断不用同时考虑 '' 和 None。清洗/去重/长度限制在调用方做
+    （见 app.py 的 normalize_tags）。"""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE jobs SET tags = ? WHERE id = ?",
+        (",".join(tags) if tags else None, job_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_job_materials(job_id, resume_path=None, cover_letter=None, resume_bullets=None):
+    """写入按需生成出来的定制简历路径 / cover letter / 简历优化要点（JSON字符串）。
+    跟 update_job_analysis 分开：材料生成已经从AI匹配分析里拆出来了（用户点按钮才跑），
+    两条写入路径互不相干，混用会让"重新生成一次材料"顺手把匹配度写成 NULL。"""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE jobs SET resume_path = ?, cover_letter = ?, resume_bullets = ? WHERE id = ?",
+        (resume_path, cover_letter, resume_bullets, job_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_jobs_missing_cover_letter():
+    """已经分析过、但库里还没有 cover letter 的职位——只用于 cover_letter/resume_bullets
+    两列刚加上时，从历史追踪表里一次性回填（见 app.py 的 _backfill_materials_from_tracker）。"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM jobs WHERE overall_match IS NOT NULL AND cover_letter IS NULL"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def add_job_note(job_id, content, source="manual"):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO job_notes (job_id, content, source, created_at) VALUES (?, ?, ?, ?)",
+        (job_id, content, source, datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    note_id = cur.lastrowid
+    conn.close()
+    return note_id
+
+
+def list_job_notes(job_id):
+    """某条职位的全部备注，最新的排最前面——备注是随手记的，刚记的那条最可能是在找的那条。"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM job_notes WHERE job_id = ? ORDER BY created_at DESC, id DESC", (job_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_job_note(note_id):
+    conn = get_conn()
+    cur = conn.execute("DELETE FROM job_notes WHERE id = ?", (note_id,))
+    conn.commit()
+    conn.close()
+    return cur.rowcount
+
+
+def note_counts():
+    """{job_id: 备注条数}，一次查询取回，供职位列表给卡片挂"📝 N"角标——
+    跟 job_ids_with_interview_prep() 同样的用意：避免逐条职位查一次库（N+1）。"""
+    conn = get_conn()
+    rows = conn.execute("SELECT job_id, COUNT(*) AS n FROM job_notes GROUP BY job_id").fetchall()
+    conn.close()
+    return {r["job_id"]: r["n"] for r in rows}
+
+
 def set_application_status(job_id, application_status):
     conn = get_conn()
     conn.execute("UPDATE jobs SET application_status = ? WHERE id = ?", (application_status, job_id))
@@ -388,17 +514,81 @@ def delete_interview_prep(prep_id):
     return cur.rowcount
 
 
+# ---------------------------------------------------------------- 简历体检
+
+
+def insert_resume_review(content_json=None, fingerprint=None, error=None, provider=None, model=None):
+    """写入一次简历体检结果。跟 insert_interview_prep 一样，失败也写一行（只有 error），
+    否则用户点完"开始体检"看到的还是空页面，分不清是没跑过还是跑挂了。"""
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO resume_reviews (created_at, resume_fingerprint, content_json, error, llm_provider, llm_model) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            datetime.now().isoformat(timespec="seconds"),
+            fingerprint,
+            content_json,
+            error,
+            provider,
+            model,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return cur.lastrowid
+
+
+def get_latest_resume_review(success_only=False):
+    conn = get_conn()
+    sql = "SELECT * FROM resume_reviews"
+    if success_only:
+        sql += " WHERE error IS NULL AND content_json IS NOT NULL"
+    sql += " ORDER BY created_at DESC, id DESC LIMIT 1"
+    row = conn.execute(sql).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def list_resume_reviews(limit=20):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM resume_reviews ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def list_jobs_with_tailored_resume():
+    """已经生成过定制简历的职位，最新的排前面。「我的简历」页的"定制简历"列表读这个——
+    以前这些文件只在职位详情弹窗里露一次面，关掉就再也找不到了。"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, company, title, overall_match, resume_path, job_url FROM jobs "
+        "WHERE resume_path IS NOT NULL AND resume_path != '' ORDER BY overall_match DESC, id DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------- 通用面试题库
 
-BANK_CATEGORIES = ("self_intro", "common", "star_story")
+# work_history（讲述过往工作）是后加的（2026-08-16）。category 是纯 TEXT、没有 CHECK 约束，
+# 所以加类别不需要改表结构、也不需要迁移脚本。
+BANK_CATEGORIES = ("self_intro", "star_story", "work_history", "common")
+
+# 页面上的区块顺序：先自我介绍，再讲故事，再逐段过往工作，最后才是那些通用套题。
+# 排序写在 SQL 里而不是前端，是为了让全局助手喂给 LLM 的题库快照（build_bank_block）
+# 和用户在页面上看到的顺序一致。
+_BANK_CATEGORY_ORDER = "CASE category " + " ".join(
+    f"WHEN '{c}' THEN {i}" for i, c in enumerate(BANK_CATEGORIES)
+) + " ELSE 99 END"
 
 
 def list_bank_items():
     """全部题库条目，按 类别 → sort_order → id 排序，前端直接分组渲染。"""
     conn = get_conn()
     rows = conn.execute(
-        "SELECT * FROM interview_bank ORDER BY "
-        "CASE category WHEN 'self_intro' THEN 0 WHEN 'common' THEN 1 ELSE 2 END, sort_order, id"
+        f"SELECT * FROM interview_bank ORDER BY {_BANK_CATEGORY_ORDER}, sort_order, id"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

@@ -2,6 +2,8 @@
 
 追踪 `newjob` 项目的功能列表。维护规则见 `CLAUDE.md`：每次讨论新功能都要同步更新本文件。
 
+> 想知道"这些功能加起来到底有没有竞争力、市面上有什么竞品、能不能商业化"，见 [product-review.md](product-review.md)（2026-08-16 的产品评估快照，含竞品对照和商业化判断；它是时间点快照，不随本文件同步更新）。
+
 ## 已完成
 
 ### 核心：自动搜索与待审核列表
@@ -306,17 +308,200 @@ AI 起草只是初稿，改成"我自己的说法"原来全靠手打。涉及 `i
 - 对话只存浏览器内存、不落库；历史由前端每轮带回，后端 `sanitize_chat_history()` 滤脏数据并只留最后 20 条
 - 同步返回，不走后台线程 + 轮询（单轮输出量比起草小一个数量级）
 
+### 按功能位切换 AI 模型（2026-08-16）
+兑现下面「其它」里挂了很久的那条：`llm_provider` / 模型名原来只能手改 `config.json`。做的时候没有做成一个全局开关，而是**每块功能各配各的**——涉及 `llm.py`、`config.py`、`app.py`、`pipeline.py`、`static/common.js`、`static/app.js`、`templates/*.html`、`tests/{test_llm,test_frontend}.py`
+- `llm.py` 新增模型注册表 `MODELS`（Claude Sonnet 5 / Claude Haiku 4.5 / DeepSeek V4 Pro / DeepSeek V4 Flash）和 `resolve_task(cfg, task)`：前端下拉、后端校验、provider 反查共用同一份清单，杜绝"界面上能选、后端不认"
+- 三个功能位 `analysis` / `interview_prep` / `interview_bank` 各存各的（`config.json` 的 `llm_tasks`），留空回退到原来的全局 `llm_provider`，老配置一个字不改也能跑
+- 界面：两个面试页顶栏各一个下拉（管自己这一页），主页设置页一张三行的完整表；选了就存，不跟「保存设置」走。`POST /api/config` 的 `llm_tasks` **按 key 合并**——整体替换会让某一页的下拉把另外两页刚改的清空
+- 顺带修一个 Claude 侧的隐患：Sonnet 5 起，不传 `thinking` 就是**默认开着**自适应思考，而 `max_tokens` 是「思考 + 正文」共用的（跟上面 DeepSeek 推理模型那个坑同源）。8192 写不完一份十几道题的面试准备，所以注册表里给 Anthropic 模型带上 `max_tokens: 16000` 并对 Sonnet 5 显式传 `thinking: disabled`
+
+### 题库新增「讲述过往工作」+ 页面交互改版（2026-08-16）
+用户反馈：题一多只能靠滚轮找、「手动加一题」点了没反应、题库缺"逐段讲工作经历"这一类。涉及 `models.py`、`interview.py`、`static/bank.js`、`static/style.css`、`templates/interview.html`、`tests/{test_bank,test_frontend}.py`
+- **新增第四个类别 `work_history`「讲述过往工作」**：按简历里每段工作经历逐个展开，每段 3-4 题（负责什么 / 最有代表性的成果 / 最大的挑战 / 为什么离开），题目里强制带公司名，否则多段经历的题混在一起分不清。区块顺序调整为 自我介绍 → STAR 故事库 → 讲述过往工作 → 通用问题，起草相应变成 4 次调用。`category` 是纯 TEXT 无约束，不需要迁移脚本
+- **目录导航**：左侧 sticky 侧栏列出四个区块和每一道题，点题目直接滚过去并自动展开；窄屏退回单列
+- **每题可折叠，默认收起**：收起只看得到标题。用 `.collapsed` 类隐藏 body，**不是**改回 `<details>`（那样保存一次会把所有题一起收回去），也**不是**把 DOM 删掉（删了的话改了一半没保存的答案和开着的对话会一起没）
+- **重做「手动加一题」**：从区块底部的按钮改成标题右边的 `+` 图标 + 行内输入框。原来用的浏览器 prompt 弹窗会被拦掉、点取消又什么提示都没有，两种情况在界面上长得一模一样，用户看到的就是"点了没反应"。自我介绍固定一条，不给 `+`
+- 题库改成从职位列表/面试准备页**新标签页**打开，顶栏那个"返回职位列表"随之去掉（它会把挂着背题的这一页顶掉）
+
+### UI/UX 评审与 P0 修复（2026-08-16）
+对三个页面做了一次整体 UI/UX 评审（长任务反馈 / 信息架构 / 视觉排版 / 交互一致性四个方向，共 30 条问题），先落地了改动小、收益大的一批。涉及 `static/style.css`、`static/app.js`、`static/common.js`、`templates/index.html`
+- **修 toast 被弹窗盖住**：`.toast-stack` 是 `z-index: 999`、`.modal-overlay` 是 `1000`，于是在设置弹窗里保存配置、切换模型时，"已保存"和报错全渲染在遮罩+模糊层后面。顺手把层级提成 token（`--z-dock` / `--z-modal` / `--z-toast`）
+- **修"失败也弹绿色成功"**：`setJobStatus` / `setApplicationStatus` / `refetchAllJd` / `classifyCompanyOrigin` 原来都不看 `res.ok`，后端 500 照样显示"已标记为「已收藏」"。统一成同文件里 `setJobStarred` 早就写对的那种写法
+- **补上真正的"刷新"按钮**：三处 toast 一直写着"完成后点『刷新』查看结果"，但界面上从来没有这个按钮，用户只能按 F5
+- **筛选状态进 URL**（`?status=&origin=&app=&starred=&q=`）：四套筛选原来只活在内存里，刷新即重置回"待审核的外企"——而上一条恰恰在让用户去刷新。用 `replaceState`，不往浏览器历史里塞条目
+- **空状态分两种**：默认筛选是"待审核 + 外企"，刚搜到的若全是国内公司，页面看起来就像搜索失败。改成区分"库里真没有"和"被筛选挡住了 N 条"，后者带一键清除筛选
+- **忽略职位可撤销**：一次点击就生效的破坏性操作，原来点错了只能去"已忽略"里翻。没加确认弹窗（这是每天点几十次的动作），改成 `showToast` 支持挂行动按钮，成功提示里给"撤销"。toast 同时补了关闭按钮
+- **排版地基**：`body` 原来既没有 `font-size` 也没有 `line-height`，全站继承 `normal`（约 1.2），中文行距明显偏挤；补上 15px/1.6，新增字号 token；删掉全部作用在中文上的 `text-transform: uppercase` + 大 `letter-spacing`（对中文是空操作，只在汉字间硬塞空隙）
+- **对比度**：匹配度 pill 是全页最该被扫到的数字，`.match-high`/`.match-mid` 却只有约 3:1；新增 `--success-strong`/`--warning-strong`，`--text-faint` 从 `#9a93ac` 调深到 `#7d7592`（约 4.6:1）
+- **全局焦点样式**：原来除表单字段外没有任何焦点样式，纯键盘操作看不出光标在哪；加一条 `:focus-visible` 规则，并去掉几处主动 `outline: none`
+- **轮询与重绘**：主页的 `scheduleAnalyzingPoll()` 漏了 `document.hidden` 判断（题库页和面试准备页早就做了），切走标签页仍在每 4 秒重新解析整个 Excel；搜索框补 200ms 防抖，不再每敲一个字符重建整棵列表 DOM
+- 顺带给 `loadRuns()` 补了错误处理和空态行——原来接口挂了会静默抛出，表格空着、统计卡片停在占位符 `–`，跟"还没跑过"长得一模一样
+
+### 我的简历模块 + 首屏收敛（2026-08-17）
+
+起因：用户一次性提了十条改动，主线是两件事——把首页从"通用后台"收敛成每天真正在用的那几个动作，以及补上整条流水线一直缺的地基"简历"。
+
+**简历从"填一个本机路径"改成"上传"**
+- 原来 AI 匹配分析读的是设置页里一个 `base_resume_path` 文本框，留空还会在 `pipeline.py` 里**三处各自**硬回退到 `~/Downloads/Cathy_Yang_Resume_EN_AI.docx`。换台机器、换个人用就直接报错，而且三处回退早晚要改漏一处。现在统一走新的 `resume_store.py`：用户上传 → 文件落在项目内 `resumes/`（已加进 `.gitignore`）→ 回写 `base_resume_path`。老配置里手填的绝对路径继续有效，不用迁移
+- **只收 `.docx`**：定制简历和优化版都靠 `resume_docx.write_tailored_resume()` 按段落索引改写原文件、保留排版，PDF 没有这个结构。上传校验按 扩展名 → 大小(10MB) → **真的能被 python-docx 解析出正文** 三关走，最后一关是关键：把 PDF 改个后缀传上来，前两关都过得了，不试解析就要等到跑分析时才炸
+- `base_resume_path` 从 `/api/config` 的写白名单里移除了——设置页那个只读展示框跟着「保存设置」提交一次，就会把刚传的简历覆盖没
+- **没上传简历时的引导**：匹配分析（单条/批量）、面试准备、题库起草四个入口统一返回 `409 + {need_resume: true}`，前端 `common.js` 的 `handleNeedResume()` 弹一条带「去上传」按钮的 toast。检查都放在"排队/置位"**之前**：批量分析如果先排队再发现没简历，一次点击就会给几十条职位刷上"分析失败"的红标；题库起草如果先置位再失败，会永远卡在"正在生成中"。搜索接口是唯一例外——搜索本身不需要简历，照常抓取，只在响应里带 `need_resume` 提示（因为一个下游功能的前置条件不该把上游功能也废掉）
+- `analyze_pending_jobs()` 内部也加了一道：它的三个调用方里有两个（启动补跑、每日定时）没有用户守在屏幕前，让它们各抛一次异常只会刷满日志
+
+**AI 简历体检 + 一键生成优化版**
+- 新增 `resume_review.py`（跟 `analyzer.py` 平级）：不针对具体职位，只看简历本身，四个维度打分（结构/成果说服力/关键词覆盖/表达质量）+ 亮点 + 问题清单 + 逐段改写建议。目标岗位方向复用搜索关键词，不新增配置项让用户填第二遍（同 `_bank_context()` 的决定）
+- `paragraph_edits` 刻意跟 analyzer 的 `resume_paragraph_edits` 同形状（`{index, text}`），所以"勾选几条 → 生成优化版 docx"直接复用 `write_tailored_resume`，保留原字体排版
+- `normalize_result()` 收拾 LLM 的脏数据：分数写成百分制的除以 100、严重度非法的归 medium、issues 重排成 high→medium→low、**改写建议里索引越界或改写为空的直接丢掉**（`write_tailored_resume` 对越界是静默跳过的，留在界面上等于让用户勾一条什么都不会发生的建议）
+- 结果存新表 `resume_reviews`（含失败行，同 `interview_preps` 的模式），带 `resume_fingerprint`（mtime+size）；换了简历之后旧结论的段落索引就对不上了，前端标「简历已更新，建议重新体检」而不是让用户照着改错段落
+- 新增第四个 LLM 功能位 `resume_review`
+- 「我的简历」是独立页面 `/resume`（不是弹窗，理由同题库页）：当前简历卡（拖拽上传/替换/下载/删除）→ 体检 → 逐段改写建议勾选 → 各职位的定制简历列表。最后一块顺带解决了一个老问题：定制简历以前只在职位详情弹窗里露一面，关掉就再也找不着了
+
+**首屏收敛**
+- 改名 **Signal**，副标题「求职路上，滤掉噪音，只留信号」——产品的真实价值是降噪（从几百条里筛出该投的那几个），而不是"搜索"
+- 统计卡从 待审核/已收藏/已忽略/**最近一次运行** 改成 待审核/已收藏/**重点关注**/已忽略：重点关注是用户自己动手标的短名单，比系统算出来的任何一档都重要，原来却只是筛选栏里一个不起眼的 chip；"最近一次运行"几乎没人点，入口保留在齿轮→运行记录
+- 默认筛选从「外企」改成「全部」：默认藏掉一半结果，用户看到的空列表分不清是"没搜到"还是"被默认筛选挡住了"
+- 筛选栏去掉「已拒绝/已婉拒」两个 chip（投递流程走完后的归档态，翻看频率极低却常年把筛选栏挤成两行）。**职位卡片上的投递状态下拉仍然能标记这两个状态**，历史数据不受影响
+- 详情弹窗加「忽略」：看完详情决定"不投"是这个弹窗最常见的出口，以前只能关掉再去列表里找那张卡片。走跟列表一样的"先执行、给撤销"，不弹二次确认
+- 「智能搜索」图标从播放三角换成放大镜（三角是"运行"的语义，跟搜索对不上）；它和「AI分析」都补上了解释功能的 tip
+- 主题切换从顶栏搬进「设置 → 外观」：顶栏是高频动作区，深色模式是设一次就不再动的偏好
+- 涉及文件：新增 `resume_store.py`、`resume_review.py`、`templates/resume.html`、`static/resume.js`、`tests/test_resume.py`；改 `app.py`、`pipeline.py`、`models.py`、`config.py`、`llm.py`、`analyzer.py`、`interview.py`、`templates/index.html`、`static/app.js`、`static/common.js`、`static/style.css`、`.gitignore`
+- 测试：新增 `test_resume.py`（上传校验含"PDF 改后缀"、体检脏数据归一化、fingerprint 过期标记、优化版 docx 真的只改勾中的段落、四个入口的 409+need_resume）；`test_frontend.py` 扩到四个页面并补首屏收敛的断言；`test_prep.py`/`test_bank.py`/`test_bank_chat.py` 补了"先有一份已上传的简历"这个前置。顺带修了 `test_frontend.py` 两条"函数体里不许出现某标识符"的断言——它们原来会被解释性注释误伤，现在先去注释再断言
+
+### 职位详情页独立成页 + AI对话/备注 + 标签 + 材料按需生成 + 忽略即中断（2026-08-17）
+
+起因：用户一次提了四条需求，前两条共用同一个新页面，后两条共用分析流水线的改动：分析详情弹窗放不下 AI 对话和备注；职位需要自定义分类；定制简历/Cover Letter 不该在用户还没决定投不投的时候就自动生成；把正在分析的职位标记忽略时，那次 LLM 调用照跑照写，结果还是进了库。
+
+**职位详情从弹窗改成独立页面 `/jobs/<id>`**
+- 跟当年面试准备搬出弹窗同一个理由（见下面"关键决策"的翻案说明）：AI 对话和备注都要长时间挂着交互，弹窗的轮询绑死生命周期/内容塞进内滚容器/没有独立URL 三个老毛病又冒出来一遍
+- 新模板 `templates/job_detail.html` + `static/job_detail.js`，布局仿题库页 `.bank-layout`：左边匹配分析内容（原弹窗那套 `detail-section`），右边 sticky 侧栏放 AI 对话 + 备注
+- 列表页职位卡片从 `onclick="openJobDetailModal(...)"` 改成直接跳转 `/jobs/<id>`，`static/app.js` 里 `openJobDetailModal`/`closeJobDetailModal`/`dismissFromDetail`/`trackerIndex` 一起删掉——列表页不再需要整表拉一遍 `/api/tracker` 才知道有没有 Cover Letter，改成读 `jobs.cover_letter` 列
+- 公共部分（`reqListHtml`/`safeUrl`/`onChatKeydown`）搬进 `static/common.js`，避免详情页和列表页/题库页各抄一份
+
+**职位 AI 对话**
+- 新模块 `job_chat.py`：system prompt 装公司/职位/JD/匹配分析结论/简历原文，`POST /api/jobs/<id>/chat` 同步返回一段纯文本回复（不套 JSON——跟题库对话的"改写"场景不同，这里只要一段话，纯文本还能让"记进备注"原样存）
+- 对话本身**不落库**，跟题库对话同一个决策：刷新页面就清空，备注才是这场对话唯一的沉淀出口
+- 历史清洗复用 `interview.sanitize_chat_history`（20 轮上限），新增 LLM 功能位 `job_chat`
+
+**备注（notes）**
+- 新表 `job_notes`（`models.py`）：`job_id`/`content`/`source`（`manual`|`chat`）/`created_at`，多条记录、可单条删除、按时间倒序——AI 对话回答要一条条追加，塞进 `jobs` 表一个大文本字段做不到这些
+- 职位详情页右侧可读可写；面试准备页 `/jobs/<id>/interview` 只读展示（`interview.js` 的 `loadJobNotes()`），加/删还是回详情页操作，不重复一套 UI
+
+**标签**
+- `jobs` 表新增 `tags` 列（逗号分隔字符串，如 `AI,remote`），`POST /api/jobs/<id>/tags` 校验：不含逗号、单条≤20字符、总数≤10个、大小写不敏感去重
+- 预设 `AI`/`ML`/`remote`/`tech`，也可以自己敲；`static/common.js` 的 `openTagEditor()` 是列表页卡片和详情页共用的同一份浮层编辑器，不依赖任何模板预先写好的 DOM
+- 列表页筛选栏新增标签 chip（`#tagChips`），集合是预设 + 库里实际在用的标签动态拼出来的；跟其它四套筛选一样接进了 URL 同步（`?tag=`）
+
+**定制简历 + Cover Letter 从匹配分析里拆出来**
+- `analyzer.py` 的 `PROMPT_TEMPLATE` 删掉简历改写/cover letter 那两步，新增独立的 `MATERIALS_PROMPT` + `generate_materials()`——分析只回答"值不值得看"，材料生成是用户点按钮之后的另一次 LLM 调用
+- `jobs` 表新增 `cover_letter`/`resume_bullets` 两列（原来只写进 xlsx 追踪表，列表页每 4 秒轮询要重新解析整个 Excel 才知道有没有 CL，现在落库直接读）；启动时后台一次性从追踪表回填历史职位的这两列（`app.py` 的 `_backfill_materials_from_tracker`）
+- `tracker_utils.py` 新增 `update_entry_fields()`：材料生成后只改追踪表那一行的四个格子，不像 `add_entry()` 那样删行重插——重插需要把全部分析字段再传一遍，任何一处反解不完美都会让已有内容退化
+- 职位详情页按钮单条生成（`POST /api/jobs/<id>/generate_materials`，后台线程 + 轮询，同 `refetch_jd` 那次"Failed to fetch"教训）；列表页顶部"批量生成材料"按钮对**当前筛选出来的职位**生效，点前 `confirm()` 提示条数，服务端自动跳过已经生成过的（`pipeline.generate_materials_batch`）
+- 新增 LLM 功能位 `materials`；`job_state.py` 新增一组跟 `queued/analyzing` 同构的材料生成状态（`_materials_queued_ids`/`_materials_current_id`/`_materials_stop_event`），必须分开是因为材料生成从分析里拆出来之后两件事可以同时在跑
+
+**忽略即中断，但只丢弃当前这一条**
+- `job_state.py` 新增 `discard_job(job_id)`：跟顶部"停止分析"按钮用的 `request_stop()` 刻意只有一个区别——不设 `_stop_event`、不清空 `_queued_ids`，所以批量循环会正常轮到下一条，不会把整批都停下来
+- `app.py` 的 `/api/jobs/<id>/status` 改成 `dismissed` 时调用它；正在跑的那次 LLM 调用没法真的中断（同步阻塞请求，钱也已经花出去了），但 `analyze_and_record()` 里原有的 `should_discard()` 检查会让结果不写库/不写追踪表，跟没跑过一样
+- 顺手补了一个边界：职位在"排队中"（还没轮到）就被忽略，丢弃标记会一直留着没人清——因为这一轮从没跑到 `analyze_and_record_safe` 的 `finally`。`analyze_and_record_safe` 开头新增一次 `clear_discard()`，避免用户后来手动重新分析这条职位时被误判丢弃
+
+- 涉及文件：新增 `job_chat.py`、`templates/job_detail.html`、`static/job_detail.js`；改 `models.py`（3 新列 + `job_notes` 表 + 7 个 DAL 函数）、`analyzer.py`、`pipeline.py`、`job_state.py`、`llm.py`、`app.py`、`tracker_utils.py`、`static/{app,common,interview}.js`、`templates/{index,job_interview}.html`、`static/style.css`
+- 测试：新增 `tests/test_job_detail.py`（标签校验、备注增删查、职位对话不落库、材料生成写盘+落库+同步追踪表、批量跳过已生成、analyzer prompt 拆分校验）和 `tests/test_dismiss_abort.py`（用慢速 mock 制造"正在分析中"的窗口，验证被忽略那条结果丢弃且批次不中断、丢弃标记不残留）；`test_frontend.py` 重写了详情弹窗相关的全部断言，改成校验独立页面
+
+### 首页视觉改版（2026-08-17）
+- 起因：用户要求用官方 `frontend-design` skill（`~/.claude/settings.json` 的 `enabledPlugins` 启用）重设计首页，先出了两版独立静态 mockup（`design_preview.html`/`design_preview_v2.html`，项目根目录，仅供参照，不是真实页面）定方向，再按用户对 v2 的四点反馈（去掉没用的匹配度光谱、状态卡片更明显、面试题库入口更醒目、重点关注要一眼看到）接入真实代码
+- **设计 token 整体替换**（`static/style.css`）：`--bg`/`--text`/`--border` 从浅紫渐变换成冷调纸白 `#EDEEF0`/近黑 `#14161A`；`--primary` 从三色渐变 `linear-gradient(...)` 改成单一群青 `#2B3AF0`（`--primary-gradient` 变量名保留但值改成纯色，靠这个技巧让 `.btn-primary`/`.chip.active`/`.badge-status-new` 等一堆引用它的组件不用逐个改名跟着去渐变化，只有 `.tab-btn.active` 原来用 `border-image` 吃这个变量，改成显式 `border-bottom-color`）；`--radius` 14px→4px；阴影大幅收窄；删除 `body::before` 的三个装饰性径向渐变光斑；新增 `--font-mono`（等宽字体族，日期/来源/分数这类"读数"专用）和 `--star`（把原来硬编码 5 处的 `#f5a623` 金色收敛成变量）。深色调色板照旧要维护两处（`[data-theme="dark"]` + `@media prefers-color-scheme`），这是已知的 CSS 限制（见上面 UI/UX 评审那条注释）
+- **状态卡片**：沿用已有的 4 张卡片 DOM（`data-status`/`data-filter` 属性、`filterByStatus()`/`toggleStarredFilter()`/`updateStatCardActive()` 一行没改），只重新蒙皮成大数字卡片（数字放大到 2.5rem），选中态从"彩色描边+光晕"改成整块反色；每张卡加一行小字说明（"还没决定要不要"/"打算投的"/"优先盯的"/"不考虑了"）
+- **面试题库入口**：从顶栏一个小按钮（`static/style.css` 的 `.bank-entry`，`templates/index.html`）改成统计卡片下方的独立横幅，群青左边框+图标块，摘要文案由新函数 `loadBankSummary()` 动态算（复用已有的 `GET /api/interview/bank`，按 category 计数，不新增接口；职位专属面试准备份数直接数 `allJobs` 里 `has_interview_prep`）
+- **重点关注置顶 + 全部按匹配度排序**（`static/app.js` 的 `renderJobs()`）：这是唯一改变原有行为的地方——列表默认顺序从"最新抓取排最前"改成"全场最高分做成反色 hero 大卡 → 剩余重点关注置顶成组（金色左标+实心星，跟 `.icon-btn.starred`/统计卡是同一套颜色）→ 其余按匹配度从高到低"，没有分数的排最后。抽出了新函数 `jobCardHtml(job, opts)` 给 hero/重点关注组/其余列表三处复用，`matchBadge()`/`siteBadge()`/`originBadge()`/`statusBadge()`/`starButtonHtml()`/`analysisStateButtonHtml()`/`easyApplyButtonHtml()`/`applicationStatusSelectHtml()`/`materialsButtonHtml()`/`resumeLinkHtml()`/`coverLetterLinkHtml()`/`interviewPrepBadgeHtml()`/`noteBadgeHtml()`/`jobTagsRowHtml()` 等生成局部 HTML 的函数一个没改签名，只是模板里挪了位置（分数从"标题后面"挪到最左列，🎤/📝 小徽标挪进了标题行）
+- 顺手加了两个小修复：职位行日期原来直接显示 `first_seen` 的完整 ISO 时间戳（如 `2026-08-17T02:33:04`），新的等宽字体+更大字号让这串噪音格外扎眼，新增 `shortDate()` 只取月-日；`.topbar` 在窄屏下会因为品牌区文案挤压逐字换行撑出横向滚动（去掉了原来撑场面的渐变图标方块后更明显），补了 `flex-wrap` 和品牌区的省略号截断——这也顺带碰了一点下面 UI/UX 评审 P1 批次里"`.topbar` 补 `flex-wrap`"那一条，但没做完整的 720–1000px 断点，P1 其余项（批次进度条、弹窗 `role="dialog"`、键盘可达等）都没动
+- 品牌名用了真实的"Signal"（首屏收敛那次改的名字），mockup 阶段编的"职位雷达"没有带进真实代码；顶栏图标方块去掉，改纯文字 wordmark
+- `templates/interview.html`/`job_interview.html`/`templates/job_detail.html` 没有单独改动，靠共享 `style.css` 的 token 自动换色，截图抽查过顶栏/按钮/badge/pill 都正常换色、没有断裂——**这条描述不准确，见下面 2026-08-17 视觉清理条目里的修正**
+- 涉及文件：`static/style.css`（token + 组件层大改）、`templates/index.html`（顶栏品牌、导语行、题库横幅、统计卡片内部结构）、`static/app.js`（`renderJobs()` 分组排序、新增 `jobCardHtml()`/`updateLede()`/`loadBankSummary()`/`shortDate()`）
+- 用 Playwright 截图核对过：亮色/暗色/390px 窄屏、四种筛选组合（待审核/已收藏/重点关注/已忽略）、hero 卡片、重点关注分组、面试题库横幅动态摘要、连带的两个页面，均无控制台报错、无横向溢出
+
+### 首页视觉清理 + 改名"职达 Landed"（2026-08-17）
+- 起因：上一轮视觉改版接入真实代码后，用户看实际页面截图反馈"颜色偏多、部分图标效果不好、整体风格有点乱、面试题库入口位置不合适"；先用 `frontend-design` skill 出了一版静态 mockup `design_preview_v3.html`（项目根目录，仅供参照）反复对比调整（包括用户直接对比 `design_preview_v2.html` 后要求把配色收得比 v3 初版更克制），定下方向后再接入真实代码。同一轮顺带把产品名从"Signal"改成"职达"，英文名定为"Landed"
+- **图标统一成 SVG**：`static/common.js` 新增共享图标常量（`SPARK_ICON`/`TAG_ICON`/`RESUME_ICON`/`MAIL_ICON`/`MIC_ICON`/`NOTE_ICON`/`GLOBE_ICON`/`BUILDING_ICON`/`INBOX_ICON`/`CHAT_ICON`），把 `static/{app,job_detail,bank,resume}.js` 和 `templates/{index,interview,job_interview,job_detail}.html` 里所有功能性 emoji（🏷️📄✉️🎤📝🌍🇨🇳📭💬✨）换成同一套 24×24 线性描边图标；职位卡片操作行的标签按钮从"文字按钮包一个 emoji"（`.btn.btn-secondary`）改成方形图标按钮（`.icon-btn`），跟星标/勾选/X 归成一组，不再是两套按钮形状混排
+- **颜色收敛**：`--accent` 青蓝并入 `--primary`（原来只服务"面试准备"pill 和"已投递"状态下拉两处，没必要单独存在）；`--star` 金色整个去掉，"重点关注"星标/卡片左标/分组标题/统计卡改用 `var(--text)`（近黑），靠"实心填充 vs 描边"这个形状差异表达"已标记"，不再靠颜色；Indeed/LinkedIn 来源徽标、职位状态徽标（待审核/已收藏）、投递状态下拉框（待投/已投递/面试中/已拒绝）都去掉了颜色编码，改中性样式，只有"已收藏"徽章和"Offer"状态保留墨色描边+加粗的强调；成功/警示/危险三个语义色 token 本身不动（toast、简历体检等其它功能还在用），只是不再用在职位卡片这一处
+- **面试题库入口挪回顶栏**：删掉统计卡片和筛选栏之间的 `.bank-entry` 横幅，改成顶栏"我的简历"和设置齿轮之间的图标+文字按钮；`loadBankSummary()` 摘要文案改填进按钮的 `title` 悬浮提示，不再占正文一整行
+- **修复遗留 bug**：`interview.html`/`job_interview.html`/`job_detail.html`/`resume.html` 这 4 个次级页面顶栏原来还留着旧版 `.brand-icon` 图标块的 HTML，但对应 CSS 在上一轮改版里已经删掉了，导致这几个页面顶栏图标位置一直是空的——上一条目"截图抽查过没有断裂"的说法不准确，这次一并删掉这段 markup，跟首页对齐成纯文字 wordmark
+- 涉及文件：`static/style.css`（token 精简、`.bank-entry`/badge 颜色/`.app-status-select` 颜色等规则改写）、`static/common.js`（新增共享图标常量）、`static/{app,job_detail,bank,resume}.js`（emoji→SVG、标签按钮改 `icon-btn`）、`templates/{index,interview,job_interview,job_detail,resume}.html`（品牌改名、题库入口挪位、`.brand-icon` 修复、chip/空状态图标）、`README.md`（标题改名）
+- `tests/run_all.py` 全量跑过，8 个套件 + 6 个 JS 语法检查全部通过
+
+### 首页高频入口挪到导语行 + 补「今日抓取」漏斗（2026-08-17）
+- 起因：用户拿真实首页跟设计稿 `design_preview_v2.html` 逐项对比，指出好几处结构性不一致；确认后按用户明确选择的方案接入：智能搜索/AI分析/面试题库这三个高频入口跟"面试题库入口"归一层级，且按 v2 的位置放在导语文案右侧（不放在最上方顶栏）；顶部"最近运行"时间戳和独立深色模式图标按钮维持现状（不加，仍在"更多"弹窗里）；"今日抓取"漏斗统计要加上；状态卡片 A/B/C 版式切换器不需要做成正式功能
+- 顶栏（`.topbar-actions`）现在只留「我的简历」和「更多」齿轮，智能搜索/AI分析/面试题库三个按钮挪进新增的 `.lede-row`/`.lede-actions`（`templates/index.html`、`static/style.css`），跟导语段落同一行、贴右侧
+- 新增「今日抓取」漏斗行（今日抓取 → 不相关跳过 → 重复跳过 → 新增），取当天（本机日期）内 `search_runs` 记录求和展示；`static/app.js` 新增 `renderFunnel()`，挂在已有的 `loadRuns()` 里（首页初始化时就会拉一次 `/api/runs`，不额外发请求），没有当天记录时整行隐藏
+- 顺手删掉了死代码：`loadBankSummary()` 一直在往一个模板里根本不存在的 `#bankSummary` 元素写内容（上一轮"面试题库入口挪回顶栏"改动时忘了同步删），函数体和初始化调用一并移除
+- 涉及文件：`templates/index.html`、`static/app.js`、`static/style.css`
+- 用 Edge 无头模式截图核对过新布局（智能搜索/AI分析/面试题库三个按钮渲染在导语右侧、今日抓取漏斗显示真实数据 273→170→59→43）；`tests/run_all.py` 全量跑过，8 个套件 + 6 个 JS 语法检查全部通过
+
+### 首页字号/字重对齐设计稿 v2（2026-08-17）
+- 起因：继续拿真实首页跟 `design_preview_v2.html` 逐项比对，这次是颜色 token 之外的问题——十几处组件的字号/字重跟设计稿不一致：展示型数字（导语大数字、今日最高分、状态卡片数字）线上比设计稿小且更粗，普通 UI 文字（按钮、chip、徽标、标题）线上比设计稿更粗更规整；徽标在设计稿里是"等宽小写·大写字母·尖角矩形"，线上是"无衬线加粗·圆角药丸"。用户确认要完整按设计稿还原（不只改数值，字体族/大小写/字间距/圆角形状等强绑定属性一起改），红/橙/绿语义色系统本轮不动
+- `static/style.css` 改了 11 处规则：`.lede-figure`/`.job-card.hero > .match-pill`（今日最高分数）改成 `clamp()` 响应式字号 + 250 字重，删掉两条被 clamp 取代后冗余、会打架的旧移动端固定覆盖值；`.job-card.hero .job-title`（今日最高标题）补齐 400 字重；`.stat-card .value`/`.label`、`.job-title`、`.match-pill`（普通职位行）、`.brand h1`（logo）、`.btn`、`.chip` 的字号/字重逐一对齐设计稿数值
+- `.badge` 改动最大：从"无衬线加粗 700、圆角药丸 999px"整条换成设计稿的"等宽字体、.56rem、400 字重、大写、字间距 .12em、尖角矩形 2px"；`.badge-status-reviewed`/`.badge-status-dismissed` 等派生样式随基类自动继承新形状，没有单独改
+- 明确排除：`body` 基础字号 15px/1.6（这其实是更新一版设计 `design_preview_v3.html` 的数值，线上已经是这个，不算跟 v2 不一致）；红/橙/绿语义色系统；简历页、面试题库页专属的字号
+- 涉及文件：`static/style.css`
+
+### 手动粘贴 LinkedIn 职位链接入库（2026-08-18，对应下面 P1 批次的「LinkedIn 推荐职位手动导入」痛点①）
+- 起因：按关键词 × 城市的自动搜索总会漏——标题措辞对不上关键词、城市没配、或者是自己在 LinkedIn 推荐流/朋友转发里看到的一条。此前这类职位没有任何入库通道，等于整条 AI 分析/材料/面试准备的流水线都用不上。明确**不做**推荐流抓取（需登录态高频请求，封号风险直接命中求职主通道），只做粘贴导入
+- 首页导语行加「添加链接」按钮 → 弹窗贴链接（每行一条，一次最多 20 条）→ 逐条报告 已入库 / 已存在 / 失败原因，成功的给一个直达 `/jobs/<id>` 的链接（`templates/index.html`、`static/app.js`、`static/style.css`）
+- 抓取两级，够用就不往下走：① 访客页 `requests` 抓 `/jobs/view/<id>`；② 抓不到（限流/登录墙/职位要登录才可见）时自动改用 Easy Apply 那个已登录的 Playwright profile 兜底，整批共用一个浏览器上下文，先无头、整批都没抓到才带界面重试一次。访客页和登录页 DOM 完全不同，用一张"候选选择器表"让同一个解析函数服务两条路径（`job_link.py`）
+- 链接解析支持从详情页复制的 `/jobs/view/<slug-带-id>` 和从搜索/推荐页复制的 `?currentJobId=`；两者同时出现时以路径上的为准。非 LinkedIn 链接明确报错（本轮只做 LinkedIn）
+- 入库后接上跟"智能搜索"完全一样的后续：落成 `status='new'`（待审核）、后台排队 AI 匹配分析 + 公司国籍分类。差别是**跳过标题/地点粗筛**（`pipeline.queue_pending_jobs(enforce_relevance=False)`）——手动贴的是用户自己挑的，用当前搜索关键词去质疑它只会让这条职位永远拿不到匹配度
+- 去重沿用公司+职位名的 `make_dedupe_key`，库里和追踪表里已有的都跳过；`keyword` 列存职位名（不展示给用户，用途是让 `scraper.refetch_job_jd()` 以后还能重新定位这条职位）
+- 涉及文件：`job_link.py`（新增）、`app.py`（`POST /api/jobs/add_by_url`）、`pipeline.py`、`templates/index.html`、`static/app.js`、`static/style.css`、`tests/test_add_by_url.py`（新增，网络与 LLM 全 mock）
+
 ## 计划中 / 讨论中
 
-### 面试准备模块（讨论于 2026-08-16）
+> 优先级说明（2026-08-18 产品 review 后确立）：使用者处于**已离职、求职紧迫**的时期，本节按"这件事能不能在两周内增加真实面试机会"排序。下面「求职决策闭环」是 P0/P1，其余批次（UI/UX P1+P2、P3 模拟面试、界面双语切换）**明确冻结**，等求职告一段落再动。完整论证见 [product-review.md](product-review.md)（2026-08-18 快照）。
+
+### 求职决策闭环（讨论于 2026-08-18）
+来自使用者提出的 7 条一手痛点。review 把它们归因到三个根因：**评分器没有记忆**（痛点③⑦）、**没有工作流状态机**（痛点④⑥）、**抓取层**（痛点①②）。数据佐证：37 条 ≥0.7 的职位里被人工忽略 11 条、只投了 5 条；6 条已投递中 5 条是星标——星标比 AI 分数更能预测投递。
+
+**P0 批次（本周）**
+- [ ] **每日任务清单**（痛点④）：首页顶部按库状态自动生成可勾选清单（今日抓取 / N 条待审核 / M 条待生成材料 / K 条待投递 / J 条投了超 7 天该跟进），支持自定义条目。顺带把零使用率的备注/简历体检/标签带到用户面前
+- [ ] **投递状态自动化**（痛点⑥）：Easy Apply 走完后自动置 `applied` 并记录投递时间；列表页加一键「我投了」；投递时间用于上面的跟进提醒。这是效果闭环的入口
+- [ ] **忽略原因收集 → 偏好档案**（痛点③⑦的地基）：忽略时弹一行原因（预设标签 + 自由文本）存库；累计到阈值后一次 LLM 调用总结成「偏好档案」，注入 `analyzer.py` 的 prompt。可用现有 11 条"高分被忽略"补录冷启动。review 判断这是整个项目**唯一有结构性差异化**的能力——竞品的反馈学习全在雇主端，to-C 侧因拿不到足量单用户信号而做不了，本地单用户工具反而做得到
+
+**P1 批次（两周内）**
+- [ ] **每日/每周复盘报告**（痛点⑦）：今天审核 N 条 / 投递 M 条 / 生成材料 K 份 + 偏好总结 + 下一步综合建议。数据源是上面两条 P0
+- [x] **LinkedIn 推荐职位手动导入**（痛点①）：**不做**个性化推荐流的抓取（需登录态高频请求，封号风险直接命中求职主通道）；改做「粘贴 URL / 批量粘贴」导入通道，走完整分析链路 —— 2026-08-18 完成，见上面「手动粘贴 LinkedIn 职位链接入库」
+- [ ] **跨源去重加固**（痛点②）：`make_dedupe_key()` 增加归一化——剥离 `Senior/Sr./资深`、括号后缀 `(Shanghai)`、公司后缀 `Inc./Ltd./有限公司`、全半角统一。最近一次运行 98/281 判重，真实重复率更高
+- [ ] **材料生成触发点后移**：从"详情页随时可点"改成"标记准备投递时才生成"。现状是 24 条已生成里 20 条没投、7 条所在职位后来被忽略，约 80% 打水漂
+- [ ] **首页主数字改口径**：从「N 条越过 70% 投递线」改成诚实口径（如「N 条待你决定」）。评分器已被数据证伪，不该把它的输出放在全页最大字号上
+
+**冻结期间仍要做的两个例外**（各是几行，且挡住日常路径）
+- [ ] `/jobs/<id>` 补移动端断点：`style.css:908` 的 `.detail-layout` 没被 720px 块覆盖，手机上是压缩而不是堆叠
+- [ ] 未分析职位允许点进详情页：`app.js:691` 的 `clickable` 判定挡住了它，而 `job_detail.js:98` 的空态早就写好了，现在只能手敲 URL 才看得到
+
+**P2（求职告一段落后）**
+- [ ] **求职策略 / 职位定位模块**：接住 `解决问题方面的思考` 里那条因果链——定位不清 → 投了不想去的岗 → 面试没热情 → 不愿准备。与偏好档案联动，回答"我到底想要什么样的工作"
+- [ ] **面试准备形态转向**：从"替你写标准答案"改成"向你提问、把真实经历问出来"。使用者笔记直言"觉得虚假、需要包装自己"，数据佐证 `work_history` 分类 0 条、`self_intro` 仅 1 条——最需要个人真实素材的两类恰恰是空的。这比再加一个 P3 模拟面试更能解决问题
+
+### 待决策：自动投递红线（痛点⑤，讨论于 2026-08-18）
+使用者提出"对不那么重点关注的职位自动操作浏览器完成投递"，直接冲突 [mission.md](mission.md) 里"代码里没有、也不会有点击提交申请的逻辑"这条承诺。已在 [product-review.md](product-review.md#九待决策项自动投递红线痛点) 第九节算清两条路的工作量/风险/收益，**等使用者决策**，在此之前不动 mission.md。要点：自动投递回复率 1–3%，直接联系 hiring manager 40–60%；且痛点⑤的字面需求（自动投更多）与使用者自己笔记里的诊断（投了太多不想去的）方向相反。
+
+### UI/UX 后续批次（讨论于 2026-08-16，**2026-08-18 起冻结**）
+上面那次评审里改动更大的部分，按优先级排着：
+- [ ] **P1 批次**：批量分析的批次进度（`3/57`，需后端在 `job_state.py` 记 `{total, done}`）+ 全局"后台在跑什么"指示器；把"全部重新获取JD""识别公司国籍"两个后台任务从筛选栏移走（它们不是筛选器）；筛选汇总条；弹窗补 `role="dialog"`/焦点陷阱/背景锁滚动/设置脏检查；职位卡片键盘可达；统一三种并存的确认惯例；题库页补返回链接 + 三页共享 topbar；16 个设置项补 `<label for>`；`.topbar` 补 `flex-wrap` 和 720–1000px 断点
+- [ ] **P2 批次**：列表分页/虚拟滚动；`renderJobs()` 改增量更新（现在每次轮询整表 `innerHTML` 重绘，滚动位置和 hover 全丢）；题库对话流式输出；`prefers-reduced-motion`；约 60 处内联 `onclick` 改事件委托（emoji 图标统一成 SVG 已在 2026-08-17 视觉清理里完成，从这里移除）
+- 注：评审时提过"深色 token 写了两遍、合并掉"，实际做的时候确认**纯 CSS 做不到**——`@media` 包不住选择器列表的一半，没有预处理器就只能保留两份。已在 `style.css` 里加注释说明改色时两处都要改
+
+### 面试准备模块（讨论于 2026-08-16，剩余 P3 **2026-08-18 起冻结**）
 现有流水线到"投递 + 状态跟踪"就结束了，对方约面试之后又回到全手工准备。分三期补上这一段，每期独立可用。P1、P2 已完成（见上面"已完成"部分），剩余：
 - [ ] **P3 模拟面试**：AI 扮演面试官多轮提问、用户打字作答，结束后给评价报告（维度评分 + 优势/改进 + 逐题改写参考）；支持"针对某个职位"和"通用"两种模式、中/英文两种语言。会话状态需要持久化（支持刷新页面恢复 + 轮询），`llm.chat()` 的多轮 `messages` 支持已在 P1 就位
 
 ### 其它
-- [ ] **简历准备**（backlog，讨论于 2026-08-16）：用户提出但明确本期不做，先记着
-- kpi中体现哪些是linkedin的哪些是indeed
-- [ ] 右上角"原文 / 中文"语言切换按钮，支持界面双语切换（讨论于 2026-08-15，尚未实现）
-- [ ] `llm_provider` / `deepseek_model` 目前只能编辑 `config.json`，还没做到设置页界面上（讨论于 2026-08-15，尚未实现）
+- [ ] kpi 中体现哪些是 linkedin 的哪些是 indeed（当前 LinkedIn 50 / Indeed 35）
+- [ ] 右上角"原文 / 中文"语言切换按钮，支持界面双语切换（讨论于 2026-08-15，尚未实现；**2026-08-18 起冻结**）
 
 ---
-最后更新：2026-08-16（面试准备 P1 + P2 已完成，P3 模拟面试待做；题库和面试准备都已从弹窗改成独立页面，题库答案改成全量中英文 + 分段、起草拆成 3 次调用，并支持跟 AI 对话打磨答案）
+最后更新：2026-08-18（新增「手动粘贴 LinkedIn 职位链接入库」：首页「添加链接」按钮 → 弹窗批量贴链接 → 访客页抓取、抓不到时用已登录浏览器兜底 → 入库待审核并自动排队分析，对应 P1 批次里的「LinkedIn 推荐职位手动导入」痛点①，该条已勾掉）
+
+2026-08-18（完成一次资深产品总监视角的全面 review，含联网竞品调研，整体覆盖重写 [product-review.md](product-review.md) 为 2026-08-18 快照。核心结论：降噪这一层已做成，产品该从「降噪」升级到「决策」；评分器已被真实数据证伪——37 条 ≥0.7 里人工忽略 11 条、只投 5 条，星标比 AI 分数更能预测投递；7 条一手痛点收敛到三个根因。本节新增「求职决策闭环」P0/P1/P2 批次与「待决策：自动投递红线」，并把 UI/UX P1+P2、P3 模拟面试、界面双语切换明确冻结。未改 mission.md，等自动投递红线决策后再动）
+
+2026-08-17（继续对比真实首页和设计稿 v2：把 11 处组件的字号/字重（含徽标的字体族/大小写/圆角形状）对齐设计稿数值，红/橙/绿语义色本轮不动。上一版：对比真实首页和设计稿 v2 后再调整：智能搜索/AI分析/面试题库三个高频入口从顶栏挪到导语行右侧，新增"今日抓取"漏斗统计，删掉失效的 `loadBankSummary()` 死代码。再上一版：首页视觉清理完成：emoji 图标统一成 SVG、颜色收敛到群青+黑白两色、面试题库入口挪回顶栏、修复 4 个次级页面顶栏 `.brand-icon` 断裂 bug；产品改名"职达 Landed"。再上一版：首页视觉改版已完成并接入真实代码：`static/style.css` 设计 token 整体从浅紫渐变换成冷调纸白/近黑+群青单色，状态卡片重新蒙皮成大卡片，面试题库入口从顶栏小按钮提成独立横幅，重点关注置顶+全部按匹配度排序取代原来"最新在前"。两版独立 mockup `design_preview.html`/`design_preview_v2.html` 仅作为过程产物留在根目录）
+
+2026-08-17（职位详情页从弹窗改成独立页面 `/jobs/<id>`，加上 AI 对话 + 备注；新增职位标签；定制简历/Cover Letter 从匹配分析里拆成按需生成，单条按钮 + 批量按钮；标记忽略会中断当前正在分析的这一条但不再停掉整个批次。另外「我的简历」模块 + 首屏收敛已完成：简历改成上传、AI 体检 + 一键生成优化版、四个入口的 need_resume 引导、改名 Signal、重点关注提到统计卡、默认筛选改「全部」。原"其它"里的**简历准备** backlog 条目随之落地移除）
+
+2026-08-16（面试准备 P1 + P2 已完成，P3 模拟面试待做；题库和面试准备都已改成独立页面，题库新增「讲述过往工作」区块、支持目录导航和逐题折叠，起草拆成 4 次调用；AI 模型可按功能位分别在界面上切换；完成一次 UI/UX 评审并落地 P0 修复——toast 层级、失败误报成功、刷新按钮、筛选进 URL、空状态区分、忽略可撤销、排版与对比度、焦点样式、轮询与防抖）；新增 [product-review.md](product-review.md) 产品评估快照（竞争力/不足/竞品/商业化），本文件顶部加了链接）

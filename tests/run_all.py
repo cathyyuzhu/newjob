@@ -16,8 +16,10 @@ for _s in (sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TESTS = ["test_llm.py", "test_prep.py", "test_frontend.py", "test_bank.py", "test_bank_chat.py"]
-JS_FILES = ["static/common.js", "static/interview.js", "static/bank.js", "static/app.js"]
+TESTS = ["test_llm.py", "test_prep.py", "test_frontend.py", "test_bank.py", "test_bank_chat.py",
+         "test_resume.py", "test_job_detail.py", "test_dismiss_abort.py", "test_add_by_url.py"]
+JS_FILES = ["static/common.js", "static/interview.js", "static/bank.js", "static/app.js",
+            "static/resume.js", "static/job_detail.js"]
 
 
 def run(cmd, cwd=BASE):

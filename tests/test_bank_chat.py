@@ -41,6 +41,14 @@ import resume_docx
 
 resume_docx.read_resume_text = lambda path: "[0] Cathy Yang\n[1] 产品经理，做过XX项目"
 
+# 题库对话读简历，而"简历"现在是用户上传的文件（不再回退到某个硬编码路径），
+# 所以得先造一份出来。内容无所谓——上面已经把 read_resume_text 换掉了。
+import config as _cfg
+
+_fake_resume = os.path.join(tmpdir, "base.docx")
+open(_fake_resume, "wb").close()
+_cfg.save_config({**_cfg.DEFAULT_CONFIG, "base_resume_path": _fake_resume})
+
 import interview
 import pipeline  # noqa: F401  （让 app.py 里的 pipeline 引用拿到同一个已 patch 的 llm）
 import app as flask_app

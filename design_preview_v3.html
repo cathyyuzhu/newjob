@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signal 首页设计稿 v3</title>
+<style>
+/* ═══════════════════════════════════════════════════════════
+   v3 相对目前线上版本（style.css 2026-08-17 改版）的改动，只解决用户反馈的
+   四件事，不重新设计：
+   1. emoji 图标（🏷️📄✉️🎤📝🌍🇨🇳📭💬✨）全部换成同一套线性 SVG，标签按钮从
+      文字按钮形状改成方形图标按钮，跟星标/勾选/X 归成一组。
+   2. 用色收回 design_preview_v2.html 定的那条规则：整页只有一个彩色——群青，
+      专门留给"机器算出来的东西"（匹配分数、AI 生成的面试准备标记、链接）；
+      其余一切，包括主按钮、激活态、"重点关注"星标、状态徽章，全部用近黑/纸白
+      两色表达，不再有金色星标、不再按状态给徽章/下拉框上蓝橙绿三色。
+      Indeed/LinkedIn 来源徽标本来就是中性灰描边，不受影响。
+   3. 面试题库入口从"统计卡片和筛选栏之间的独立横幅"挪回顶栏，做成图标+文字
+      的常驻按钮，跟"我的简历"同一排；摘要文案收进 hover 提示。
+   ═══════════════════════════════════════════════════════════ */
+:root{
+  --paper:#EDEEF0; --raised:#F7F8F9; --ink:#14161A; --graphite:#6B7078;
+  --rule:#D7DADE; --signal:#2B3AF0; --signal-soft:#E4E6FD;
+  --sans:"Segoe UI Variable Display","Segoe UI",-apple-system,BlinkMacSystemFont,
+         "Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono","Segoe UI Mono","Roboto Mono",Menlo,monospace;
+  --gut:clamp(1.1rem,3.5vw,3rem);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0F1114; --raised:#171A1F; --ink:#E9EBEE; --graphite:#878D96;
+    --rule:#272B31; --signal:#7C88FF; --signal-soft:#23274A;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0F1114; --raised:#171A1F; --ink:#E9EBEE; --graphite:#878D96;
+  --rule:#272B31; --signal:#7C88FF; --signal-soft:#23274A;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);
+     font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.page{max-width:1180px;margin:0 auto;padding:0 var(--gut) 6rem}
+button,a,select,input{font-family:inherit}
+:focus-visible{outline:2px solid var(--signal);outline-offset:2px;border-radius:3px}
+svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+
+/* ── 顶栏 ─────────────────────────────────────────── */
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;
+        padding:1.5rem 0 1.15rem;border-bottom:1px solid var(--rule);flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:.65rem}
+.brand h1{font-size:1.05rem;font-weight:700;letter-spacing:-.01em}
+.brand .sub{font-size:.76rem;color:var(--graphite)}
+.topbar-actions{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
+.act{font-size:.82rem;font-weight:600;padding:.5rem .85rem;border-radius:4px;cursor:pointer;
+     display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--ink);
+     background:var(--ink);color:var(--paper);transition:.15s;white-space:nowrap}
+.act svg{width:15px;height:15px}
+.act:hover{opacity:.84}
+.act.ghost{background:none;border-color:var(--rule);color:var(--ink)}
+.act.ghost:hover{border-color:var(--ink)}
+.tool{width:32px;height:32px;display:grid;place-items:center;border:1px solid var(--rule);
+      border-radius:4px;background:none;color:var(--graphite);cursor:pointer;transition:.15s}
+.tool:hover{border-color:var(--ink);color:var(--ink)}
+
+/* ── 导语 ─────────────────────────────────────────── */
+.lede{font-size:clamp(1rem,1.6vw,1.15rem);font-weight:300;line-height:1.6;color:var(--graphite);
+      margin:1.7rem 0 0;max-width:62ch}
+.numi{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.figure{font-size:1.7em;font-weight:250;color:var(--signal);letter-spacing:-.03em;
+        font-variant-numeric:tabular-nums}
+
+/* ── 状态卡片 ─────────────────────────────────────── */
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:.7rem;margin:1.7rem 0 1.5rem}
+.tile{background:var(--raised);border:1px solid var(--rule);border-radius:4px;
+      padding:1.3rem 1.25rem 1.15rem;text-align:left;cursor:pointer;color:inherit;
+      transition:border-color .15s,background .15s,transform .15s}
+.tile:hover{border-color:var(--ink);transform:translateY(-1px)}
+.tile-n{display:block;font-size:2.5rem;font-weight:300;letter-spacing:-.03em;line-height:1;
+        margin-bottom:.3rem;font-variant-numeric:tabular-nums}
+.tile-l{font-size:.88rem;font-weight:600;display:flex;align-items:center;gap:.3rem}
+.tile-l svg{width:.9em;height:.9em}
+.tile-h{font-size:.72rem;color:var(--graphite);margin-top:.15rem}
+.tile.on{background:var(--ink);border-color:var(--ink)}
+.tile.on .tile-n,.tile.on .tile-l{color:var(--paper)}
+.tile.on .tile-h{color:var(--paper);opacity:.6}
+
+/* ── 二级筛选条 ───────────────────────────────────── */
+.filters{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;padding-bottom:1rem}
+.chip{font-size:.8rem;font-weight:600;padding:.32rem .85rem;border:1px solid var(--rule);
+      border-radius:100px;background:none;color:var(--graphite);cursor:pointer;
+      transition:.15s;white-space:nowrap;display:inline-flex;align-items:center;gap:.3rem}
+.chip svg{width:13px;height:13px}
+.chip:hover{color:var(--ink);border-color:var(--ink)}
+.chip.on{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.vrule{width:1px;height:20px;background:var(--rule);margin:0 .1rem}
+.search{display:flex;align-items:center;gap:.45rem;border:1px solid var(--rule);border-radius:4px;
+        padding:.4rem .7rem;background:var(--raised);margin-left:auto}
+.search svg{width:14px;height:14px;color:var(--graphite)}
+.search input{border:0;background:none;outline:0;color:inherit;font-size:.82rem;width:150px}
+.mini{font-size:.78rem;font-weight:600;padding:.4rem .7rem;border:1px solid var(--rule);
+      border-radius:4px;background:none;color:var(--graphite);cursor:pointer;transition:.15s;
+      white-space:nowrap}
+.mini:hover{color:var(--ink);border-color:var(--ink)}
+
+/* ── 分组标题 ─────────────────────────────────────── */
+.group{display:flex;align-items:center;gap:.7rem;margin:1.6rem 0 .2rem}
+.group-t{font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+         color:var(--graphite);display:flex;align-items:center;gap:.4rem;white-space:nowrap}
+.group.pin .group-t{color:var(--ink)}
+.group-t svg{width:13px;height:13px;fill:currentColor;stroke:none}
+.group-line{flex:1;height:1px;background:var(--rule)}
+
+/* ── 职位行 ───────────────────────────────────────── */
+.rows{list-style:none;display:flex;flex-direction:column}
+.row{display:flex;align-items:flex-start;gap:1rem;padding:1rem 0;border-bottom:1px solid var(--rule);
+     transition:padding-left .18s,border-color .18s,background .18s}
+.row:hover{padding-left:.6rem;border-color:var(--ink);background:var(--raised)}
+.row.star{border-left:3px solid var(--ink);padding-left:.65rem;background:var(--raised)}
+.row.star:hover{padding-left:.85rem}
+.row.hero{background:var(--ink);color:var(--paper);border-radius:4px;padding:1.6rem 1.5rem;
+          border:0;align-items:flex-start}
+.row.hero:hover{padding-left:1.5rem;background:var(--ink)}
+.row-score{font-weight:300;font-size:1.15rem;letter-spacing:-.02em;color:var(--signal);
+           min-width:3.4rem;padding-top:.05rem;font-variant-numeric:tabular-nums}
+.row.hero .row-score{font-size:2rem;font-weight:250;color:inherit;min-width:4rem}
+.row-main{min-width:0;flex:1}
+.row-title-line{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.starmark{color:var(--ink);display:inline-flex}
+.starmark svg{width:13px;height:13px;fill:currentColor;stroke:none}
+.row.hero .starmark{color:inherit}
+.row-title{font-size:.95rem;font-weight:600;color:inherit;text-decoration:none}
+.row-title:hover{color:var(--signal)}
+.row.hero .row-title{font-size:1.08rem}
+.row.hero .row-title:hover{color:inherit;text-decoration:underline}
+.badge{font-size:.7rem;font-weight:600;padding:.13rem .5rem;border:1px solid var(--rule);
+       border-radius:999px;color:var(--graphite);display:inline-flex;align-items:center;gap:.25rem;
+       white-space:nowrap}
+.badge svg{width:11px;height:11px}
+.badge.solid{border-color:var(--ink);color:var(--ink)}
+.badge.prep{border-color:var(--signal);color:var(--signal)}
+.row.hero .badge{border-color:color-mix(in srgb, var(--paper) 40%, transparent);color:var(--paper)}
+.row-meta{font-size:.78rem;color:var(--graphite);margin-top:.35rem;display:flex;gap:.5rem;
+          flex-wrap:wrap;align-items:center}
+.row.hero .row-meta{color:color-mix(in srgb, var(--paper) 65%, transparent)}
+.row-meta i{font-style:normal;opacity:.5}
+.row-meta a{color:var(--signal);text-decoration:none;font-weight:600;display:inline-flex;
+            align-items:center;gap:.25rem}
+.row-meta a svg{width:13px;height:13px}
+.row-meta a:hover{text-decoration:underline}
+.row.hero .row-meta a{color:var(--paper);text-decoration:underline}
+.row-acts{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap;justify-content:flex-end;
+          flex-shrink:0}
+.row.hero .row-acts{flex-basis:100%;margin-top:1.1rem;justify-content:flex-start}
+.sel{font-size:.75rem;font-weight:600;padding:.32rem .5rem;border:1px solid var(--rule);
+     border-radius:4px;background:var(--paper);color:var(--graphite);cursor:pointer}
+/* Offer 是唯一值得单独标出来的投递状态——用"墨色描边+加粗"这套跟"已收藏"徽章
+   同一个语言表达"重要"，不新引入颜色 */
+.sel.st-offer{border-color:var(--ink);color:var(--ink);font-weight:700}
+.sm{font-size:.78rem;font-weight:600;padding:.34rem .7rem;border:1px solid var(--rule);
+    border-radius:4px;background:none;color:var(--ink);cursor:pointer;transition:.15s;
+    white-space:nowrap;display:inline-flex;align-items:center;gap:.35rem}
+.sm svg{width:14px;height:14px}
+.sm:hover{border-color:var(--ink)}
+.row.hero .sm{color:var(--paper);border-color:color-mix(in srgb, var(--paper) 40%, transparent)}
+.row.hero .sm:hover{border-color:var(--paper)}
+.ib{width:30px;height:30px;display:grid;place-items:center;border:1px solid var(--rule);
+    border-radius:4px;background:none;color:var(--graphite);cursor:pointer;transition:.15s}
+.ib:hover{color:var(--ink);border-color:var(--ink)}
+.ib svg{width:15px;height:15px}
+.ib.starred{color:var(--ink);border-color:var(--ink)}
+.ib.starred svg{fill:currentColor}
+.row.hero .ib{color:var(--paper);border-color:color-mix(in srgb, var(--paper) 40%, transparent)}
+.row.hero .ib:hover{border-color:var(--paper)}
+.row.hero .ib.starred{color:var(--paper);border-color:var(--paper)}
+.row-date{font-size:.72rem;color:var(--graphite);align-self:center;margin-left:.15rem;
+          white-space:nowrap}
+
+.note{margin-top:3rem;padding-top:1.1rem;border-top:1px solid var(--rule);
+      font-size:.78rem;color:var(--graphite);line-height:1.9}
+.note b{color:var(--ink)}
+
+@media (max-width:960px){
+  .tiles{grid-template-columns:repeat(2,1fr)}
+  .search{margin-left:0;flex:1 1 100%;max-width:none}
+}
+@media (max-width:720px){
+  .row{flex-wrap:wrap}
+  .row-acts{flex-basis:100%;justify-content:flex-start;margin-top:.6rem}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="topbar">
+    <div class="brand">
+      <h1>Signal</h1>
+      <div class="sub">求职路上，滤掉噪音，只留信号</div>
+    </div>
+    <div class="topbar-actions">
+      <button class="act">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        智能搜索
+      </button>
+      <button class="act">
+        <svg viewBox="0 0 24 24"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>
+        AI分析
+      </button>
+      <button class="act ghost">
+        <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>
+        我的简历
+      </button>
+      <!-- 面试题库：原来是统计卡片下方一整条独立横幅，现在跟"我的简历"一样收进顶栏，
+           摘要文案（题库条数/职位专属准备份数）挪进 title 悬浮提示，不再占正文一整行 -->
+      <button class="act ghost" title="通用面试题库：自我介绍（中/英双版）· 5 个 STAR 故事 · 10 道通用问答 —— 共 16 条已就绪，另有 3 份职位专属面试准备">
+        <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
+        面试题库
+      </button>
+      <button class="tool" title="更多">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button class="tool" title="切换深色模式" onclick="flip()">
+        <svg viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <p class="lede">
+    在库 <span class="numi">80</span> 条职位，已完成 AI 匹配 <span class="numi">48</span> 条。
+    <span class="figure">24</span> 条越过 70% 投递线，值得今天出手。
+  </p>
+
+  <div class="tiles">
+    <button class="tile on">
+      <span class="tile-n">30</span>
+      <span class="tile-l">待审核</span>
+      <span class="tile-h">还没决定要不要</span>
+    </button>
+    <button class="tile">
+      <span class="tile-n">18</span>
+      <span class="tile-l">已收藏</span>
+      <span class="tile-h">打算投的</span>
+    </button>
+    <button class="tile">
+      <span class="tile-n">5</span>
+      <span class="tile-l"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg>重点关注</span>
+      <span class="tile-h">优先盯的</span>
+    </button>
+    <button class="tile">
+      <span class="tile-n">32</span>
+      <span class="tile-l">已忽略</span>
+      <span class="tile-h">不考虑了</span>
+    </button>
+  </div>
+
+  <div class="filters">
+    <button class="chip on">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 4 6 4 9s-1.5 6.4-4 9c-2.5-2.6-4-6-4-9s1.5-6.4 4-9z"/></svg>
+      外企
+    </button>
+    <button class="chip">
+      <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 21v-4h6v4M9 8h.01M9 12h.01M15 8h.01M15 12h.01"/></svg>
+      国内公司
+    </button>
+    <button class="chip">全部</button>
+    <span class="vrule"></span>
+    <button class="chip on">投递状态：全部</button>
+    <button class="chip">待投</button>
+    <button class="chip">已投递</button>
+    <button class="chip">面试中</button>
+    <button class="chip">Offer</button>
+    <span class="vrule"></span>
+    <button class="chip">AI</button>
+    <button class="chip">remote</button>
+    <div class="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" placeholder="搜索职位或公司…">
+    </div>
+    <button class="mini">刷新</button>
+    <button class="mini">全部重新获取JD</button>
+    <button class="mini">识别公司国籍</button>
+    <button class="mini">批量生成材料</button>
+  </div>
+
+  <ol class="rows" id="heroRow"></ol>
+
+  <div class="group pin">
+    <span class="group-t">
+      <svg viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg>
+      重点关注 · 4 条（不含上方今日最高）
+    </span>
+    <span class="group-line"></span>
+  </div>
+  <ol class="rows" id="starRows"></ol>
+
+  <div class="group">
+    <span class="group-t">其余职位 · 按匹配度</span>
+    <span class="group-line"></span>
+  </div>
+  <ol class="rows" id="normalRows"></ol>
+
+  <p class="note">
+    设计稿 v3（用色改用 v2 那条规则）· 只解决颜色/图标/题库入口三处反馈，不改布局大方向：
+    <b>emoji 图标全部换成线性 SVG</b>（标签按钮改成方形图标按钮，跟星标/勾选/X 同组）；
+    <b>整页只留群青一个彩色</b>，专门表示"机器算出来的"——匹配分数、面试准备的 AI 标记、链接；
+    星标/主按钮/激活态/"已收藏"徽章/Offer 状态全部改回近黑+纸白表达，不再有金色星标，也不再按投递状态给下拉框上色；
+    <b>面试题库入口挪回顶栏</b>，跟"我的简历"同排，摘要文案收进悬浮提示。<br>
+    另外发现一个未提交的 bug（跟这版视觉无关，回填代码时一并修）：`interview.html`/`job_interview.html`/`job_detail.html`/`resume.html`
+    这 4 个次级页面的顶栏还留着旧版 `.brand-icon` 图标块，但对应 CSS 已经在上一轮改版里删掉了，现在这几个页面顶栏是断的。
+  </p>
+
+</div>
+
+<script>
+const I = {
+  star:'<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg>',
+  starOutline:'<svg viewBox="0 0 24 24"><path d="m12 3.2 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6-4.4-4.3 6.1-.9L12 3.2z"/></svg>',
+  check:'<svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>',
+  x:'<svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  tag:'<svg viewBox="0 0 24 24"><path d="M12.6 2.6 21 11l-9 9-8.4-8.4A2 2 0 0 1 3 10.2V4a1 1 0 0 1 1-1h6.2a2 2 0 0 1 1.4.6z"/><circle cx="7.4" cy="7.4" r="1.2" fill="currentColor" stroke="none"/></svg>',
+  easyApply:'<svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+  resume:'<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>',
+  mail:'<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6 8.5-6"/></svg>',
+  mic:'<svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>',
+};
+
+const HERO = {s:82.5,t:'Senior Product Manager — AI, Amazon Global Selling · PMO',c:'Amazon',l:'深圳',src:'LinkedIn',d:'07-31',st:'reviewed',app:'not_applied',starred:true};
+const STARRED=[
+  {s:75.0,t:'Sr. Manager, Product Management, ROA, Worldwide Global Selling',c:'Amazon',l:'深圳',src:'Indeed',d:'08-10',st:'reviewed',app:'applied',prep:true},
+  {s:73.0,t:'Sr. AI Product Manager, Tech, Seller Compliance',c:'Amazon',l:'上海',src:'Indeed',d:'08-05',st:'reviewed',app:'not_applied',prep:false},
+  {s:73.0,t:'Senior Product Manager — AI, NBS AI and OPS',c:'Amazon',l:'上海',src:'LinkedIn',d:'08-04',st:'reviewed',app:'interviewing',prep:true},
+  {s:72.5,t:'Senior Product Manager',c:'Duolingo',l:'深圳',src:'Indeed',d:'08-08',st:'reviewed',app:'not_applied',prep:false},
+];
+const NORMAL=[
+  {s:79.5,t:'Senior Game Product Manager, Monetization and Growth — Wild Rift',c:'Riot Games',l:'上海',src:'LinkedIn',d:'08-11',st:'reviewed',app:'offer',prep:false},
+  {s:78.0,t:'Senior Product Manager (AI Agent)',c:'AfterShip',l:'深圳',src:'LinkedIn',d:'08-14',st:'new',app:null,prep:false},
+  {s:75.0,t:'Associate Director, Product Development',c:'HSBC',l:'深圳',src:'LinkedIn',d:'08-06',st:'reviewed',app:'not_applied',prep:true},
+  {s:73.5,t:'Sr. AI Product Manager, ESM Central Operation',c:'Amazon',l:'上海',src:'LinkedIn',d:'08-11',st:'new',app:null,prep:false},
+];
+
+const STATUS_LABEL = {new:'待审核',reviewed:'已收藏',dismissed:'已忽略'};
+const APP_LABEL = {not_applied:'待投',applied:'已投递',interviewing:'面试中',offer:'Offer'};
+
+function rowHtml(j, opts){
+  opts = opts || {};
+  const cls = ['row'];
+  if (j.starred || opts.starred) cls.push('star');
+  if (opts.hero) cls.push('hero');
+  const appSelect = j.app ? `<select class="sel st-${j.app}">${Object.entries(APP_LABEL).map(([k,l])=>`<option${k===j.app?' selected':''}>${l}</option>`).join('')}</select>` : '';
+  return `<li class="${cls.join(' ')}">
+    <span class="row-score">${j.s.toFixed(1)}${opts.hero?'<span style="font-size:.4em;opacity:.6">%</span>':''}</span>
+    <div class="row-main">
+      <div class="row-title-line">
+        ${(j.starred || opts.starred) ? `<span class="starmark" title="重点关注">${I.star}</span>` : ''}
+        <a class="row-title" href="#">${j.t}</a>
+        <span class="badge">${j.src}</span>
+        <span class="badge${j.st==='reviewed'?' solid':''}">${STATUS_LABEL[j.st]}</span>
+        ${j.prep ? `<span class="badge prep">${I.mic}面试准备</span>` : ''}
+      </div>
+      <div class="row-meta">
+        <span>${j.c}</span><i>·</i><span>${j.l}</span><i>·</i><span>${j.d} 发布</span>
+        ${j.st!=='dismissed' ? `<i>·</i><a href="#">${I.resume}定制简历</a><a href="#">${I.mail}Cover Letter</a>` : ''}
+      </div>
+    </div>
+    <div class="row-acts">
+      ${appSelect}
+      ${j.st==='reviewed' ? `<button class="sm">${I.easyApply}Easy Apply</button>` : ''}
+      ${j.st!=='dismissed' ? `<button class="ib" title="编辑标签">${I.tag}</button>` : ''}
+      <button class="ib${(j.starred||opts.starred)?' starred':''}" title="重点关注">${I.star}</button>
+      <button class="ib" title="标记已收藏">${I.check}</button>
+      <button class="ib" title="忽略">${I.x}</button>
+      <span class="row-date">${j.d}</span>
+    </div>
+  </li>`;
+}
+
+document.getElementById('heroRow').innerHTML = rowHtml(HERO, {hero:true, starred:true});
+document.getElementById('starRows').innerHTML = STARRED.map(j=>rowHtml(j)).join('');
+document.getElementById('normalRows').innerHTML = NORMAL.map(j=>rowHtml(j)).join('');
+
+document.querySelectorAll('.tile').forEach(t=>{
+  t.addEventListener('click',()=>{
+    const was = t.classList.contains('on');
+    document.querySelectorAll('.tile').forEach(o=>o.classList.remove('on'));
+    if(!was) t.classList.add('on');
+  });
+});
+document.querySelectorAll('.filters .chip').forEach((c,i,all)=>{
+  c.addEventListener('click',()=>{
+    const group = i<3 ? [...all].slice(0,3) : (i<8 ? [...all].slice(3,8) : [...all].slice(8));
+    group.forEach(o=>o.classList.remove('on'));
+    c.classList.add('on');
+  });
+});
+function flip(){
+  const cur = document.documentElement.getAttribute('data-theme');
+  const dark = cur ? cur==='dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme', dark?'light':'dark');
+}
+</script>
+</body>
+</html>

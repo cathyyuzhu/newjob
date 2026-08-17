@@ -11,10 +11,14 @@
 | 定时任务 | APScheduler `BackgroundScheduler` (>=3.10.4) | 进程内 cron，随 Flask 进程启停 |
 | 待审核队列存储 | SQLite（标准库 `sqlite3`，`jobs.db`） | 本机单进程小数据量，零配置 |
 | 匹配结果追踪表 | openpyxl 读写 xlsx (>=3.1.2) | 复用已有的 `JD匹配追踪表.xlsx` 格式 |
-| 简历生成 | python-docx (>=1.1.0) | 按段落索引改写定制简历 |
-| LLM 调用层 | `llm.py` 统一封装两家 provider（`chat`/`chat_json`/`ask`/`ask_json`/`resolve`），支持多轮 `messages` + system prompt + 可调 `max_tokens` | Anthropic Claude API（`anthropic` SDK）或 DeepSeek API（`urllib` 直调，OpenAI 兼容接口），按 `llm_provider` 配置二选一 |
-| AI 匹配分析 | `analyzer.py` | 复用 `jd-resume-matcher` 技能的 prompt/双因子模型 |
-| 面试准备 | `interview.py`（prompt + LLM 调用）+ `pipeline.py`（编排）+ `interview_preps` / `interview_bank` 表 | 单职位准备材料复用已有匹配分析结论；通用题库跨职位复用、用户可编辑 |
+| 简历生成 | python-docx (>=1.1.0) | 按段落索引改写定制简历 / 优化版，保留原文档排版 |
+| 简历存储 | `resume_store.py` + 项目内 `resumes/` 目录（已 gitignore） | 用户上传的基础简历的唯一入口：校验、落盘、指纹、回写 `base_resume_path`。只收 `.docx` |
+| 简历体检 | `resume_review.py`（prompt + LLM 调用）+ `resume_reviews` 表 | 不针对具体职位的整份简历诊断，输出的 `paragraph_edits` 直接喂给 `write_tailored_resume` 生成优化版 |
+| LLM 调用层 | `llm.py` 统一封装两家 provider（`chat`/`chat_json`/`ask`/`ask_json`/`resolve`/`resolve_task`），支持多轮 `messages` + system prompt + 可调 `max_tokens`；模型清单集中在 `MODELS` 注册表 | Anthropic Claude API（`anthropic` SDK）或 DeepSeek API（`urllib` 直调，OpenAI 兼容接口）。六个功能位（`analysis` / `materials` / `interview_prep` / `interview_bank` / `resume_review` / `job_chat`）按 `config.json` 的 `llm_tasks` 各配各的模型，留空回退到全局 `llm_provider` |
+| AI 匹配分析 | `analyzer.py` | 复用 `jd-resume-matcher` 技能的 prompt/双因子模型，只判断值不值得看，不产出简历/cover letter |
+| 定制简历 / Cover Letter 生成 | `analyzer.py` 的 `generate_materials()` + `job_state.py` 的材料生成状态组 | 从匹配分析里拆出来的独立一次 LLM 调用，用户点按钮（单条/批量）才触发 |
+| 职位 AI 对话 | `job_chat.py` | 针对具体职位自由问答，system prompt 装 JD/匹配分析结论/简历，不落库 |
+| 面试准备 | `interview.py`（prompt + LLM 调用）+ `pipeline.py`（编排）+ `interview_preps` / `interview_bank` 表 | 单职位准备材料复用已有匹配分析结论；通用题库跨职位复用、用户可编辑，四个类别（自我介绍 / STAR 故事库 / 讲述过往工作 / 通用问题）分四次调用起草 |
 | 前端 | 原生 HTML / CSS / JS | 无框架、无构建步骤 |
 | LinkedIn Easy Apply 自动化 | Playwright (>=1.45.0)，`launch_persistent_context` + `channel="msedge"`（本机无 Chrome） | 驱动真实浏览器、真实登录会话，非 headless；见下方决策 |
 
@@ -28,6 +32,11 @@ run_search_once() (scraper.py)
         │  按 关键词 × 城市 循环调用 jobspy.scrape_jobs()
         │  去重: dedupe_key(company+title) 对照
         │        SQLite 已有记录 + tracker.xlsx 已有记录 (tracker_xlsx.py)
+        │
+        │  另一条入库通道：用户在首页贴 LinkedIn 职位链接
+        │  add_jobs_from_urls() (job_link.py)：解析链接里的 job id →
+        │  访客页 requests 抓取，抓不到则用已登录的 Playwright profile 兜底 →
+        │  同一套 dedupe_key 去重（后续分析跳过标题/地点粗筛，见「关键决策」）
         ▼
 SQLite jobs 表 (models.py, jobs.db) —— 待审核队列
         │
@@ -35,15 +44,25 @@ SQLite jobs 表 (models.py, jobs.db) —— 待审核队列
         ▼
 analyze_pending_jobs() 批量 / analyze_and_record() 单条 (pipeline.py)
         │  1. 读基础简历文本 (resume_docx.py)
-        │  2. 调 LLM 双因子匹配分析 (analyzer.py)
-        │  3. 匹配度 >=70% 且需要定制 → 生成定制简历 docx (resume_docx.py)
-        │  4. 写入 JD匹配追踪表.xlsx (tracker_utils.py，复用自 jd-resume-matcher 技能)
-        │  5. 回写 SQLite: 匹配度 / 简历路径 / 报错（不动审核状态 new/reviewed/dismissed）
+        │  2. 调 LLM 双因子匹配分析 (analyzer.py)——只判断值不值得看
+        │  3. 写入 JD匹配追踪表.xlsx (tracker_utils.py，复用自 jd-resume-matcher 技能)
+        │  4. 回写 SQLite: 匹配度 / 报错（不动审核状态 new/reviewed/dismissed，
+        │     已有的 resume_path/cover_letter/resume_bullets 原样带回追踪表，不会被冲掉）
         ▼
-网页 /api/jobs、/api/tracker 读出最新状态展示
+网页 /jobs/<id> 详情页 读 /api/jobs/<id>/analysis 展示
         │
+        │  用户在详情页点"生成定制简历+Cover Letter"（单条），或列表页顶部
+        │  "批量生成材料"（对当前筛选出来的职位），已生成过的自动跳过
+        ▼
+generate_materials_for_job() (pipeline.py)
+        │  1. 读基础简历文本 + 已有的匹配分析结论
+        │  2. 调 LLM 生成定制简历改动方案 + cover letter (analyzer.generate_materials)
+        │  3. 写定制简历 docx (resume_docx.py)
+        │  4. 回写 SQLite jobs.resume_path/cover_letter/resume_bullets
+        │  5. 同步追踪表对应行的这几列 (tracker_utils.update_entry_fields，只改字段不重插行)
+        ▼
         │  用户把投递状态改成"面试中"时自动触发（后台线程），
-        │  或在职位详情弹窗的「面试准备」tab 里手动点"重新生成"
+        │  或在 /jobs/<id>/interview 页面手动点"重新生成"
         ▼
 generate_interview_prep() (pipeline.py)
         │  1. 读基础简历文本 (resume_docx.py)
@@ -51,10 +70,10 @@ generate_interview_prep() (pipeline.py)
         │  3. 调 LLM 生成面试准备材料 (interview.py → llm.py)
         │  4. 写入 SQLite interview_preps 表（成功/失败都写一行）
         ▼
-网页详情弹窗「面试准备」tab 读 /api/jobs/<id>/interview_prep 展示
+网页 /jobs/<id>/interview 页面 读 /api/jobs/<id>/interview_prep 展示（连同 /jobs/<id> 记的备注只读展示）
 ```
 
-`app.py` 是唯一的 Flask 入口，暴露 JSON API（`/api/config`、`/api/search/run`、`/api/jobs`、`/api/jobs/<id>/status`、`/api/jobs/<id>/starred`、`/api/jobs/<id>/analyze`、`/api/runs`、`/api/tracker`），`static/app.js` 用原生 `fetch` 调用，没有 SPA 框架、没有前端状态管理库。`app.run()` 开了 `threaded=True`（否则单次分析耗时 1~2 分钟期间会卡住整个开发服务器）。
+`app.py` 是唯一的 Flask 入口，暴露 JSON API（`/api/config`、`/api/search/run`、`/api/jobs/add_by_url`、`/api/jobs`、`/api/jobs/<id>/status`、`/api/jobs/<id>/starred`、`/api/jobs/<id>/tags`、`/api/jobs/<id>/analyze`、`/api/jobs/<id>/analysis`、`/api/jobs/<id>/generate_materials`、`/api/jobs/generate_materials`（批量）、`/api/jobs/<id>/chat`、`/api/jobs/<id>/notes`、`/api/runs`、`/api/tracker`），`static/app.js`/`job_detail.js` 用原生 `fetch` 调用，没有 SPA 框架、没有前端状态管理库。`app.run()` 开了 `threaded=True`（否则单次分析耗时 1~2 分钟期间会卡住整个开发服务器）。
 
 ## 关键决策
 
@@ -94,6 +113,12 @@ DeepSeek API 价格比 Claude 低一个数量级（讨论于 2026-08-15），个
 
 **地点相关性粗筛，以及为什么设置变更不触发旧数据清理（讨论于 2026-08-15）**
 跟标题粗筛同一思路：`_location_looks_relevant()` 用职位地点字符串和配置的城市列表（`config.json` 的 `locations`）做双向子串包含判断，都不沾边才跳过。起因是用户反馈"Remote"作为搜索地点时经常混进地理位置完全不相关的结果（例：Richmond, VA 的坐班职位），这类噪音之前会被手动强制重试时意外分析掉（手动路径不走粗筛）。同时讨论了"改了设置后旧结果怎么处理"——没有做自动删除/批量忽略：设置变更只影响之后新一轮"哪些职位该自动分析"的判断，不会回头处理数据库里已有的记录，因为待审核队列里可能有用户还没来得及看但仍然感兴趣的条目，自动清理是不可逆操作，风险大于收益。旧的不再匹配当前设置的记录会一直留在"待审核"里，需要用户自己手动忽略。
+
+**手动贴链接入库为什么自己发请求解析 HTML，而不是复用 jobspy；两级抓取为什么这么分（实现于 2026-08-18）**
+jobspy 不对外暴露"按 URL 取单条职位详情"的接口（同「JD正文缺失…」那条的理由），所以 `job_link.py` 只能自己来。第一级用 `requests` 抓 `/jobs/view/<id>` 访客页——多数公开职位不登录就看得到，快、不占浏览器；抓不到（限流、登录墙、职位本身要登录才可见）才降到第二级：复用 `easy_apply.PROFILE_DIR` 那个已登录的 Playwright profile。**不把第二级当默认路径**，因为那个 profile 目录是 Chromium 的独占锁，跟 Easy Apply 窗口互斥，每贴一次链接就抢一次锁、还要付几秒的浏览器启动成本；反过来也**不省掉第二级**，因为用户手动贴的往往正是访客身份看不全的那些。第二级整批共用一个 context（逐条各开一次既慢又反复抢锁），先无头、整批都没抓到才带界面重试一次——LinkedIn 对无头会话的识别更严，偶尔直接甩登录墙，但只要无头拿到了内容就不该弹窗打扰用户。访客页和登录页是两套完全不同的 DOM，用一张"候选选择器表"（`_TITLE_SELECTORS` 等，谁先命中用谁）让同一个 `_parse_job_page()` 服务两条路径，而不是维护两份几乎一样的解析代码；LinkedIn 改版时只需往表里补一条。抓取本身是同步跑在请求里的（跟"立即搜索一次"的后台线程模式相反）：用户贴完链接要的就是逐条的"进没进去、为什么没进"，这个结果没法用一句"已在后台开始"代替，代价是条数上限压到 20 条（`job_link.MAX_URLS`）。
+
+**手动贴进来的职位为什么绕开标题/地点粗筛（2026-08-18）**
+两道粗筛（见上面两条）的前提是"自动搜索抓回来的东西鱼龙混杂，得先挡掉明显不沾边的再花钱"。手动贴的链接没有这个前提——它是用户一条条挑出来的，用当前配置的关键词/城市去质疑它，结果只会是这条职位躺在待审核里永远拿不到匹配度（贴一条深圳的岗、或者标题措辞跟关键词完全不同的岗，都会被静默跳过，而且界面上看不出为什么）。所以 `queue_pending_jobs()` 加了 `enforce_relevance` 参数，手动入口传 `False`；这跟"手动点单条 AI 分析不走粗筛"是同一条原则——**用户的显式选择优先于程序的启发式判断**。入库的其余部分完全复用现有路径（`insert_job` → `status='new'` → 后台排队分析 + 公司国籍分类），不新开一条并行的流水线。`keyword` 列存职位名而不是"手动添加"之类的标记：这一列不展示给用户，它的实际用途是 `scraper.refetch_job_jd()` 重新定位职位时的搜索词，填职位名这条职位以后才还能用"重新获取JD"。
 
 **为什么 SQLite 连接要开 WAL 模式 + 长超时（讨论/发现于 2026-08-15）**
 自动分析上线后，"搜索"和"后台批量分析"经常并发跑（比如刚点了"立即搜索一次"，同时程序刚启动的历史积压补跑还没跑完）。`run_search_once()` 原来一次搜索的所有写入攒到最后才 `commit()`，这段时间持有写锁，同时后台分析线程想写分析结果就会撞上 SQLite 默认 5 秒超时的 `database is locked`（实测触发过一次，一条职位的分析结果因此丢失）。修法是 `models.get_conn()` 里加 `PRAGMA journal_mode=WAL`（读不阻塞写，更适合这种多线程各自开连接的场景）+ `timeout=30`（超时时间从默认 5 秒放宽到 30 秒，给一点排队等待的余地），配合 `scraper.py` 里改成每个 关键词×城市 组合处理完就提交一次而不是攒到最后——没有引入应用层的锁或消息队列，本地单进程小工具这个组合已经够用。
@@ -190,17 +215,23 @@ LinkedIn 中文界面下 Easy Apply 按钮的可见文字不固定（实测见�
 **设置/运行记录为什么从顶层平级标签改成"更多"弹窗入口，而不是保留标签、只做视觉降级（讨论/实现于 2026-08-16）**
 原来"职位列表/设置/运行记录"是顶层三个平级标签，跟"只看外企"筛选之前从设置页开关挪到职位列表 chip 是同一类问题的反面：那次是把高频操作从设置页挪出来，这次是低频操作（设置偶尔改一次、运行记录偶尔查一次）占着跟职位列表同等的顶层导航位置，喧宾夺主。讨论过三种方案：(1) 顶部图标各开一个弹窗；(2) 合并成一个"更多"入口，弹窗内部再分两个子标签；(3) 保留三标签结构、只把设置/运行记录做小做视觉降级。选了方案(2)：只用一个入口点比两个图标更简洁，且没有像方案(3)那样在本质上仍是同级导航、没有解决"占满顶部一整行"的问题。实现上复用了已有的 `#jobDetailModalOverlay` 弹窗结构（`.modal-overlay`/`.modal`/`.modal-head`/`.modal-body`）和已有的 `.tab-btn`/`.tab-panel` 标签切换机制（`.modal-tabs` 只是去掉了原来顶层标签用的 `border-bottom`/`margin-bottom`），没有新增样式体系。
 
-**面试内容为什么独立成页，匹配分析为什么留在弹窗（实现于 2026-08-16）**
-「匹配分析」和「面试准备」原来是职位详情弹窗的两个 tab，但它们的使用场景完全不同：匹配分析是在职位列表里扫一眼决定投不投，看完就关、接着看下一条——弹窗正合适；面试准备是面试前坐下来看半小时的东西。后者留在弹窗里有三个治不好的毛病：(1) **后台任务跟弹窗生命周期绑死**——生成要 3-5 分钟，而轮询的第一行是 `if (currentDetailJobId !== jobId) return`，弹窗一关轮询就断；(2) **嵌套滚动**——`.modal` 限死 `max-height:92vh`、`.modal-body` 自己 `overflow-y:auto`，而内容是公司背景 + 10-15 道题 + 缺口话术 + 反问 + 清单；(3) **没有 URL**，没法单独开一个标签页挂着、没法收藏。同样的三条也适用于通用题库（它还多一条：要在里面长时间打字编辑）。所以两者都改成真页面（`/jobs/<id>/interview`、`/interview`），弹窗只剩匹配分析，`switchDetailTab` 那套 tab 机制一并拆掉。
+**面试内容为什么独立成页（实现于 2026-08-16）**
+「匹配分析」和「面试准备」原来是职位详情弹窗的两个 tab，但它们的使用场景完全不同：匹配分析是在职位列表里扫一眼决定投不投，看完就关、接着看下一条——弹窗正合适；面试准备是面试前坐下来看半小时的东西。后者留在弹窗里有三个治不好的毛病：(1) **后台任务跟弹窗生命周期绑死**——生成要 3-5 分钟，而轮询的第一行是 `if (currentDetailJobId !== jobId) return`，弹窗一关轮询就断；(2) **嵌套滚动**——`.modal` 限死 `max-height:92vh`、`.modal-body` 自己 `overflow-y:auto`，而内容是公司背景 + 10-15 道题 + 缺口话术 + 反问 + 清单；(3) **没有 URL**，没法单独开一个标签页挂着、没法收藏。同样的三条也适用于通用题库（它还多一条：要在里面长时间打字编辑）。所以两者都改成真页面（`/jobs/<id>/interview`、`/interview`），弹窗当时只剩匹配分析，`switchDetailTab` 那套 tab 机制一并拆掉。
+
+**匹配分析弹窗为什么后来（2026-08-17）也翻案改成了独立页面**
+上面那条决策的前提是"匹配分析扫一眼就关"——这个前提在加了 AI 对话和备注之后不再成立：对话要能来回问好几轮、备注要能边看职位边随手记，这正是当初把面试准备和题库搬出弹窗的那三条理由（后台/长任务跟弹窗生命周期绑死、嵌套滚动、没有独立URL）。与其把弹窗撑大到能装下一个聊天窗口（680px 的 `.modal` 装不下两栏布局），不如直接承认匹配分析这次也变成了"要停留着交互"的场景，改成 `/jobs/<id>` 页面，理由和当初那次完全一致，只是这次轮到它自己。弹窗本身（`#jobDetailModalOverlay`、`openJobDetailModal`/`closeJobDetailModal`）连同当时还留着的"忽略并关闭"按钮一起删掉，改成页面右上角的返回链接。
 
 **为什么要抽 `common.js`（实现于 2026-08-16）**
 新页面不能直接复用 `app.js`：它文件末尾就跑初始化，`DOMContentLoaded` 第一行是 `document.getElementById('originChips').addEventListener(...)`，在没有职位列表的页面上会直接抛错、把后面的脚本一起带崩。把三个页面都要用的东西（主题切换、toast、`escapeHtml`、按钮 loading、`bulletListHtml`）摘进 `common.js`，每个页面各引各的业务模块，谁也不用迁就谁。只有职位列表用得上的 `safeUrl`/`dedupeKey` 留在 `app.js`。
 
-**题库起草为什么拆成三次 LLM 调用（实现于 2026-08-16）**
-答案改成中英双语 + 强制分段之后，一次出完（自我介绍 + 10 来道通用题 + 3-5 个完整故事）的输出量差不多翻倍，会顶到 Anthropic 那条 `DEFAULT_ANTHROPIC_MAX_TOKENS = 8192` 的兜底上限被截断——就是上面那条 max_tokens 坑的同一个雷。改成按类别分三次调用后，每次输出量反而比改造前还小，`BANK_MAX_TOKENS = None` 可以维持不变。分开跑还顺带解决了三件事：(1) 一段失败不拖累另外两段，失败原因收进 `failed_sections` 单独提示，用户再点一次只补这几段；(2) 每段跑完立刻 `replace_ai_bank_items()` 入库，前端 5 秒一次的轮询能看到题库一段一段填出来，而不是干等 5-10 分钟什么都没有；(3) 每次只喂**这一类**的已有题目，模型压根看不到别的类别，原来那个"串类别抄措辞"的 bug 从源头消失，prompt 里那条约束也就删掉了。代价是简历要重复喂三次（输入 token，比输出便宜得多）。
+**题库起草为什么拆成按类别多次 LLM 调用（实现于 2026-08-16，起初三段，加「讲述过往工作」后四段）**
+答案改成中英双语 + 强制分段之后，一次出完（自我介绍 + 10 来道通用题 + 3-5 个完整故事）的输出量差不多翻倍，会顶到 Anthropic 那条 `DEFAULT_ANTHROPIC_MAX_TOKENS = 8192` 的兜底上限被截断——就是上面那条 max_tokens 坑的同一个雷。改成按类别分开调用后，每次输出量反而比改造前还小，`BANK_MAX_TOKENS = None` 可以维持不变。分开跑还顺带解决了三件事：(1) 一段失败不拖累其它段，失败原因收进 `failed_sections` 单独提示，用户再点一次只补这几段；(2) 每段跑完立刻 `replace_ai_bank_items()` 入库，前端 5 秒一次的轮询能看到题库一段一段填出来，而不是干等 5-10 分钟什么都没有；(3) 每次只喂**这一类**的已有题目，模型压根看不到别的类别，原来那个"串类别抄措辞"的 bug 从源头消失，prompt 里那条约束也就删掉了。代价是简历要重复喂每一段（输入 token，比输出便宜得多）。这个结构也是后来能低成本加进第四个类别「讲述过往工作」的原因：加一段就是往 `BANK_SECTIONS` 里加一条，`category` 是纯 TEXT 无约束、连迁移脚本都不用。
+
+**「讲述过往工作」为什么要求题目里带公司名（实现于 2026-08-16）**
+这一类是按简历里**每一段经历各出 3-4 题**，所以"你在这段主要负责什么"会同时属于好几段经历。题目文字是这张表的判重 key（`normalize_bank_question`），不带公司名的话，第二段经历的同类问题会被当成第一段那条的重复而静默丢弃；就算侥幸存下来，用户在列表里也分不清哪题问的是哪段。所以 prompt 里把"必须带公司名"写成硬性约束——这是**用判重规则反推出来的 prompt 要求**，不是排版偏好。
 
 **为什么答案框不用 `<details>` 折叠、不用固定行数（实现于 2026-08-16）**
-原来每道题是一个 `<details>`，答案是 `rows="6"` 的 textarea。两个都是坑：固定 6 行让长答案只能在小框里滚；而保存后调 `renderBank()` 重画整个列表，会把所有展开的 `<details>` 收回去——用户的感受是"保存一下框就自动收起来了"。改成永远展开的 `<div>` + JS `autoGrow()` 按 `scrollHeight` 撑高（CSS 里 `overflow-y:hidden; resize:none`），页面只滚外层。保存只改那一条的 DOM（badge 和时间戳），不重画整页；轮询前先比对一个数据指纹（id + 两版答案 + user_edited + updated_at），没变就完全不动 DOM，正在输入的内容不会被抹掉。
+原来每道题是一个 `<details>`，答案是 `rows="6"` 的 textarea。两个都是坑：固定 6 行让长答案只能在小框里滚；而保存后调 `renderBank()` 重画整个列表，会把所有展开的 `<details>` 收回去——用户的感受是"保存一下框就自动收起来了"。改成 `<div>` + JS `autoGrow()` 按 `scrollHeight` 撑高（CSS 里 `overflow-y:hidden; resize:none`），页面只滚外层。（当时是"永远展开"，题库涨大之后又加回了折叠，但用的是 CSS 类而不是 `<details>`——见下面那条。）保存只改那一条的 DOM（badge 和时间戳），不重画整页；轮询前先比对一个数据指纹（id + 两版答案 + user_edited + updated_at），没变就完全不动 DOM，正在输入的内容不会被抹掉。
 
 **对话为什么不落库、也不走后台线程 + 轮询（实现于 2026-08-16）**
 起草那套"后台线程 + `job_state` 标志 + 前端轮询"是为 3-5 分钟的长任务设计的。对话单轮只改一道题的一个语言版本，输出量小一个数量级，等待在十几秒到一分钟量级，`app.run(threaded=True)` 本来就能并发处理——同步返回即可，再套一层状态机是过度设计。对话记录同理只存在浏览器内存里：真正要保留的是**答案**（已经在 `interview_bank` 表里了），对话只是产生答案的过程，为它加一张表还要配套删题时级联清理、历史膨胀清理，收益不抵成本。代价是历史由前端每轮带回来，属于不可信输入，所以后端 `interview.sanitize_chat_history()` 会滤掉非法 role / 非字符串 content，并只保留最后 20 条（防止聊得越久 token 烧得越多）。
@@ -210,6 +241,62 @@ AI 每轮给的是"一句话说改了什么 + 一整版改写后的答案"，点
 
 **为什么全局助手只诊断不改写（实现于 2026-08-16）**
 题库助手看得到全部题目和答案，能回答"这几个故事是不是在讲同一件事""按这个岗位方向还缺哪类题"这种单题对话答不了的问题。但它刻意不返回 `answer` 字段：它的上下文里每条答案都是截断过的（控 token），改写质量本来就不如单题对话；更关键的是改完不知道该回填哪一条——要么让用户手动复制（那还不如去单题对话里改），要么让模型自己指定 item_id（一旦指错就是静默覆盖别的题）。所以分工写死：助手指出是哪道题有问题，改写一律回到那道题自己的对话框，那边才有完整答案和明确的回填目标。
+
+**为什么模型是按功能位配、而不是一个全局开关（实现于 2026-08-16）**
+原来只有一个全局 `llm_provider`，想给面试准备换个好模型就得连带把匹配分析也换掉。但这两类调用的性质完全相反：匹配分析和公司国籍分类是**每条职位跑一次**的批量活儿（一天几十条，成本敏感、质量够用就行），面试准备和题库是**生成一次看很久**的一次性投入（一天最多几次，质量敏感、成本无所谓）。一个开关必然在两边都是错的折中。所以拆成三个功能位（`analysis` / `interview_prep` / `interview_bank`）各存各的，全局那套保留成兜底：`llm_tasks[task]` 留空就回退到 `resolve(cfg)`，老的 `config.json` 一个字不改也照常跑。
+
+配套的两个设计：(1) **模型清单只有一份**（`llm.MODELS`），前端下拉、后端校验、provider 反查都读它——各写一份的话迟早出现"界面上能选、后端不认"，而且用户也不该被要求自己保证 `llm_provider` 和模型名对得上，provider 由注册表反查。(2) **`POST /api/config` 的 `llm_tasks` 按 key 合并**，跟隔壁 `easy_apply_profile` 的整体替换相反——那边每次提交都是完整表单，这边面试页顶栏的下拉每次只提交自己那一个功能位，整体替换会把另外两个悄悄清空。
+
+**为什么给 Claude 显式关掉思考并抬高 `max_tokens`（实现于 2026-08-16）**
+Claude Sonnet 5 起，请求里**不传 `thinking` 就等于默认开着**自适应思考，而 `max_tokens` 是「思考 + 正文」共用的硬上限——这跟上面那条 DeepSeek 推理模型的坑是同一个形状，只是这次触发条件更隐蔽（不是我们主动传了什么，是 provider 换了默认值）。原来那个 `DEFAULT_ANTHROPIC_MAX_TOKENS = 8192` 写不完一份十几道题的面试准备 JSON，会走到已有的 `stop_reason == "max_tokens"` 分支报截断。所以在模型注册表里给 Anthropic 模型带上 `max_tokens: 16000`（非流式请求的安全值，再往上容易顶到 SDK 的 HTTP 超时）并对 Sonnet 5 传 `thinking: {"type": "disabled"}`——这里要的是一整段 JSON，不需要它边想边写。注册表里没有的模型名（`config.json` 里手写的）照旧放行，只是拿不到这两项调优。
+
+**题库题目为什么用 CSS 类折叠、而不是 `<details>` 也不是删 DOM（实现于 2026-08-16）**
+接着上面那条"为什么不用 `<details>`"：题库涨到四个板块几十条之后，"永远展开"从优点变成了缺点——一屏放不下两道题，找题只能靠滚轮。所以加回了折叠，但**没有**改回 `<details>`（原来那个坑还在：保存后 `renderBank()` 重画会把所有展开的收回去），也没有在收起时把 DOM 删掉（删了的话，展开着改了一半没保存的答案、正开着的 AI 对话都会一起没）。做法是渲染完整结构 + `.collapsed` 类 `display:none`，折叠状态跟 `bankChats` 一样只放内存、重画时保留。副作用是收起时 textarea 在 `display:none` 里 `scrollHeight` 为 0，`autoGrow()` 会把高度算成 0，所以展开时必须重新量一次。
+
+**「手动加一题」为什么从浏览器 prompt 改成行内输入框（实现于 2026-08-16）**
+用户反馈"点了没反应"。`window.prompt()` 有两种都长这样的失败模式：浏览器把弹窗拦掉（尤其用户勾过"阻止此页面创建更多对话框"之后），以及用户点了取消而代码直接 `return`、连个 toast 都没有。系统对话框本来就不该出现在一个要长时间停留的编辑页面上——改成区块标题右边的 `+` 打开行内输入框，看得见、拦不掉、能回车提交也能 Esc 取消。同一个理由不适用于删除的 `window.confirm`：那是个需要打断用户、强制他读一句话的确认，弹窗形态是对的。
+
+**简历为什么只收 `.docx`、不收 PDF（讨论并实现于 2026-08-17）**
+段落索引是整条简历流水线的地基：`analyzer` 的 `resume_paragraph_edits` 和简历体检的 `paragraph_edits` 都是 `{index, text}`，`resume_docx.write_tailored_resume()` 靠它按段落替换文本、保留首个 run 的格式，用户拿到的定制简历/优化版才还是自己那份排版。PDF 没有这个结构，收了只能降级成"给你一段文字建议"——功能名字还在、实际做不到，比明确说"请传 docx"更糟。所以在上传口就拦掉，并在提示里给出"用 Word 另存为 .docx"的出路。
+
+**简历为什么存进项目内的 `resumes/`、而不是继续让用户填绝对路径（实现于 2026-08-17）**
+原来 `base_resume_path` 是设置页一个文本框，留空则在 `pipeline.py` 里**三处各自**硬回退到 `~/Downloads/Cathy_Yang_Resume_EN_AI.docx`。这有三个问题：换台机器/换个人用就直接报错；三处重复的回退早晚要改漏一处；"填一个本机绝对路径"要求用户知道自己简历在哪、还得手打对。改成上传之后，文件路径由程序掌握，`resume_store` 成为唯一入口。仍然沿用 `base_resume_path` 这个 key 存绝对路径（而不是改成扫目录），是为了让老配置里手填的路径不用迁移就继续有效，同时保留"当前用哪份简历"的单一事实来源。作为代价，`base_resume_path` 必须从 `/api/config` 的写白名单里移除——设置页那个只读展示框跟着「保存设置」提交一次空串，就会把刚传的简历取消引用。
+
+**"还没上传简历"为什么是 409 + `need_resume`、而且检查放在排队之前（实现于 2026-08-17）**
+用 409 而不是 400/500：请求本身没写错，是服务端状态不满足前置条件，重试无用、得先去做另一件事。`need_resume` 标记让前端能弹一条带「去上传」按钮的引导，而不是一句用户看不懂的原始报错。
+检查的**位置**比状态码更要紧，三个入口各有各的塌方方式：批量分析如果先 `queue_pending_jobs()` 再让后台线程发现没简历，一次点击就给几十条职位写上 `analysis_error`；单条分析如果走进 `analyze_and_record_safe()`，那个 safe 包装会把异常记在这条职位头上，于是它一直挂着"分析失败"的红标——可"没上传简历"不是这条职位的问题；题库起草如果先 `start_bank_generation()` 置位再失败，标志位复位漏一次就永远卡在"正在生成中"，只能重启进程。所以三处都在动状态之前先检查。
+搜索接口 `/api/search/run` 是唯一不 409 的：搜索本身不需要简历，照常抓取入库，只在 200 响应里带 `need_resume` 提示。让一个下游功能的前置条件把上游功能也废掉，用户连职位列表都拿不到，代价远大于收益。
+`analyze_pending_jobs()` 内部还有一道 `has_base_resume()` 早退：它的三个调用方里有两个（程序启动的积压补跑、每日定时任务）没有用户守在屏幕前，让它们对着几十条职位各抛一次异常只会刷满日志。
+
+**简历体检为什么单开一张表、单开一个功能位、而且同步执行（实现于 2026-08-17）**
+存 `resume_reviews` 新表而不是塞进 config 或追踪表：结果是一整棵带评分/问题清单/逐段改写的 JSON，而且要留历史（跟 `interview_preps` 一样，失败也落一行只带 error，否则用户点完按钮看到的还是空页面，分不清"没跑过"还是"跑挂了"）。表上带 `resume_fingerprint`（mtime+size 而不是 md5——文件不大但每次开页面都要比一次）：换了简历之后，旧结论里的段落索引就对不上新文件了，照着改会改错段落，所以前端要能标"已过期"。
+单开 `resume_review` 功能位是沿用既有分法——体检跟面试准备、题库同属"一次生成看很久，质量优先"，跟"每条职位都要跑一次、便宜优先"的匹配分析诉求不同。
+同步执行（不进 `job_state.py` 那套内存队列 + 轮询）是因为它只有一次 LLM 调用、用户就守在按钮前面等，形态跟单条职位的 `/api/jobs/<id>/analyze` 一样，不值得为它再搭一套后台状态机。
+
+**体检结果为什么要在 Python 侧再归一化一遍（实现于 2026-08-17）**
+`resume_review.normalize_result()` 会把百分制写法（`72`）除成 `0.72`、把非法的 severity 归成 `medium`、把 issues 重排成 high→medium→low。这些 prompt 里都写清楚了，但不能指望模型每次都照做，而前端拿到一个 `72` 会画出一条冲出容器的进度条。
+更要紧的是**丢掉索引越界或改写为空的 `paragraph_edits`**：`write_tailored_resume()` 对越界索引是静默跳过的，这类建议留在界面上等于让用户勾一条什么都不会发生的建议，生成完发现没变化，只会以为功能坏了。越界与否要拿简历本身的最大段落索引来判，而这个索引得从原文的 `[N]` 前缀里解析——不能用行数代替，因为 `read_resume_text()` 跳过了空段落，`[N]` 是稀疏的。
+
+**标签为什么是逗号分隔的 TEXT 列，不是关联表（2026-08-17）**
+一条职位挂的标签撑死几个（预设四个 + 用户自己敲的几个），筛选是在前端内存里对 `allJobs` 做的（`static/app.js` 的 `renderTagChips()`/`toggleTagFilter()`），关联表带来的 JOIN 和一套增删同步逻辑换不回任何东西——单用户本地库、这个数据量下二者性能没有可感知差异。标签文本本身不允许包含逗号（`app.py` 的 `normalize_tags()` 校验），所以 `tags.split(",")` 是可靠的反解方式，不需要转义/反转义。空标签列表存 `NULL` 而不是空字符串，让"没有标签"在库里只有一种表示。
+
+**为什么职位备注是独立表，不是 `jobs` 表上的一列（2026-08-17）**
+备注要支持三件事，塞进一个文本字段都做不到：单条删除、按时间倒序排列、区分"手写的"和"AI 对话里一键记下来的"（`source` 字段）——AI 说的话不该跟自己的判断混成一段无从分辨的文本。新表 `job_notes` 只存 `job_id`，不建外键，沿用本项目一贯做法。
+
+**职位 AI 对话为什么不落库（2026-08-17）**
+跟题库对话（`interview.py` 的 `chat_bank_answer`/`chat_bank_assistant`）同一个决策：单轮等待在十几秒到一分钟量级，`threaded=True` 本来就能并发处理，同步返回即可，不值得为它再搭一套后台状态机；历史由前端每轮带回来，用 `interview.sanitize_chat_history()` 同一套清洗（20 轮上限）防止 token 无限增长。不落库还有一个新增的理由：**备注就是这场对话唯一的沉淀出口**——用户觉得有用的那一段点一下「记进备注」存下来，值不值得留是用户自己的判断，不需要整段对话历史都留着占地方。
+
+**定制简历 + Cover Letter 为什么从匹配分析里拆成按需生成（2026-08-17）**
+起因：用户反馈"待审核"阶段的职位一分析完，匹配度只要 ≥70% 就自动生成了一份定制简历和 cover letter——但这时候用户还没看内容、没决定要不要投，材料先生成了，钱也先花了；移到"已收藏"之后同样是自动生成，用户还是没有主动决定的环节。改成 `analyzer.py` 的 `PROMPT_TEMPLATE`（匹配分析）和新增的 `MATERIALS_PROMPT`（材料生成）两次独立的 LLM 调用：分析只回答"值不值得看"，材料生成由用户点按钮（详情页单条按钮，或列表页对"当前筛选出来的职位"批量生成）主动触发。批量生成后端会自动跳过已经生成过的（`pipeline.generate_materials_batch`），避免在"全部"筛选下一次性重新烧几百条的钱；前端点批量按钮之前也会 `confirm()` 一次条数。
+`jobs` 表新增 `cover_letter`/`resume_bullets` 两列，是因为这两样以前只写进 xlsx 追踪表——列表页原来每 4 秒轮询一次要重新解析整个 Excel 才知道某条职位有没有 Cover Letter，材料改成按需生成之后这个代价更不成比例（生成完要立刻反映到界面，不能依赖 Excel 有没有被别的程序占用）。追踪表照旧写，那是给 `jd-resume-matcher` 技能和用户自己看的另一份产物；`tracker_utils.py` 新增 `update_entry_fields()` 只改那一行的四个格子（不像 `add_entry()` 那样删行重插），因为重插需要把职位内容/任职要求/技能匹配等十几个分析字段全部再传一遍，而这些数据现在只存在追踪表自己那一行里，反解损耗风险太大。
+新增 `materials` 功能位（独立于 `analysis`）：材料生成是"决定要投了，质量优先"的一次性投入，跟"每条职位都要跑一次、成本敏感"的匹配分析诉求相反，沿用面试准备/题库那一档"质量优先"的分法。
+
+**材料生成的进程内状态为什么跟分析状态分开一组，而不是复用（2026-08-17）**
+`job_state.py` 里 `_materials_queued_ids`/`_materials_current_id`/`_materials_stop_event` 是跟 `_queued_ids`/`_analyzing_ids` 完全同构的一组，但刻意没有合并：材料生成从匹配分析里拆出来之后，两件事可以**同时在跑**——一批职位在后台分析的同时，用户完全可能对另一条已经分析完的职位点"生成材料"。共用一组状态会让前端分不清某条职位到底是在分析还是在生成材料，"停止"按钮也会互相误伤。材料生成的"停止"（`request_materials_stop()`）也没有做"事后丢弃"：正在跑的那一条没法中断，但那次生成是用户明确点出来的，花掉的钱换回来的简历/cover letter 留着总比扔掉有用，不想要直接点"重新生成"覆盖即可——这点跟下面"忽略即中断"刻意保留丢弃语义不同。
+
+**标记「忽略」为什么只丢弃当前这一条的结果，而不是像顶部"停止分析"按钮那样停掉整批（2026-08-17）**
+起因：用户反馈把正在分析的职位标记忽略后，希望这条职位的分析被中断、不再继续，但队列里其它职位应该照常分析完——而不是整批都停下来。`job_state.py` 新增 `discard_job(job_id)`，跟已有的 `request_stop()`（顶部"停止分析"按钮用）只有一个刻意的区别：**不设 `_stop_event`、不清空 `_queued_ids`**。`app.py` 的 `/api/jobs/<id>/status` 改成 `dismissed` 时调用它。正在跑的那次 LLM 调用本身没法真的中断（同步阻塞请求，钱也已经花出去了），但 `analyze_and_record()` 里原有的 `should_discard()` 检查（本来是给"停止分析"按钮用的）天然可以复用：结果不写库、不写追踪表、不生成材料，批量循环该轮到下一条还是轮到下一条。
+配套修了一个边界情况：职位在"排队中"（还没轮到分析）就被标记忽略，`discard_job()` 会把它加进 `_discard_ids`，但这一轮循环压根不会跑到 `analyze_and_record_safe()` 的 `finally`（那里才会清掉丢弃标记）——`analyze_and_record_safe()` 开头因此新增了一次 `clear_discard()`，避免用户后来改主意、手动重新分析这条职位时被历史遗留的标记误判丢弃。
 
 ## 已知技术限制
 
@@ -222,6 +309,10 @@ AI 每轮给的是"一句话说改了什么 + 一整版改写后的答案"，点
 - Easy Apply 的按钮/字段选择器基于实测调整，不是官方稳定接口，LinkedIn 前端改版可能导致选择器失效，需要重新实测调整。
 - Easy Apply 同一时间只支持处理一条职位（Chromium 对 profile 目录的独占锁天然限制），批量场景没有做队列。
 - Easy Apply 自动答题只能覆盖设置页配置过的问题，没配置的一律停下人工填；`fieldset` 没有 `<legend>` 的问题即使想配置也做不到（拿不到问题文字），每次都需要人工介入。
+- 全应用只认**一份**基础简历，没有多简历/多版本管理。想投不同方向要自己换上传的文件，换了之后已有的体检结论会标记过期。
+- 简历只支持 `.docx`（原因见上方决策）；PDF、纯文本粘贴都不支持。
+- 简历体检是同步请求，跟题库对话有同样的问题：推理模型偶尔要等一分钟，期间只有一个按钮 loading 态。
+- 生成的"优化版"固定覆盖 `resumes/optimized.docx` 同一个文件，不保留历史版本（原件一直都在，真要回溯从原件重来）。
 
 ---
-最后更新：2026-08-16（面试内容独立成页 vs 留弹窗的判断依据、`common.js` 抽取、题库起草拆成三次调用、对话不落库/不走轮询、改写要点两次才生效、全局助手只诊断不改写）
+最后更新：2026-08-17（简历为什么只收 docx、为什么存进项目内 `resumes/`、`need_resume` 为什么是 409 且检查要放在排队之前、体检为什么单开表/单开功能位/同步执行、体检结果为什么要在 Python 侧再归一化一遍；匹配分析弹窗为什么翻案改成独立页面、标签为什么是 TEXT 列不是关联表、备注为什么是独立表、职位对话为什么不落库、材料生成为什么从分析里拆出来、材料生成状态为什么跟分析状态分开一组、忽略为什么只丢弃当前这条而不停整批）

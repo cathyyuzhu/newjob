@@ -129,13 +129,49 @@ fake_mod.Anthropic = FakeAnthropic
 sys.modules["anthropic"] = fake_mod
 os.environ["ANTHROPIC_API_KEY"] = "test-key"
 
-out = llm.ask_json("hi", provider="anthropic")
+# 注册表里没有的模型名（config.json 手写的）退到全局默认值
+out = llm.ask_json("hi", provider="anthropic", model="some-other-model")
 assert out == {"a": 2}
 assert captured["max_tokens"] == llm.DEFAULT_ANTHROPIC_MAX_TOKENS
-assert "system" not in captured
+assert "system" not in captured and "thinking" not in captured
 llm.ask_json("hi", provider="anthropic", max_tokens=1234, system="SYS")
 assert captured["max_tokens"] == 1234 and captured["system"] == "SYS"
 print("anthropic max_tokens fallback + system param ok")
+
+# 注册表里的模型用自己那一档 max_tokens。Claude Sonnet 5 起，不传 thinking 就是**默认开着**
+# 思考，而 max_tokens 是「思考 + 正文」共用的——8192 不够写完一份十几道题的面试准备，
+# 会在写到一半时被截断（跟 deepseek 推理模型那个坑同源），所以显式关掉思考并抬高上限。
+sonnet = llm.get_model("claude-sonnet-5")
+assert sonnet["provider"] == "anthropic" and sonnet["max_tokens"] == 16000
+llm.ask_json("hi", provider="anthropic", model="claude-sonnet-5")
+assert captured["max_tokens"] == 16000, captured["max_tokens"]
+assert captured["thinking"] == {"type": "disabled"}, captured.get("thinking")
+# Haiku 默认就不思考，不用传这个参数
+llm.ask_json("hi", provider="anthropic", model="claude-haiku-4-5")
+assert captured["max_tokens"] == 16000 and "thinking" not in captured
+print("model registry drives max_tokens + thinking ok")
+
+# ---- 6b. 按功能位取模型：配了用配的，没配回退到全局，模型名打错当场报错
+BASE_CFG = {"llm_provider": "deepseek", "deepseek_model": "deepseek-v4-pro",
+            "anthropic_model": "claude-sonnet-5"}
+assert llm.resolve_task(BASE_CFG, "interview_prep") == ("deepseek", "deepseek-v4-pro")
+assert llm.resolve_task({**BASE_CFG, "llm_tasks": {}}, "analysis") == ("deepseek", "deepseek-v4-pro")
+assert llm.resolve_task({**BASE_CFG, "llm_tasks": {"analysis": ""}}, "analysis") == ("deepseek", "deepseek-v4-pro")
+# provider 从注册表反查，不需要用户自己保证 llm_provider 和模型名对得上
+assert llm.resolve_task(
+    {**BASE_CFG, "llm_tasks": {"interview_bank": "claude-haiku-4-5"}}, "interview_bank"
+) == ("anthropic", "claude-haiku-4-5")
+# 只影响自己那一个功能位
+assert llm.resolve_task(
+    {**BASE_CFG, "llm_tasks": {"interview_bank": "claude-haiku-4-5"}}, "analysis"
+) == ("deepseek", "deepseek-v4-pro")
+try:
+    llm.resolve_task({**BASE_CFG, "llm_tasks": {"analysis": "gpt-9"}}, "analysis")
+    raise AssertionError("未知模型应该当场报错，而不是一路走到 API 才 404")
+except RuntimeError as e:
+    assert "未知的模型：gpt-9" in str(e), str(e)
+assert set(llm.LLM_TASKS) == {"analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat"}
+print("per-task model resolution ok")
 
 
 class TruncAnthropic(FakeAnthropic):

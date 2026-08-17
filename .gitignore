@@ -4,6 +4,7 @@ __pycache__/
 venv/
 jobs.db
 config.json
+resumes/
 .playwright_profile/
 *.log
 .claude/settings.local.json

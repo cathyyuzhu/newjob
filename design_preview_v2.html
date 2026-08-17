@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>职位雷达 — 首页设计稿 v2</title>
+<style>
+/* ═══════════════════════════════════════════════════════════
+   v2 相对 v1 的改动：
+   1. 去掉匹配度光谱
+   2. 待审核/已收藏/重点关注/已忽略 提为大卡片，3 种版式可现场切换
+   3. 面试题库 提为独立入口横幅
+   4. 重点关注 置顶成组 + 黑色左标 + 实心星，一眼能看到
+   5. 卡片内容对齐真实 app.js renderJobs()：来源/国籍/状态徽章、定制简历、
+      Cover Letter、投递状态下拉、AI分析、Easy Apply、星标、收藏、忽略、面试准备
+   配色沿用 v1：冷调纸 / 近黑 / 群青单一强调色。
+   重点关注不引入第三个颜色——用近黑（页面上最重的颜色）表示"我自己标的"，
+   群青始终只表示"机器算的分"，语义不串。
+   ═══════════════════════════════════════════════════════════ */
+:root{
+  --paper:#EDEEF0; --raised:#F7F8F9; --ink:#14161A; --graphite:#6B7078;
+  --rule:#D7DADE; --signal:#2B3AF0; --dim:rgba(107,112,120,.34);
+  --sans:"Segoe UI Variable Display","Segoe UI",-apple-system,BlinkMacSystemFont,
+         "Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"Cascadia Mono","SF Mono","Segoe UI Mono","Roboto Mono",Menlo,monospace;
+  --gut:clamp(1.1rem,3.5vw,3rem);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#0F1114; --raised:#171A1F; --ink:#E9EBEE; --graphite:#878D96;
+    --rule:#272B31; --signal:#7C88FF; --dim:rgba(135,141,150,.32);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0F1114; --raised:#171A1F; --ink:#E9EBEE; --graphite:#878D96;
+  --rule:#272B31; --signal:#7C88FF; --dim:rgba(135,141,150,.32);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);
+     font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.page{max-width:1220px;margin:0 auto;padding:0 var(--gut) 6rem}
+button,a{font-family:inherit}
+:focus-visible{outline:2px solid var(--signal);outline-offset:3px}
+
+/* ── 报头 ─────────────────────────────────────────── */
+.masthead{display:flex;align-items:baseline;gap:1.1rem;padding:1.5rem 0 1.2rem;
+          border-bottom:1px solid var(--rule)}
+.wordmark{font-size:.92rem;font-weight:600;display:flex;align-items:baseline;gap:.5rem}
+.wordmark .tag{font-family:var(--mono);font-size:.6rem;font-weight:400;letter-spacing:.22em;
+               text-transform:uppercase;color:var(--graphite)}
+.masthead .stamp{margin-left:auto;font-family:var(--mono);font-size:.65rem;letter-spacing:.13em;
+                 text-transform:uppercase;color:var(--graphite)}
+.tools{display:flex;gap:.4rem;margin-left:.4rem}
+.tool{width:26px;height:26px;display:grid;place-items:center;border:1px solid var(--rule);
+      border-radius:3px;background:none;color:var(--graphite);cursor:pointer;
+      transition:border-color .18s,color .18s}
+.tool:hover{border-color:var(--ink);color:var(--ink)}
+.tool svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.7}
+
+/* ── 导语 ─────────────────────────────────────────── */
+.lede{display:flex;align-items:flex-end;justify-content:space-between;gap:2rem;
+      flex-wrap:wrap;padding:2.6rem 0 2rem}
+.lede-line{font-size:clamp(1.1rem,2.2vw,1.5rem);font-weight:300;line-height:1.5;
+           letter-spacing:-.012em;max-width:60ch;color:var(--graphite)}
+.numi{font-variant-numeric:tabular-nums;font-size:1.05em;font-weight:600;color:var(--ink)}
+.figure{font-variant-numeric:tabular-nums;font-size:clamp(2.6rem,6.5vw,4rem);
+        font-weight:250;letter-spacing:-.045em;line-height:.8;color:var(--signal);padding-right:.04em}
+.lede-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+.act{font-size:.8rem;font-weight:500;padding:.6rem 1.1rem;border-radius:2px;cursor:pointer;
+     display:inline-flex;align-items:center;gap:.45rem;border:1px solid var(--ink);
+     background:var(--ink);color:var(--paper);transition:opacity .18s,transform .18s}
+.act:hover{opacity:.84;transform:translateY(-1px)}
+.act.ghost{background:none;color:var(--ink)}
+.act.ghost:hover{background:var(--ink);color:var(--paper);opacity:1}
+.act svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.9}
+
+/* ── 状态卡片区 ───────────────────────────────────── */
+.board-head{display:flex;justify-content:space-between;align-items:baseline;
+            margin-bottom:.85rem;gap:1rem;flex-wrap:wrap}
+.board-head .cap{font-family:var(--mono);font-size:.62rem;letter-spacing:.2em;
+                 text-transform:uppercase;color:var(--graphite)}
+.vswitch{display:flex;align-items:center;gap:.3rem;font-family:var(--mono);
+         font-size:.6rem;letter-spacing:.12em;color:var(--graphite)}
+.vswitch button{font-family:var(--mono);font-size:.6rem;letter-spacing:.1em;padding:.3rem .55rem;
+                border:1px solid var(--rule);border-radius:2px;background:none;
+                color:var(--graphite);cursor:pointer;transition:.16s}
+.vswitch button:hover{color:var(--ink);border-color:var(--ink)}
+.vswitch button.on{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+
+.tiles{display:grid;gap:.7rem}
+.tile{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:.2rem;
+      text-align:left;cursor:pointer;background:var(--raised);border:1px solid var(--rule);
+      border-radius:4px;color:inherit;transition:border-color .18s,background .18s,transform .18s}
+.tile:hover{border-color:var(--ink);transform:translateY(-2px)}
+.tile-n{font-variant-numeric:tabular-nums;font-weight:250;letter-spacing:-.045em;
+        line-height:.86;color:var(--ink)}
+.tile-l{font-size:.88rem;font-weight:500;letter-spacing:-.005em}
+.tile-h{font-family:var(--mono);font-size:.6rem;letter-spacing:.1em;color:var(--graphite)}
+.tile.on{background:var(--ink);border-color:var(--ink)}
+.tile.on .tile-n,.tile.on .tile-l{color:var(--paper)}
+.tile.on .tile-h{color:var(--paper);opacity:.55}
+.tile-star{width:13px;height:13px;fill:currentColor;vertical-align:-1px;margin-right:.3rem}
+
+/* 版式 A — 大卡片（四等分） */
+.tiles[data-variant="a"]{grid-template-columns:repeat(4,1fr)}
+.tiles[data-variant="a"] .tile{padding:1.35rem 1.3rem 1.2rem}
+.tiles[data-variant="a"] .tile-n{font-size:2.9rem;margin-bottom:.35rem}
+
+/* 版式 B — 分段条（一条横杆，最省纵向空间） */
+.tiles[data-variant="b"]{grid-template-columns:repeat(4,1fr);gap:0;
+                         border:1px solid var(--rule);border-radius:4px;overflow:hidden}
+.tiles[data-variant="b"] .tile{flex-direction:row;align-items:baseline;gap:.55rem;
+                               padding:.95rem 1.15rem;border:0;border-radius:0;
+                               border-right:1px solid var(--rule)}
+.tiles[data-variant="b"] .tile:last-child{border-right:0}
+.tiles[data-variant="b"] .tile:hover{transform:none;background:var(--paper)}
+.tiles[data-variant="b"] .tile.on:hover{background:var(--ink)}
+.tiles[data-variant="b"] .tile-n{font-size:1.5rem;font-weight:300}
+.tiles[data-variant="b"] .tile-h{display:none}
+
+/* 版式 C — 主次卡（待审核是每天的默认视图，给它双倍宽度） */
+.tiles[data-variant="c"]{grid-template-columns:1.9fr 1fr 1fr 1fr}
+.tiles[data-variant="c"] .tile{padding:1.25rem 1.2rem 1.1rem}
+.tiles[data-variant="c"] .tile-n{font-size:2.3rem;margin-bottom:.3rem}
+/* 三张小卡被主卡撑高，内容顶对齐会在下方留一大块空，改成垂直居中 */
+.tiles[data-variant="c"] .tile:not(:first-child){justify-content:center}
+.tiles[data-variant="c"] .tile:first-child{padding:1.9rem 1.7rem 1.7rem}
+.tiles[data-variant="c"] .tile:first-child .tile-n{font-size:4.2rem}
+.tiles[data-variant="c"] .tile:first-child .tile-l{font-size:1.02rem}
+
+/* ── 面试题库入口 ─────────────────────────────────── */
+.bank{display:flex;align-items:center;gap:1.15rem;margin-top:1.5rem;padding:1.35rem 1.5rem;
+      background:var(--raised);border:1px solid var(--rule);border-left:3px solid var(--signal);
+      border-radius:4px;text-decoration:none;color:inherit;transition:.2s}
+.bank:hover{border-color:var(--ink);border-left-color:var(--signal);transform:translateY(-2px)}
+.bank-icon{flex:none;width:42px;height:42px;display:grid;place-items:center;border-radius:3px;
+           background:var(--signal);color:#fff}
+.bank-icon svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;
+               stroke-linecap:round;stroke-linejoin:round}
+.bank-main{min-width:0;flex:1}
+.bank-title{font-size:1.18rem;font-weight:600;letter-spacing:-.015em;display:flex;
+            align-items:baseline;gap:.6rem;flex-wrap:wrap}
+.bank-title em{font-style:normal;font-family:var(--mono);font-size:.6rem;letter-spacing:.16em;
+               text-transform:uppercase;color:var(--signal)}
+.bank-sub{font-size:.83rem;color:var(--graphite);margin-top:.2rem}
+.bank-sub b{font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
+.bank-go{flex:none;font-family:var(--mono);font-size:.68rem;letter-spacing:.14em;
+         text-transform:uppercase;color:var(--graphite);display:flex;align-items:center;gap:.5rem}
+.bank:hover .bank-go{color:var(--ink)}
+.bank-go .arrow{transition:transform .2s}
+.bank:hover .arrow{transform:translateX(4px)}
+
+/* ── 漏斗行 ───────────────────────────────────────── */
+.funnel{font-family:var(--mono);font-size:.67rem;letter-spacing:.06em;color:var(--graphite);
+        margin-top:2.2rem;padding:1rem 0;border-top:1px solid var(--rule);
+        display:flex;gap:.8rem;flex-wrap:wrap;align-items:center}
+.funnel b{font-weight:500;color:var(--ink)}
+.funnel i{font-style:normal;opacity:.4}
+
+/* ── 二级筛选条 ───────────────────────────────────── */
+.filters{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;
+         padding:1rem 0 1.8rem;border-top:1px solid var(--rule)}
+.chip{font-size:.76rem;padding:.4rem .8rem;border:1px solid var(--rule);border-radius:100px;
+      background:none;color:var(--graphite);cursor:pointer;transition:.16s;white-space:nowrap}
+.chip:hover{color:var(--ink);border-color:var(--ink)}
+.chip.on{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.vrule{width:1px;height:20px;background:var(--rule);margin:0 .3rem}
+.search{display:flex;align-items:center;gap:.45rem;border:1px solid var(--rule);border-radius:2px;
+        padding:.4rem .7rem;background:var(--raised);margin-left:auto}
+.search svg{width:13px;height:13px;stroke:var(--graphite);fill:none;stroke-width:2}
+.search input{border:0;background:none;outline:0;color:inherit;font-size:.8rem;width:150px}
+.mini{font-family:var(--mono);font-size:.62rem;letter-spacing:.1em;text-transform:uppercase;
+      padding:.45rem .7rem;border:1px solid var(--rule);border-radius:2px;background:none;
+      color:var(--graphite);cursor:pointer;transition:.16s;white-space:nowrap}
+.mini:hover{color:var(--ink);border-color:var(--ink)}
+
+/* ── 今日最高（反相色块） ─────────────────────────── */
+.hero{background:var(--ink);color:var(--paper);border-radius:4px;
+      padding:1.9rem clamp(1.3rem,3vw,2.3rem);display:grid;
+      grid-template-columns:auto 1fr;gap:clamp(1.2rem,3.5vw,2.8rem);align-items:start}
+.hero-score{font-variant-numeric:tabular-nums;font-size:clamp(2.8rem,7vw,4.2rem);
+            font-weight:250;letter-spacing:-.05em;line-height:.82}
+.hero-score .dec{font-size:.58em;opacity:.78}
+.hero-score .pct{font-size:.28em;opacity:.45;margin-left:.12em}
+.hero-score .cap{display:block;margin-top:.6rem;font-size:.145em;letter-spacing:.2em;
+                 text-transform:uppercase;opacity:.5}
+/* 不能用 flex：标题是裸文本节点 + 星标 span 两个 flex item，换行后星标会被挤到单独一行，
+   撑出一道空隙。直接 block + 行内星标。 */
+.hero-title{font-size:clamp(1.2rem,2.5vw,1.7rem);font-weight:400;line-height:1.3;
+            letter-spacing:-.02em;max-width:28ch}
+/* hero 是反相块，星标不能用 --ink（深色画在深色上等于看不见），跟随前景色 */
+.hero .starmark{color:inherit;margin-left:.4rem}
+.hero-meta{font-family:var(--mono);font-size:.65rem;letter-spacing:.12em;text-transform:uppercase;
+           opacity:.55;margin-top:.75rem;display:flex;gap:.6rem;flex-wrap:wrap}
+.hero-meta i{font-style:normal;opacity:.4}
+.hero-acts{display:flex;gap:.45rem;flex-wrap:wrap;margin-top:1.35rem}
+.hero-acts button{font-size:.77rem;font-weight:500;padding:.48rem .95rem;border-radius:2px;
+                  cursor:pointer;border:1px solid currentColor;background:none;color:var(--paper);
+                  opacity:.72;transition:.16s}
+.hero-acts button:hover{opacity:1;background:var(--paper);color:var(--ink)}
+.hero-acts button.solid{background:var(--paper);color:var(--ink);opacity:1;border-color:var(--paper)}
+.hero-acts button.solid:hover{opacity:.85}
+
+/* ── 列表分组标题 ─────────────────────────────────── */
+.group{display:flex;align-items:center;gap:.7rem;margin:2.6rem 0 .1rem}
+.group-t{font-family:var(--mono);font-size:.64rem;letter-spacing:.2em;text-transform:uppercase;
+         color:var(--graphite);display:flex;align-items:center;gap:.45rem;white-space:nowrap}
+.group.pin .group-t{color:var(--ink);font-weight:600}
+.group-t svg{width:12px;height:12px;fill:currentColor}
+.group-line{flex:1;height:1px;background:var(--rule)}
+
+/* ── 职位行 ───────────────────────────────────────── */
+.rows{list-style:none}
+.row{display:grid;grid-template-columns:4.2rem 1fr auto;gap:1.1rem;align-items:start;
+     padding:1rem .6rem 1rem 0;border-bottom:1px solid var(--rule);
+     transition:padding-left .2s cubic-bezier(.16,.84,.44,1),border-color .2s,background .2s}
+.row:hover{padding-left:.7rem;border-bottom-color:var(--ink);background:var(--raised)}
+/* 重点关注：黑色左标 + 实心星 + 抬高底色，跟"机器打的分"用的群青彻底区分 */
+.row.star{border-left:3px solid var(--ink);padding-left:.85rem;background:var(--raised)}
+.row.star:hover{padding-left:.95rem}
+.row-score{font-variant-numeric:tabular-nums;font-size:1.1rem;font-weight:400;
+           letter-spacing:-.022em;color:var(--signal);padding-top:.05rem}
+.row.star .row-score{font-weight:600}
+.row-main{min-width:0}
+.row-title-line{display:flex;align-items:baseline;gap:.5rem;flex-wrap:wrap}
+.row-title{font-size:.96rem;font-weight:450;letter-spacing:-.008em;color:inherit;
+           text-decoration:none;border-bottom:1px solid transparent}
+.row-title:hover{border-bottom-color:currentColor}
+.badge{font-family:var(--mono);font-size:.56rem;letter-spacing:.12em;text-transform:uppercase;
+       padding:.13rem .38rem;border:1px solid var(--rule);border-radius:2px;color:var(--graphite)}
+/* 纯黑填充这一档留给「重点关注」专用，状态徽章只升到"墨色描边"，不抢视觉 */
+.badge.solid{border-color:var(--ink);color:var(--ink)}
+.badge.prep{border-color:var(--signal);color:var(--signal)}
+.starmark{color:var(--ink)}
+.starmark svg{width:12px;height:12px;fill:currentColor;vertical-align:-1px}
+.row-meta{font-size:.75rem;color:var(--graphite);margin-top:.3rem;
+          display:flex;gap:.55rem;flex-wrap:wrap;align-items:center}
+.row-meta i{font-style:normal;opacity:.4}
+.row-meta a{color:var(--signal);text-decoration:none;border-bottom:1px solid transparent}
+.row-meta a:hover{border-bottom-color:currentColor}
+.row-acts{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap;justify-content:flex-end}
+.sel{font-size:.72rem;padding:.32rem .5rem;border:1px solid var(--rule);border-radius:2px;
+     background:var(--paper);color:var(--graphite);cursor:pointer}
+.sm{font-size:.73rem;padding:.34rem .65rem;border:1px solid var(--rule);border-radius:2px;
+    background:none;color:var(--graphite);cursor:pointer;transition:.16s;white-space:nowrap}
+.sm:hover{color:var(--ink);border-color:var(--ink)}
+.ib{width:26px;height:26px;display:grid;place-items:center;border:1px solid var(--rule);
+    border-radius:2px;background:none;color:var(--graphite);cursor:pointer;transition:.16s}
+.ib:hover{color:var(--ink);border-color:var(--ink)}
+.ib svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:1.8;
+        stroke-linecap:round;stroke-linejoin:round}
+.ib.starred{color:var(--ink);border-color:var(--ink)}
+.ib.starred svg{fill:currentColor;stroke:none}
+.row-date{font-family:var(--mono);font-size:.62rem;letter-spacing:.1em;color:var(--graphite);
+          align-self:center;margin-left:.2rem}
+
+.more{margin-top:2rem;text-align:center;font-family:var(--mono);font-size:.65rem;
+      letter-spacing:.18em;text-transform:uppercase;color:var(--graphite);background:none;
+      border:0;cursor:pointer;padding:.7rem 1.2rem;width:100%;transition:color .16s}
+.more:hover{color:var(--ink)}
+.note{margin-top:3.5rem;padding-top:1.1rem;border-top:1px solid var(--rule);
+      font-family:var(--mono);font-size:.62rem;letter-spacing:.1em;color:var(--graphite);line-height:1.9}
+
+@media (max-width:1000px){
+  .tiles[data-variant="a"],.tiles[data-variant="b"],.tiles[data-variant="c"]{grid-template-columns:repeat(2,1fr)}
+  .tiles[data-variant="b"] .tile:nth-child(2){border-right:0}
+  .tiles[data-variant="b"] .tile:nth-child(-n+2){border-bottom:1px solid var(--rule)}
+  .tiles[data-variant="c"] .tile:first-child{grid-column:1/-1}
+  .search{margin-left:0}
+}
+@media (max-width:720px){
+  .wordmark .tag{display:none}
+  .masthead .stamp{font-size:.58rem;letter-spacing:.06em}
+  .hero{grid-template-columns:1fr;gap:1.2rem}
+  .row{grid-template-columns:3.4rem 1fr;gap:.9rem}
+  .row-acts{grid-column:2;justify-content:flex-start;margin-top:.6rem}
+  .bank{flex-wrap:wrap;gap:.9rem;align-items:flex-start}  /* 窄屏文字要折好几行，图标跟标题顶对齐才不歪 */
+  .bank-go{width:100%;justify-content:flex-end}
+  .tiles[data-variant="a"] .tile-n{font-size:2.2rem}
+  .tiles[data-variant="c"] .tile:first-child .tile-n{font-size:3rem}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div class="wordmark">职位雷达<span class="tag">Radar</span></div>
+    <div class="stamp">最近运行 · 17 AUG 02:36</div>
+    <div class="tools">
+      <button class="tool" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+      </button>
+      <button class="tool" title="深色模式" aria-label="深色模式" onclick="flip()">
+        <svg viewBox="0 0 24 24" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <section class="lede">
+    <p class="lede-line">
+      在库 <span class="numi">80</span> 条职位，已完成 AI 匹配 <span class="numi">48</span> 条。<br>
+      <span class="figure">24</span> 条越过 70% 投递线，值得今天出手。
+    </p>
+    <div class="lede-actions">
+      <button class="act">
+        <svg viewBox="0 0 24 24" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        智能搜索
+      </button>
+      <button class="act ghost">
+        <svg viewBox="0 0 24 24" stroke-linejoin="round"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>
+        AI 分析 32 条待评
+      </button>
+    </div>
+  </section>
+
+  <section>
+    <div class="board-head">
+      <span class="cap">状态总览 — 点卡片即筛选</span>
+      <div class="vswitch">
+        <span>版式</span>
+        <button class="on" data-v="a">A 大卡片</button>
+        <button data-v="b">B 分段条</button>
+        <button data-v="c">C 主次卡</button>
+      </div>
+    </div>
+
+    <div class="tiles" id="tiles" data-variant="a">
+      <button class="tile on" data-k="new">
+        <span class="tile-n">30</span>
+        <span class="tile-l">待审核</span>
+        <span class="tile-h">还没决定要不要</span>
+      </button>
+      <button class="tile" data-k="reviewed">
+        <span class="tile-n">18</span>
+        <span class="tile-l">已收藏</span>
+        <span class="tile-h">打算投的</span>
+      </button>
+      <button class="tile" data-k="starred">
+        <span class="tile-n">5</span>
+        <span class="tile-l">
+          <svg class="tile-star" viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg>重点关注
+        </span>
+        <span class="tile-h">优先盯的</span>
+      </button>
+      <button class="tile" data-k="dismissed">
+        <span class="tile-n">32</span>
+        <span class="tile-l">已忽略</span>
+        <span class="tile-h">不考虑了</span>
+      </button>
+    </div>
+
+    <a class="bank" href="#">
+      <span class="bank-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
+      </span>
+      <span class="bank-main">
+        <span class="bank-title">面试题库 <em>每场面试都用得上</em></span>
+        <span class="bank-sub">自我介绍（中 / 英双版）· <b>5</b> 个 STAR 故事 · <b>10</b> 道通用问答 · 讲述过往工作 —— 共 <b>16</b> 条已就绪，另有 <b>3</b> 份职位专属面试准备</span>
+      </span>
+      <span class="bank-go">打开题库 <span class="arrow">→</span></span>
+    </a>
+  </section>
+
+  <p class="funnel">
+    <b>今日抓取</b><span>273 条</span><i>→</i><span>不相关 170</span><i>→</i>
+    <span>重复 59</span><i>→</i><b>新增 43</b>
+  </p>
+
+  <div class="filters">
+    <button class="chip on">🌍 外企</button>
+    <button class="chip">🇨🇳 国内公司</button>
+    <button class="chip">全部</button>
+    <span class="vrule"></span>
+    <button class="chip on">投递状态：全部</button>
+    <button class="chip">待投</button>
+    <button class="chip">已投递</button>
+    <button class="chip">面试中</button>
+    <button class="chip">Offer</button>
+    <div class="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input type="text" placeholder="搜索职位或公司…">
+    </div>
+    <button class="mini">刷新</button>
+    <button class="mini">全部重新获取 JD</button>
+    <button class="mini">识别公司国籍</button>
+  </div>
+
+  <article class="hero">
+    <div class="hero-score">82<span class="dec">.5</span><span class="pct">%</span>
+      <span class="cap">今日最高</span>
+    </div>
+    <div>
+      <h2 class="hero-title">
+        Senior Product Manager — AI, Amazon Global Selling · PMO
+        <span class="starmark" title="重点关注"><svg viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg></span>
+      </h2>
+      <div class="hero-meta">
+        <span>Amazon</span><i>/</i><span>深圳</span><i>/</i><span>LinkedIn</span><i>/</i>
+        <span>07-31 发布</span><i>/</i><span>已收藏 · 待投</span>
+      </div>
+      <div class="hero-acts">
+        <button class="solid">查看匹配分析</button>
+        <button>面试准备</button>
+        <button>定制简历</button>
+        <button>Cover Letter</button>
+        <button>Easy Apply</button>
+      </div>
+    </div>
+  </article>
+
+  <div class="group pin">
+    <span class="group-t">
+      <svg viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg>
+      重点关注 · 4 条（不含上方今日最高）
+    </span>
+    <span class="group-line"></span>
+  </div>
+
+  <ol class="rows" id="starRows"></ol>
+
+  <div class="group">
+    <span class="group-t">其余职位 · 按匹配度</span>
+    <span class="group-line"></span>
+  </div>
+
+  <ol class="rows" id="normalRows"></ol>
+
+  <button class="more">展开其余 13 条 ≥70% 的职位</button>
+
+  <p class="note">
+    设计稿 v2 · 数据取自 jobs.db 真实记录（80 条职位 / 48 条已评分 / 5 条重点关注 / 题库 16 条 / 面试准备 3 份）<br>
+    状态卡片右上角可切换 A / B / C 三种版式；右上角月亮图标切深色模式
+  </p>
+
+</div>
+
+<script>
+const STAR='<svg viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg>';
+const I={
+  star:'<svg viewBox="0 0 24 24"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg>',
+  check:'<svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>',
+  x:'<svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+};
+
+/* 真实数据（jobs.db）。starred 的 5 条里最高分那条已经放进上方 hero，这里剩 4 条 */
+const STARRED=[
+  {s:75.0,t:'Sr. Manager, Product Management, ROA, Worldwide Global Selling',c:'Amazon',l:'深圳',src:'Indeed',d:'08-10',st:'已收藏',prep:true},
+  {s:73.0,t:'Sr. AI Product Manager, Tech, Seller Compliance',c:'Amazon',l:'上海',src:'Indeed',d:'08-05',st:'已收藏',prep:false},
+  {s:73.0,t:'Senior Product Manager — AI, NBS AI and OPS',c:'Amazon',l:'上海',src:'LinkedIn',d:'08-04',st:'已收藏',prep:true},
+  {s:72.5,t:'Senior Product Manager',c:'Duolingo',l:'深圳',src:'Indeed',d:'08-08',st:'已收藏',prep:false},
+];
+const NORMAL=[
+  {s:79.5,t:'Senior Game Product Manager, Monetization and Growth — Wild Rift',c:'Riot Games',l:'上海',src:'LinkedIn',d:'08-11',st:'已收藏',prep:false},
+  {s:78.0,t:'Senior Product Manager (AI Agent)',c:'AfterShip',l:'深圳',src:'LinkedIn',d:'08-14',st:'待审核',prep:false},
+  {s:75.0,t:'Associate Director, Product Development',c:'HSBC',l:'深圳',src:'LinkedIn',d:'08-06',st:'已收藏',prep:true},
+  {s:73.5,t:'Sr. AI Product Manager, ESM Central Operation',c:'Amazon',l:'上海',src:'LinkedIn',d:'08-11',st:'待审核',prep:false},
+  {s:73.0,t:'Senior Manager, Hearthstone Product Management',c:'Blizzard Entertainment',l:'上海',src:'LinkedIn',d:'08-14',st:'待审核',prep:false},
+  {s:72.5,t:'Senior Game Product Manager, Events — Wild Rift',c:'Riot Games',l:'上海',src:'LinkedIn',d:'08-11',st:'待审核',prep:false},
+];
+
+function rowHtml(j,starred){
+  return `<li class="row${starred?' star':''}">
+    <span class="row-score">${j.s.toFixed(1)}</span>
+    <div class="row-main">
+      <div class="row-title-line">
+        ${starred?`<span class="starmark" title="重点关注">${STAR}</span>`:''}
+        <a class="row-title" href="#">${j.t}</a>
+        <span class="badge">${j.src}</span>
+        <span class="badge">🌍 外企</span>
+        <span class="badge${j.st==='已收藏'?' solid':''}">${j.st}</span>
+        ${j.prep?'<span class="badge prep">🎤 面试准备</span>':''}
+      </div>
+      <div class="row-meta">
+        <span>${j.c}</span><i>·</i><span>${j.l}</span><i>·</i>
+        <a href="#">📄 定制简历</a><a href="#">✉️ Cover Letter</a>
+      </div>
+    </div>
+    <div class="row-acts">
+      <select class="sel"><option>待投</option><option>已投递</option><option>面试中</option></select>
+      <button class="sm">Easy Apply</button>
+      <button class="ib${starred?' starred':''}" title="重点关注">${I.star}</button>
+      <button class="ib" title="标记已收藏">${I.check}</button>
+      <button class="ib" title="忽略">${I.x}</button>
+      <span class="row-date">${j.d}</span>
+    </div>
+  </li>`;
+}
+
+document.getElementById('starRows').innerHTML  = STARRED.map(j=>rowHtml(j,true)).join('');
+document.getElementById('normalRows').innerHTML= NORMAL.map(j=>rowHtml(j,false)).join('');
+
+/* 版式切换 */
+document.querySelectorAll('.vswitch button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('.vswitch button').forEach(o=>o.classList.remove('on'));
+    b.classList.add('on');
+    document.getElementById('tiles').dataset.variant=b.dataset.v;
+  });
+});
+
+/* 状态卡片：单选筛选 */
+document.querySelectorAll('.tile').forEach(t=>{
+  t.addEventListener('click',()=>{
+    const was=t.classList.contains('on');
+    document.querySelectorAll('.tile').forEach(o=>o.classList.remove('on'));
+    if(!was) t.classList.add('on');
+  });
+});
+
+/* 二级 chip：两组各自单选 */
+document.querySelectorAll('.filters .chip').forEach((c,i,all)=>{
+  c.addEventListener('click',()=>{
+    const group = i<3 ? [...all].slice(0,3) : [...all].slice(3);
+    group.forEach(o=>o.classList.remove('on'));
+    c.classList.add('on');
+  });
+});
+
+function flip(){
+  const cur=document.documentElement.getAttribute('data-theme');
+  const dark=cur? cur==='dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.setAttribute('data-theme', dark?'light':'dark');
+}
+</script>
+</body>
+</html>

@@ -257,6 +257,54 @@ def add_entry(
     return path
 
 
+def update_entry_fields(path, company, job_title, resume_optimization_bullets=None, resume_path=None, cover_letter=None, status=None):
+    """按 公司+职位名称 找到追踪表里那一行，只改材料相关的几个单元格，其余原样不动。
+
+    材料生成从AI匹配分析里拆出来之后需要这个函数：用户点"生成定制简历+Cover Letter"时，
+    这条职位的分析行早就写好了，只是那几列还是"未生成"。走 add_entry() 重写整行的话，
+    得把职位内容/任职要求/技能匹配等等十几个分析字段全部再传一遍——那些数据现在只存在
+    追踪表自己那一行里（分析结论没有完整落库），等于要先读回来再原样写回去，中间任何
+    一处反解（富文本的红色标记尤其）不完美都会让已有内容悄悄退化。只动四个格子最安全。
+
+    找不到对应行时返回 False（不报错）：追踪表可能被用户挪走或手工删过行，材料本身已经
+    落库了（models.update_job_materials），追踪表没同步上不该让整个生成流程失败。
+    """
+    if not os.path.exists(path):
+        return False
+    wb = load_workbook(path, rich_text=True)
+    ws = wb["JD匹配追踪表"] if "JD匹配追踪表" in wb.sheetnames else wb.active
+    _migrate_headers(ws)
+    company_col = HEADERS.index("公司") + 1
+    title_col = HEADERS.index("职位名称") + 1
+
+    values = {
+        "简历优化内容": _bullets_plain(resume_optimization_bullets) if resume_optimization_bullets else "未生成定制简历",
+        "简历存储路径": resume_path or "—",
+        "Cover Letter": cover_letter or "未生成",
+    }
+    if status is not None:
+        values["状态/下一步"] = status
+
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        if row[company_col - 1].value != company or row[title_col - 1].value != job_title:
+            continue
+        max_lines = 1
+        for header, val in values.items():
+            cell = ws.cell(row=row[0].row, column=HEADERS.index(header) + 1, value=val)
+            cell.border = BORDER
+            cell.font = Font(name=FONT_NAME, size=10)
+            cell.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            if isinstance(val, str) and "\n" in val:
+                max_lines = max(max_lines, val.count("\n") + 1)
+        # 行高只增不减：这一行其它列（任职要求等）的内容还在，按新写入的几列算出来的高度
+        # 可能比原来矮，缩回去会把旁边的长文本压得看不全。
+        current = ws.row_dimensions[row[0].row].height or 60
+        ws.row_dimensions[row[0].row].height = min(500, max(current, 22 * max_lines))
+        wb.save(path)
+        return True
+    return False
+
+
 def _plain_bullets_to_list(val):
     """反解 _bullets_plain() 写入的 "• xxx\\n• yyy" 格式为 ["xxx", "yyy"]。
     未生成/占位值（"未生成定制简历"、"未生成"、"—"等不带项目符号的值）原样按单条返回。"""

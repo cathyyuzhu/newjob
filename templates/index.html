@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>职位自动搜索</title>
+<title>职达 · 求职降噪</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,82 +11,138 @@
 
   <header class="topbar">
     <div class="brand">
-      <div class="brand-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/><circle cx="12" cy="12" r="3.2" fill="currentColor" stroke="none"/></svg>
-      </div>
-      <div>
-        <h1>职位自动搜索</h1>
-        <div class="sub">每日自动抓取 Indeed / LinkedIn 新职位，一键 AI 匹配分析</div>
-      </div>
+      <!-- 2026-08-17 视觉改版：去掉了原来的渐变图标方块，纯文字 wordmark 更贴近
+           克制的编辑感方向，不需要额外一个图形符号撑门面 -->
+      <h1>职达<span class="brand-en">Landed</span></h1>
+      <div class="sub">求职路上，滤掉噪音，只留信号</div>
     </div>
     <div class="topbar-actions">
-      <button class="btn btn-primary btn-sm" id="runNowBtn" onclick="runNow()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-        智能搜索
-      </button>
-      <button class="btn btn-primary btn-sm" id="aiAnalyzeAllBtn" onclick="toggleAnalyzeAll()" title="批量AI分析所有待审核职位（包括历史积压），再点一次可停止">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>
-        <span id="aiAnalyzeAllBtnLabel">AI分析</span>
-      </button>
-      <a class="btn btn-secondary btn-sm" id="interviewBtn" href="/interview" title="通用面试题库：自我介绍、通用问题、STAR 故事">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
-        面试题库
+      <!-- 简历用新标签页打开：坐下来改很久的一页，不该把职位列表顶掉。 -->
+      <a class="btn btn-secondary btn-sm" id="resumeBtn" href="/resume" target="_blank" rel="noopener"
+        title="我的简历：上传简历、跑 AI 体检、按建议生成优化版（新标签页打开）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>
+        我的简历
       </a>
+      <!-- 主题切换搬进了「更多 → 设置 → 外观」：顶栏是高频动作区，而深色模式是设一次
+           就不再动的偏好，占着一个常驻按钮位不划算。按钮本体和 toggleTheme() 没变。 -->
       <button class="icon-btn" id="moreBtn" title="更多" onclick="openMoreModal()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      </button>
-      <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
-        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
       </button>
     </div>
   </header>
 
-  <div class="stat-grid">
-    <div class="stat-card accent-new clickable" id="statCardNew" data-status="new" onclick="filterByStatus('new')" title="点击筛选「新」，再点一次恢复「全部」">
-      <div class="label">待审核</div>
-      <div class="value" id="statNew">–</div>
-    </div>
-    <div class="stat-card accent-ok clickable" id="statCardReviewed" data-status="reviewed" onclick="filterByStatus('reviewed')" title="点击筛选「已收藏」，再点一次恢复「全部」">
-      <div class="label">已收藏</div>
-      <div class="value" id="statReviewed">–</div>
-    </div>
-    <div class="stat-card clickable" id="statCardDismissed" data-status="dismissed" onclick="filterByStatus('dismissed')" title="点击筛选「已忽略」，再点一次恢复「全部」">
-      <div class="label">已忽略</div>
-      <div class="value" id="statDismissed">–</div>
-    </div>
-    <div class="stat-card clickable" id="statCardLastRun" onclick="openMoreModal('runs')" title="点击查看运行记录">
-      <div class="label">最近一次运行</div>
-      <div class="value" id="statLastRun" style="font-size:0.95rem;">–</div>
+  <!-- 导语行：把原来四张 KPI 卡片式的统计压成一句话，只放大一个数字（越过投递线的条数）
+       ——这是整页要回答的问题"今天有什么值得出手"。数字由 updateLede() 填，不发额外请求。
+       2026-08-17 对齐设计稿 v2：智能搜索/AI分析/面试题库 三个高频入口不放在最上方顶栏，
+       跟导语文案同一行、贴在右侧——顶栏只留「我的简历」这类偶尔才点的导航项。 -->
+  <div class="lede-row">
+    <p class="lede">
+      在库 <span class="lede-num" id="ledeTotal">–</span> 条职位，已完成 AI 匹配
+      <span class="lede-num" id="ledeScored">–</span> 条。
+      <span class="lede-figure" id="ledeStrong">–</span> 条越过 70% 投递线，值得今天出手。
+    </p>
+    <div class="lede-actions">
+      <button class="btn btn-primary btn-sm" id="runNowBtn" onclick="runNow()"
+        title="按「设置」里的关键词和城市，去 Indeed / LinkedIn 抓一轮新职位。抓到的新职位会自动排队做 AI 匹配分析，重复的和明显不相关的会直接跳过">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        智能搜索
+      </button>
+      <!-- 手动贴链接入库：按关键词×城市的自动搜索总有漏的（标题措辞对不上、城市没配、
+           朋友直接转过来一条），这个入口让"我自己在 LinkedIn 上看到的这条"也能进同一个
+           待审核队列，后面的 AI 匹配/材料/面试准备全部照常。 -->
+      <button class="btn btn-secondary btn-sm" id="addLinkBtn" onclick="openAddLinkModal()"
+        title="把你在 LinkedIn 上自己看到的职位链接贴进来，抓取后存入待审核（每行一条，可一次贴多条）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
+        添加链接
+      </button>
+      <button class="btn btn-primary btn-sm" id="aiAnalyzeAllBtn" onclick="toggleAnalyzeAll()"
+        title="拿你上传的简历，逐条对比待审核职位的 JD：算出匹配度、列出你达标和未达标的要求。定制简历和 Cover Letter 不会跟着自动生成，看中了再去职位详情页按按钮单独生成。会一并处理历史积压，再点一次可停止">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>
+        <span id="aiAnalyzeAllBtnLabel">AI分析</span>
+      </button>
+      <a class="btn btn-secondary btn-sm" id="bankBtn" href="/interview" target="_blank" rel="noopener"
+        title="通用面试题库：自我介绍、STAR 故事、讲述过往工作、通用问题（新标签页打开）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
+        面试题库
+      </a>
     </div>
   </div>
+
+  <div class="stat-grid">
+    <div class="stat-card accent-new clickable" id="statCardNew" data-status="new" onclick="filterByStatus('new')" title="点击筛选「新」，再点一次恢复「全部」">
+      <div class="value" id="statNew">–</div>
+      <div class="label">待审核</div>
+      <div class="hint">还没决定要不要</div>
+    </div>
+    <div class="stat-card accent-ok clickable" id="statCardReviewed" data-status="reviewed" onclick="filterByStatus('reviewed')" title="点击筛选「已收藏」，再点一次恢复「全部」">
+      <div class="value" id="statReviewed">–</div>
+      <div class="label">已收藏</div>
+      <div class="hint">打算投的</div>
+    </div>
+    <!-- 「重点关注」原来是筛选栏里一个不起眼的 chip，但它是用户自己动手标出来的短名单，
+         比系统算出来的任何一档都重要，所以提到最上面这排、紧跟「已收藏」。它不是 status
+         维度（可以跟任何状态叠加），所以用 data-filter 而不是 data-status。 -->
+    <div class="stat-card accent-star clickable" id="statCardStarred" data-filter="starred" onclick="toggleStarredFilter()" title="点击只看标了「重点关注」的职位，再点一次取消">
+      <div class="value" id="statStarred">–</div>
+      <div class="label">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1L12 2z"/></svg>
+        重点关注
+      </div>
+      <div class="hint">优先盯的</div>
+    </div>
+    <div class="stat-card clickable" id="statCardDismissed" data-status="dismissed" onclick="filterByStatus('dismissed')" title="点击筛选「已忽略」，再点一次恢复「全部」">
+      <div class="value" id="statDismissed">–</div>
+      <div class="label">已忽略</div>
+      <div class="hint">不考虑了</div>
+    </div>
+  </div>
+
+  <!-- 今日抓取漏斗：今日抓取 → 不相关跳过 → 重复跳过 → 新增，取自 /api/runs 里 ran_at
+       是今天的几条记录求和（可能一天跑好几次）。renderFunnel() 在 loadRuns() 拿到数据后
+       调用，不额外发请求。 -->
+  <p class="funnel" id="funnelRow" style="display:none;"></p>
 
   <!-- ===== Jobs (main content) ===== -->
   <section id="panel-jobs">
     <div class="filter-bar">
+      <!-- 默认「全部」：以前默认「外企」，等于一进页面就先藏掉一半结果，用户看到的
+           空列表分不清是"没搜到"还是"被筛掉了"。要不要挑外企是用户自己的判断，不该
+           由默认值替他做。 -->
       <div class="chip-group" id="originChips">
-        <button class="chip active" data-origin="foreign" title="外企 + 未分析/判断不出的职位">🌍 外企</button>
-        <button class="chip" data-origin="domestic" title="仅显示AI分析判定为中国大陆本土公司的职位">🇨🇳 国内公司</button>
-        <button class="chip" data-origin="">全部</button>
+        <button class="chip" data-origin="foreign" title="外企 + 未分析/判断不出的职位">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 4 6 4 9s-1.5 6.4-4 9c-2.5-2.6-4-6-4-9s1.5-6.4 4-9z"/></svg>
+          外企
+        </button>
+        <button class="chip" data-origin="domestic" title="仅显示AI分析判定为中国大陆本土公司的职位">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 21v-4h6v4M9 8h.01M9 12h.01M15 8h.01M15 12h.01"/></svg>
+          国内公司
+        </button>
+        <button class="chip active" data-origin="">全部</button>
       </div>
-      <!-- 分割线后面的"重点关注"是独立的开关筛选（可跟外企/国内公司任意组合），
-           不属于上面那组三选一的chip，所以单独放一个 chip-group -->
-      <span class="chip-divider" aria-hidden="true"></span>
-      <div class="chip-group">
-        <button class="chip" id="starredChip" onclick="toggleStarredFilter()" title="只看标记了「重点关注」的职位，再点一次取消">⭐ 重点关注</button>
-      </div>
+      <!-- 「已拒绝 / 已婉拒」不在这排筛选里：它们是投递流程走完之后的归档态，翻出来看的
+           频率极低，却常年占着两个位置把筛选栏挤成两行。职位卡片上的投递状态下拉仍然能
+           标记这两个状态，历史数据也照常保留。 -->
       <div class="chip-group" id="appStatusChips">
         <button class="chip active" data-appstatus="">投递状态：全部</button>
         <button class="chip" data-appstatus="not_applied">待投</button>
         <button class="chip" data-appstatus="applied">已投递</button>
         <button class="chip" data-appstatus="interviewing">面试中</button>
         <button class="chip" data-appstatus="offer">Offer</button>
-        <button class="chip" data-appstatus="rejected">已拒绝</button>
-        <button class="chip" data-appstatus="declined">已婉拒</button>
       </div>
+      <!-- 标签筛选：只列出预设标签 + 库里已经在用的自定义标签，单选（再点一次取消）。
+           具体标签集合是动态的，靠 JS 的 renderTagChips() 拼，不在模板里写死每一个。 -->
+      <div class="chip-group" id="tagChips"></div>
       <div class="search-box">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="jobSearch" type="text" placeholder="搜索职位或公司…" oninput="renderJobs()">
+        <!-- 输入监听在 app.js 的 DOMContentLoaded 里注册（带 200ms 防抖），不用内联 oninput -->
+        <input id="jobSearch" type="text" placeholder="搜索职位或公司…">
       </div>
+      <!-- 好几处后台任务的提示都写着"完成后点『刷新』查看结果"，这就是那个刷新按钮。
+           重新拉 /api/jobs + /api/tracker，比按 F5 快，而且不会丢掉当前筛选。 -->
+      <button class="btn btn-secondary btn-sm" id="refreshBtn" onclick="refreshJobs(this)" title="重新拉取职位列表（后台任务跑完后点这里看结果）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
+        刷新
+      </button>
       <button class="btn btn-secondary btn-sm" id="refetchAllJdBtn" onclick="refetchAllJd(this)" title="重新抓取所有待审核里JD正文缺失的职位（后台进行）">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
         全部重新获取JD
@@ -94,6 +150,12 @@
       <button class="btn btn-secondary btn-sm" id="classifyOriginBtn" onclick="classifyCompanyOrigin(this)" title="批量判断所有还没识别过国籍的公司（只看公司名，不用等JD/完整分析，后台进行）">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>
         识别公司国籍
+      </button>
+      <!-- 批量生成材料：对"当前筛选出来的职位"生效（跟眼睛看到的一致），已经生成过的
+           后端会自动跳过，不会重复烧钱（见 pipeline.generate_materials_batch）。 -->
+      <button class="btn btn-secondary btn-sm" id="batchMaterialsBtn" onclick="batchGenerateMaterials(this)" title="给当前筛选出来的、已完成AI分析但还没生成材料的职位批量生成定制简历+Cover Letter">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>
+        批量生成材料
       </button>
     </div>
 
@@ -104,12 +166,44 @@
     </div>
     <div class="job-list" id="jobList"></div>
     <div class="empty-state" id="jobsEmpty" style="display:none;">
-      <div class="icon">📭</div>
+      <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/></svg></div>
       <div class="title">暂时没有职位</div>
       <div class="desc">点击右上角"智能搜索"，或调整筛选条件试试。</div>
     </div>
   </section>
 
+</div>
+
+<!-- 添加职位链接。做成弹窗而不是独立页面：贴完链接看一眼逐条结果就关掉，是"办完就走"
+     的一次性操作，跟面试准备那种要挂着看很久的内容不是一回事（见 tech-solution.md 里
+     弹窗 vs 独立页面的取舍）。抓取是同步的，等待期间按钮转圈。 -->
+<div class="modal-overlay" id="addLinkModalOverlay" onclick="if(event.target===this) closeAddLinkModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>添加职位链接</h3>
+      <button class="icon-btn" onclick="closeAddLinkModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>LinkedIn 职位链接（每行一条，一次最多 20 条）</label>
+        <textarea id="addLinkUrls" rows="5" placeholder="https://www.linkedin.com/jobs/view/4123456789/&#10;https://www.linkedin.com/jobs/search/?currentJobId=4123456789"></textarea>
+        <p class="field-hint">
+          从职位详情页或搜索页的地址栏直接复制就行。抓到的职位存入「待审核」，并自动排队做 AI 匹配分析；
+          库里或追踪表里已经有的会跳过。访客身份抓不到的职位（限流、或要登录才可见）会自动改用你在
+          Easy Apply 里登录过的浏览器再抓一次，这种情况会慢一些。
+        </p>
+      </div>
+      <div class="link-results" id="addLinkResults"></div>
+      <div class="card-footer" style="margin-top:1rem;">
+        <button class="btn btn-primary" id="addLinkSubmitBtn" onclick="submitJobLinks()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          抓取并入库
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="modal-overlay" id="moreModalOverlay" onclick="if(event.target===this) closeMoreModal()">
@@ -127,6 +221,21 @@
 
       <!-- ===== Settings subtab ===== -->
       <section class="tab-panel active" id="moreSubpanel-settings">
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>外观</h2>
+              <p>没手动选过就跟随系统的深浅色设置；选过之后记在本机浏览器里，换设备要重新选。</p>
+            </div>
+          </div>
+          <div class="appearance-row">
+            <span>深色模式</span>
+            <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
+              <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+            </button>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-head">
             <div>
@@ -179,14 +288,44 @@
         <div class="card">
           <div class="card-head">
             <div>
-              <h2>自动分析设置</h2>
-              <p>需要设置 <code>ANTHROPIC_API_KEY</code>（Claude）或 <code>DEEPSEEK_API_KEY</code>（DeepSeek）环境变量，用哪个由 <code>config.json</code> 里的 <code>llm_provider</code> 字段决定（暂无界面开关，需直接编辑该文件）。点击职位的"AI 分析"会调用对应 API 计算匹配度并写入追踪表，匹配度 ≥70% 时还会生成定制简历 + cover letter（会产生 API 调用费用）。</p>
+              <h2>AI 模型与自动分析设置</h2>
+              <p>用 Claude 需要设 <code>ANTHROPIC_API_KEY</code> 环境变量，用 DeepSeek 需要设 <code>DEEPSEEK_API_KEY</code>（密钥只读环境变量，不进配置文件）。六块功能可以各配各的模型：匹配分析每条职位都要跑一次，便宜优先；定制简历/Cover Letter、面试准备、题库、简历体检都是生成一次看很久，质量优先；职位AI对话追问频繁，便宜优先。点击职位的"AI 分析"只计算匹配度并写入追踪表（不产生简历/CL），定制简历 + cover letter 改成职位详情页里按按钮单独生成。</p>
             </div>
           </div>
           <div class="form-grid">
+            <div class="field">
+              <label>JD 匹配分析用的模型</label>
+              <select class="model-select" id="modelTask-analysis" onchange="setTaskModel('analysis', this.value, this)"></select>
+            </div>
+            <div class="field">
+              <label>定制简历 / Cover Letter 生成用的模型</label>
+              <select class="model-select" id="modelTask-materials" onchange="setTaskModel('materials', this.value, this)"></select>
+            </div>
+            <div class="field">
+              <label>面试准备用的模型</label>
+              <select class="model-select" id="modelTask-interview_prep" onchange="setTaskModel('interview_prep', this.value, this)"></select>
+            </div>
+            <div class="field">
+              <label>通用题库用的模型（AI 起草 + 跟 AI 对话）</label>
+              <select class="model-select" id="modelTask-interview_bank" onchange="setTaskModel('interview_bank', this.value, this)"></select>
+            </div>
+            <div class="field">
+              <label>简历体检用的模型</label>
+              <select class="model-select" id="modelTask-resume_review" onchange="setTaskModel('resume_review', this.value, this)"></select>
+            </div>
+            <div class="field">
+              <label>职位详情页 AI 对话用的模型</label>
+              <select class="model-select" id="modelTask-job_chat" onchange="setTaskModel('job_chat', this.value, this)"></select>
+            </div>
+            <!-- 简历本身不在这里配了：改成在「我的简历」页上传，这里只读展示当前用的是哪份。
+                 保存设置时也不再提交 base_resume_path（后端白名单里已经去掉），否则这个
+                 空的只读框会把用户刚传的简历覆盖掉。 -->
             <div class="field span-2">
-              <label>基础简历文件路径</label>
-              <input id="base_resume_path" type="text" placeholder="留空默认 ~/Downloads/Cathy_Yang_Resume_EN_AI.docx">
+              <label>当前使用的简历</label>
+              <div class="settings-resume-row">
+                <span id="settingsResumeName">读取中…</span>
+                <a class="btn btn-secondary btn-sm" href="/resume" target="_blank" rel="noopener">去「我的简历」管理 →</a>
+              </div>
             </div>
             <div class="field span-2">
               <label>定制简历保存目录</label>
@@ -244,26 +383,6 @@
         </div>
       </section>
 
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay" id="jobDetailModalOverlay" onclick="if(event.target===this) closeJobDetailModal()">
-  <div class="modal">
-    <!-- 这个弹窗只放「匹配分析」：在列表里扫一眼决定投不投，看完就关。
-         「面试准备」要看很久、要单独开着，是独立页面 /jobs/<id>/interview，
-         从右上角那个按钮进去（原来它是这里的第二个 tab）。 -->
-    <div class="modal-head">
-      <h3 id="jobDetailModalTitle"></h3>
-      <div style="display:flex; align-items:center; gap:0.4rem;">
-        <a class="btn btn-secondary btn-sm" id="jobDetailPrepLink" href="#">🎤 面试准备 →</a>
-        <button class="icon-btn" onclick="closeJobDetailModal()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
-        </button>
-      </div>
-    </div>
-    <div class="modal-body">
-      <section id="detailSubpanel-analysis"></section>
     </div>
   </div>
 </div>

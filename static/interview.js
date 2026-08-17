@@ -34,6 +34,28 @@ async function loadJobHeader() {
   else link.style.display = 'none';
 }
 
+async function loadJobNotes() {
+  const section = document.getElementById('prepNotesSection');
+  try {
+    const res = await fetch(`/api/jobs/${PREP_JOB_ID}/notes`);
+    const notes = res.ok ? await res.json() : [];
+    if (!notes.length) { section.style.display = 'none'; return; }
+    document.getElementById('prepNotesList').innerHTML = notes.map((n) => `
+      <div class="note-item">
+        <div class="note-meta">
+          <span class="note-source ${n.source === 'chat' ? 'ai' : ''}">${n.source === 'chat' ? '[AI]' : '[手写]'}</span>
+          <span class="note-time">${escapeHtml((n.created_at || '').replace('T', ' '))}</span>
+        </div>
+        <div class="note-content">${escapeHtml(n.content)}</div>
+      </div>
+    `).join('');
+    document.getElementById('prepNotesLink').href = `/jobs/${PREP_JOB_ID}`;
+    section.style.display = '';
+  } catch (e) {
+    section.style.display = 'none';
+  }
+}
+
 async function loadInterviewPrep() {
   const panel = document.getElementById('prepRoot');
   if (!interviewPreps.length) {
@@ -275,6 +297,8 @@ async function refreshJobPrepState() {
 // ---------- init ----------
 document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
+  initModelSelect('prepModelSelect', 'interview_prep');
   await loadJobHeader();
   loadInterviewPrep();
+  loadJobNotes();
 });

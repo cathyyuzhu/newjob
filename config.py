@@ -22,12 +22,25 @@ DEFAULT_CONFIG = {
     # 与 jd-resume-matcher 技能共用的追踪表路径，用于去重、以及自动分析结果的写入目标。
     # 留空则去重时不跟已投递记录比对；自动分析写入时留空会用 ~/Downloads/JD匹配追踪表.xlsx。
     "tracker_xlsx_path": "",
-    # 自动分析开关：由用户在页面上对每条待审核职位手动点"自动分析"触发，这里只是路径配置。
-    "base_resume_path": "",  # 留空则用 ~/Downloads/Cathy_Yang_Resume_EN_AI.docx
-    "resume_output_dir": "",  # 留空则跟 base_resume_path 同目录
+    # 基础简历：由「我的简历」页的上传流程回写，一般不用手改（上传的文件落在项目内的
+    # resumes/ 目录）。老配置里手填的本机绝对路径继续有效，不用迁移。留空 = 还没上传简历，
+    # 匹配分析/面试准备/题库都会返回"请先上传简历"而不是去猜一个默认路径。
+    "base_resume_path": "",
+    "base_resume_meta": {"original_filename": "", "uploaded_at": ""},  # 只为展示，真身看 base_resume_path
+    "resume_output_dir": "",  # 定制简历的输出目录，留空则跟 base_resume_path 同目录
+    # 全局默认的 provider/模型。下面的 llm_tasks 没单独配某个功能位时回退到这里。
     "llm_provider": "anthropic",  # "anthropic" 或 "deepseek"
     "anthropic_model": "claude-sonnet-5",
     "deepseek_model": "deepseek-v4-pro",  # 便宜档位可用 "deepseek-v4-flash"
+    # 按功能位分别指定模型（2026-08-16）。值是 llm.MODELS 里的 id，留空表示用上面的全局默认。
+    # 分开配是因为三者的成本/质量诉求差很多：匹配分析每条职位都要跑一次（量大、便宜优先），
+    # 面试准备和题库是一次生成看很久（质量优先）。
+    "llm_tasks": {
+        "analysis": "",  # JD-简历匹配分析
+        "interview_prep": "",  # 单条职位的面试准备
+        "interview_bank": "",  # 通用题库：AI 起草 + 跟 AI 对话
+        "resume_review": "",  # 简历体检：整份简历的诊断 + 逐段改写建议
+    },
     # LinkedIn Easy Apply 半自动投递：自动回答筛选问题用的个人资料表（2026-08-16）。
     # 三个高频字段固定命名，覆盖不到的问题走 extra_answers 关键词匹配；都匹配不上就停在
     # 那一步等本人手动填，不猜、不调用LLM临时判断——详见 spec/mission.md 的边界说明。

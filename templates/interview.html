@@ -11,22 +11,24 @@
 
   <header class="topbar">
     <div class="brand">
-      <div class="brand-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
-      </div>
       <div>
         <h1>通用面试题库</h1>
-        <div class="sub">跨职位复用的个人标准答案，每题中英文各一版；AI 起草只填你没改过的条目</div>
+        <div class="sub">跨职位复用的个人标准答案，每题中英文各一版；AI 起草只填你没改过的条目，改过的不会被覆盖</div>
       </div>
     </div>
     <div class="topbar-actions">
-      <a class="btn btn-secondary btn-sm" href="/">← 返回职位列表</a>
+      <!-- 这一页是从职位列表新开标签页进来的，原来顶栏那个返回链接等于让人把新标签页
+           当成单页用，点一下反而把挂着背题的这一页顶掉了，所以拿掉了 -->
+      <select class="model-select" id="bankModelSelect" title="这一页的 AI（起草和对话）用哪个模型"
+        onchange="setTaskModel('interview_bank', this.value, this)"></select>
       <button class="btn btn-secondary btn-sm" onclick="toggleAssistant()" title="让 AI 看整个题库挑毛病：故事有没有重复、缺哪一类、哪几题答得空">
-        💬 题库助手
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        题库助手
       </button>
       <!-- 起草按钮放在 topbar 而不是内容区顶部：题库滚起来很长，放里面滚到底就看不见了 -->
-      <button class="btn btn-primary btn-sm" id="bankGenerateBtn" onclick="generateBankDraft(this)" title="根据简历起草初稿，分自我介绍/通用问题/STAR 故事三段生成；已经改过的条目不会被覆盖">
-        ✨ AI 起草 / 补充
+      <button class="btn btn-primary btn-sm" id="bankGenerateBtn" onclick="generateBankDraft(this)" title="根据简历起草初稿，分四段生成（自我介绍 / STAR 故事 / 讲述过往工作 / 通用问题）；你改过并保存的条目一律跳过，只补新题">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>
+        AI 起草 / 补充
       </button>
       <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
         <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
@@ -34,7 +36,11 @@
     </div>
   </header>
 
-  <section id="bankRoot"></section>
+  <!-- 左边目录、右边内容。题库长起来有几十条，没有目录就只能靠滚轮找题。 -->
+  <div class="bank-layout">
+    <nav class="bank-nav" id="bankNav"></nav>
+    <section id="bankRoot"></section>
+  </div>
 
 </div>
 

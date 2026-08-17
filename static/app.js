@@ -1,27 +1,108 @@
 // ---------- state ----------
 let allJobs = [];
 let currentStatus = 'new';
-let currentOrigin = 'foreign';
+// 默认「全部」而不是「外企」：默认藏掉一半结果，用户看到的空列表分不清是"没搜到"
+// 还是"被默认筛选挡住了"。挑不挑外企是用户自己的判断。
+let currentOrigin = '';
 let currentAppStatus = '';
 // "重点关注"筛选：独立开关（不跟外企/国内公司互斥），开启后只显示标了星的职位
 let starredOnly = false;
-let trackerEntries = [];
-let trackerIndex = {};
+// 标签筛选：单选（再点一次取消），空字符串表示不筛
+let currentTag = '';
 
-// ---------- helpers ----------
-// 主题切换 / toast / escapeHtml / setBtnLoading / restoreBtn / bulletListHtml 都在
-// common.js 里（三个页面共用），本文件只留职位列表专属的部分。
-function safeUrl(url) {
-  if (typeof url === 'string' && /^https?:\/\//i.test(url)) return url;
-  return '#';
+// ---------- 筛选状态 ↔ URL ----------
+// 五套筛选（审核状态 / 公司国籍 / 重点关注 / 投递状态 / 标签）加搜索词原来只活在内存里，
+// 刷新页面就全重置回"待审核的外企"。而好几处后台任务的提示恰恰让用户去刷新看结果，
+// 一刷新筛选就没了。把状态放进 query string：刷新不丢，也能把某个组合存成书签。
+const FILTER_DEFAULTS = { status: 'new', origin: '', app: '', starred: false, tag: '', q: '' };
+
+function readFiltersFromUrl() {
+  const p = new URLSearchParams(location.search);
+  // 只认 URL 里真正出现的参数，没出现的用默认值——这样 /（不带参数）行为跟以前一致
+  if (p.has('status')) currentStatus = p.get('status');
+  if (p.has('origin')) currentOrigin = p.get('origin');
+  if (p.has('app')) currentAppStatus = p.get('app');
+  if (p.has('starred')) starredOnly = p.get('starred') === '1';
+  if (p.has('tag')) currentTag = p.get('tag');
+  if (p.has('q')) document.getElementById('jobSearch').value = p.get('q');
 }
 
-function normalizeStr(s) {
-  return String(s ?? '').trim().toLowerCase();
+function writeFiltersToUrl() {
+  const p = new URLSearchParams();
+  const q = document.getElementById('jobSearch').value.trim();
+  // 跟默认值一样的就不写进 URL，免得地址栏挂一串没有信息量的参数
+  if (currentStatus !== FILTER_DEFAULTS.status) p.set('status', currentStatus);
+  if (currentOrigin !== FILTER_DEFAULTS.origin) p.set('origin', currentOrigin);
+  if (currentAppStatus !== FILTER_DEFAULTS.app) p.set('app', currentAppStatus);
+  if (starredOnly) p.set('starred', '1');
+  if (currentTag) p.set('tag', currentTag);
+  if (q) p.set('q', q);
+  const qs = p.toString();
+  const next = qs ? `${location.pathname}?${qs}` : location.pathname;
+  // renderJobs() 每次轮询都会调到这里，没变化就别写——省掉每 4 秒一次无意义的 replaceState
+  if (next === location.pathname + location.search) return;
+  // replaceState 而不是 pushState：筛选不该往浏览器历史里塞一堆条目、让"后退"变成逐个撤销筛选
+  history.replaceState(null, '', next);
 }
 
-function dedupeKey(company, title) {
-  return `${normalizeStr(company)}::${normalizeStr(title)}`;
+// 把内存里的筛选状态同步到控件高亮上（从 URL 恢复后调用一次）
+function syncFilterControls() {
+  document.querySelectorAll('#originChips .chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.origin || '') === currentOrigin);
+  });
+  document.querySelectorAll('#appStatusChips .chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.appstatus || '') === currentAppStatus);
+  });
+  syncTagChipsActive();
+  // 「重点关注」的开关状态现在体现在统计卡片上（原来是筛选栏里一个 chip），
+  // 高亮统一交给 updateStatCardActive() 处理
+  updateStatCardActive();
+}
+
+function hasActiveFilters() {
+  return currentStatus !== '' || currentOrigin !== '' || currentAppStatus !== ''
+    || starredOnly || currentTag !== '' || document.getElementById('jobSearch').value.trim() !== '';
+}
+
+function clearAllFilters() {
+  currentStatus = '';
+  currentOrigin = '';
+  currentAppStatus = '';
+  starredOnly = false;
+  currentTag = '';
+  document.getElementById('jobSearch').value = '';
+  syncFilterControls();
+  renderJobs();
+}
+
+// ---------- 标签筛选 chips ----------
+// 集合是动态的：预设标签（跟 common.js 的 PRESET_TAGS 保持一致）+ 库里所有职位实际
+// 在用的自定义标签，去重后渲染。渲染时机跟着 renderJobs()——标签是打在职位上的，
+// 新增/删除标签会改变这个集合，而那些操作本来就会触发一次 loadJobs()。
+function collectAllTags() {
+  const set = new Set(PRESET_TAGS);
+  allJobs.forEach((j) => {
+    (j.tags || '').split(',').map((t) => t.trim()).filter(Boolean).forEach((t) => set.add(t));
+  });
+  return Array.from(set);
+}
+
+function renderTagChips() {
+  const el = document.getElementById('tagChips');
+  const tags = collectAllTags();
+  el.innerHTML = tags.map((t) => `<button class="chip ${t === currentTag ? 'active' : ''}" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('');
+}
+
+function syncTagChipsActive() {
+  document.querySelectorAll('#tagChips .chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.tag === currentTag);
+  });
+}
+
+function toggleTagFilter(tag) {
+  currentTag = currentTag === tag ? '' : tag;
+  syncTagChipsActive();
+  renderJobs();
 }
 
 // ---------- more modal (settings / runs) ----------
@@ -52,8 +133,17 @@ async function loadConfig() {
   document.getElementById('schedule_hour').value = cfg.schedule_hour;
   document.getElementById('schedule_minute').value = cfg.schedule_minute;
   document.getElementById('tracker_xlsx_path').value = cfg.tracker_xlsx_path || '';
-  document.getElementById('base_resume_path').value = cfg.base_resume_path || '';
   document.getElementById('resume_output_dir').value = cfg.resume_output_dir || '';
+  // 简历改成在 /resume 页上传了，这里只读展示当前用的是哪份（saveConfig 不提交它）
+  const resumeMeta = cfg.base_resume_meta || {};
+  document.getElementById('settingsResumeName').textContent = cfg.base_resume_path
+    ? `${resumeMeta.original_filename || cfg.base_resume_path}${resumeMeta.uploaded_at ? `（上传于 ${resumeMeta.uploaded_at}）` : ''}`
+    : '还没有上传简历';
+  // 四个模型下拉自己拉 /api/models 填充。它们是"选了就存"的，不跟着下面的「保存设置」走
+  // ——所以 saveConfig() 里也不能再提交一遍 llm_tasks，否则会把另外几页刚改的覆盖掉。
+  ['analysis', 'materials', 'interview_prep', 'interview_bank', 'resume_review', 'job_chat'].forEach((task) => {
+    initModelSelect(`modelTask-${task}`, task);
+  });
   const eaProfile = cfg.easy_apply_profile || {};
   document.getElementById('ea_work_authorization').value = eaProfile.work_authorization || '';
   document.getElementById('ea_expected_salary').value = eaProfile.expected_salary || '';
@@ -102,7 +192,8 @@ async function saveConfig() {
     schedule_hour: document.getElementById('schedule_hour').value,
     schedule_minute: document.getElementById('schedule_minute').value,
     tracker_xlsx_path: document.getElementById('tracker_xlsx_path').value,
-    base_resume_path: document.getElementById('base_resume_path').value,
+    // 刻意不提交 base_resume_path：它现在只由 /resume 页的上传/删除流程写，
+    // 后端白名单里也去掉了。从这里提交一个只读框的值只会把刚传的简历覆盖没。
     resume_output_dir: document.getElementById('resume_output_dir').value,
     easy_apply_profile: {
       work_authorization: document.getElementById('ea_work_authorization').value,
@@ -149,12 +240,84 @@ async function runNow() {
     const parts = [`找到 ${res.found}`, `新增 ${res.added}`, `去重跳过 ${res.skipped_duplicate}`, `不相关跳过 ${res.skipped_irrelevant}`];
     showToast(`搜索完成：${parts.join(' · ')}`, res.errors && res.errors.length ? 'error' : 'success');
     if (res.errors && res.errors.length) showToast(res.errors.join('; '), 'error', 6000);
+    // 搜索本身不需要简历，所以这里是 200 而不是 409——职位已经抓到了，只是没法自动
+    // 算匹配度。额外提示一条，不掩盖上面那条"搜索完成"。
+    if (res.need_resume) handleNeedResume({ need_resume: true, error: res.need_resume_message });
   } catch (e) {
     showToast(`搜索失败：${e.message}`, 'error');
   } finally {
     restoreBtn(btn);
     loadJobs();
     loadRuns();
+  }
+}
+
+// ---------- 添加职位链接 ----------
+function openAddLinkModal() {
+  document.getElementById('addLinkModalOverlay').classList.add('active');
+  document.getElementById('addLinkUrls').focus();
+}
+
+function closeAddLinkModal() {
+  document.getElementById('addLinkModalOverlay').classList.remove('active');
+}
+
+// 逐条渲染结果，而不是只弹一句"成功N条"：一次贴好几条时，用户真正要知道的是"哪一条
+// 没进去、为什么"——重复和抓不到的处置完全不同（前者不用管，后者可能要换个链接重贴）。
+function renderLinkResults(results) {
+  const box = document.getElementById('addLinkResults');
+  if (!results || !results.length) {
+    box.innerHTML = '';
+    return;
+  }
+  const label = { added: '已入库', duplicate: '已存在', failed: '失败' };
+  box.innerHTML = results.map((r) => {
+    const name = r.title ? `${escapeHtml(r.company || '')} · ${escapeHtml(r.title)}` : escapeHtml(r.url || '');
+    // 入库成功的给一个直达职位详情页的链接，省得回列表里翻
+    const link = r.status === 'added' && r.job_id
+      ? ` <a href="/jobs/${r.job_id}" target="_blank" rel="noopener">查看</a>`
+      : '';
+    const note = r.status === 'added' && r.jd_missing
+      ? '没抓到 JD 正文，可在列表里点「全部重新获取JD」'
+      : (r.message || '');
+    return `<div class="link-result ${r.status}">
+      <span class="link-result-tag">${label[r.status] || r.status}</span>
+      <span class="link-result-body"><strong>${name}</strong>${link}${note ? `<span class="link-result-note">${escapeHtml(note)}</span>` : ''}</span>
+    </div>`;
+  }).join('');
+}
+
+async function submitJobLinks() {
+  const urls = document.getElementById('addLinkUrls').value.trim();
+  if (!urls) {
+    showToast('请先贴至少一条 LinkedIn 职位链接', 'error');
+    return;
+  }
+  const btn = document.getElementById('addLinkSubmitBtn');
+  // 抓取是同步的（还可能要开一次浏览器兜底），这里可能要等十几秒到一两分钟
+  setBtnLoading(btn, '抓取中…');
+  try {
+    const res = await fetch('/api/jobs/add_by_url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '未知错误');
+    const results = data.results || [];
+    renderLinkResults(results);
+    const added = results.filter((r) => r.status === 'added').length;
+    const dup = results.filter((r) => r.status === 'duplicate').length;
+    const failed = results.filter((r) => r.status === 'failed').length;
+    showToast(`入库 ${added} 条 · 已存在 ${dup} 条 · 失败 ${failed} 条`, failed ? 'error' : 'success');
+    // 成功入库的那些已经在后台排队分析了，把贴过的链接清掉，免得再点一次重复提交
+    if (added) document.getElementById('addLinkUrls').value = '';
+    if (data.need_resume) handleNeedResume({ need_resume: true, error: data.need_resume_message });
+  } catch (e) {
+    showToast(`添加失败：${e.message}`, 'error');
+  } finally {
+    restoreBtn(btn);
+    loadJobs();
   }
 }
 
@@ -178,13 +341,35 @@ document.addEventListener('DOMContentLoaded', () => {
     currentAppStatus = chip.dataset.appstatus;
     renderJobs();
   });
+  // 标签 chips 是动态拼出来的（renderTagChips），用事件委托而不是逐个绑定
+  document.getElementById('tagChips').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    toggleTagFilter(chip.dataset.tag);
+  });
+  // 搜索框防抖：renderJobs() 会把整个列表重新拼成 innerHTML，原来每敲一个字符重建一次整棵 DOM
+  let searchDebounce = null;
+  document.getElementById('jobSearch').addEventListener('input', () => {
+    if (searchDebounce) clearTimeout(searchDebounce);
+    searchDebounce = setTimeout(renderJobs, 200);
+  });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      closeJobDetailModal();
-      closeMoreModal();
-    }
+    if (e.key === 'Escape') closeMoreModal();
   });
 });
+
+// 工具栏"刷新"按钮。批量重新获取JD、识别公司国籍这些后台任务跑完没有任何通知，
+// 提示语里一直让用户"点刷新"，但界面上以前根本没有这个按钮，只能按 F5——而 F5 会
+// 把筛选全部重置（现在筛选进了 URL，F5 也不丢了，但重新拉数据仍然比整页重载轻）。
+async function refreshJobs(btn) {
+  setBtnLoading(btn, '刷新中…');
+  try {
+    await loadJobs();
+    await loadRuns();
+  } finally {
+    restoreBtn(btn);
+  }
+}
 
 async function loadJobs(showSkeleton) {
   const skeleton = document.getElementById('jobsSkeleton');
@@ -195,15 +380,8 @@ async function loadJobs(showSkeleton) {
   }
   try {
     allJobs = await (await fetch('/api/jobs')).json();
-    try {
-      const res = await fetch('/api/tracker');
-      trackerEntries = res.ok ? await res.json() : [];
-    } catch (e) {
-      trackerEntries = [];
-    }
-    trackerIndex = {};
-    trackerEntries.forEach((entry) => { trackerIndex[dedupeKey(entry.company, entry.job_title)] = entry; });
     updateStats();
+    renderTagChips();
     renderJobs();
     updateAiAnalyzeAllBtn();
     scheduleAnalyzingPoll();
@@ -217,16 +395,32 @@ async function loadJobs(showSkeleton) {
 
 // 新职位入库后后台会自动开始AI分析（见 app.py 的 /api/search/run），这个过程不是
 // 请求-响应式的，前端没法"等它做完"，只能轮询 /api/jobs 让"AI分析中"按钮状态跟后台
-// 实际进度对上；没有职位在分析时不轮询，避免空转。
+// 实际进度对上；没有职位在分析/生成材料时不轮询，避免空转。
+// materials_state 跟 analysis_state 用同一套轮询——批量生成材料同样是后台串行跑的，
+// 没必要为它单独再开一个定时器。
+function anyJobBusy() {
+  return allJobs.some((j) => j.analysis_state || j.materials_state);
+}
+
 let analyzingPollTimer = null;
 function scheduleAnalyzingPoll() {
   if (analyzingPollTimer) return;
-  if (!allJobs.some((j) => j.analysis_state)) return;
+  if (!anyJobBusy()) return;
   analyzingPollTimer = setTimeout(async () => {
     analyzingPollTimer = null;
+    // 页面在后台就别拉了，切回来时下面的 visibilitychange 会立刻补一次。
+    // （题库页 bank.js 和面试准备页 interview.js 早就这么做了，只有这里漏了）
+    if (document.hidden) {
+      scheduleAnalyzingPoll();
+      return;
+    }
     await loadJobs();
   }, 4000);
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && anyJobBusy()) loadJobs();
+});
 
 // ---------- top "AI分析" 按钮：批量分析所有待审核职位（含历史积压），可再点一次停止 ----------
 function updateAiAnalyzeAllBtn() {
@@ -251,7 +445,10 @@ async function startAnalyzeAll() {
   const btn = document.getElementById('aiAnalyzeAllBtn');
   setBtnLoading(btn, '启动中…');
   try {
-    const res = await (await fetch('/api/jobs/analyze_all', { method: 'POST' })).json();
+    const resp = await fetch('/api/jobs/analyze_all', { method: 'POST' });
+    const res = await resp.json();
+    if (handleNeedResume(res)) return;
+    if (!resp.ok) throw new Error(res.error || '未知错误');
     showToast(res.count > 0 ? `已开始批量AI分析，共 ${res.count} 条待处理` : '没有需要分析的职位', 'info', 5000);
   } catch (e) {
     showToast(`启动失败：${e.message}`, 'error');
@@ -277,26 +474,51 @@ async function stopAnalyzeAll() {
 
 function updateStats() {
   const counts = { new: 0, reviewed: 0, dismissed: 0 };
+  let starred = 0;
   for (const j of allJobs) {
     if (counts[j.status] !== undefined) counts[j.status] += 1;
+    // 重点关注是跨状态统计：一条职位可以既"已收藏"又"重点关注"，两个数字本来就该重叠
+    if (j.starred) starred += 1;
   }
   document.getElementById('statNew').textContent = counts.new;
   document.getElementById('statReviewed').textContent = counts.reviewed;
+  document.getElementById('statStarred').textContent = starred;
   document.getElementById('statDismissed').textContent = counts.dismissed;
   updateStatCardActive();
+  updateLede();
 }
 
-// 顶部统计卡片兼任状态筛选按钮（取代原来独立的一排"新/已收藏/已忽略/全部"chip）：
-// 点中的那张卡片高亮，currentStatus 为空字符串（"全部"）时三张都不高亮。
+// 首页导语行（"在库 N 条职位，已完成 AI 匹配 M 条，K 条越过 70% 投递线"）：
+// 用已经拉到手的 allJobs 算三个数字，反映全局、不跟着当前筛选变，不产生额外请求。
+function updateLede() {
+  const total = allJobs.length;
+  const scored = allJobs.filter((j) => j.overall_match != null).length;
+  const strong = allJobs.filter((j) => j.overall_match != null && j.overall_match >= 0.7).length;
+  const totalEl = document.getElementById('ledeTotal');
+  const scoredEl = document.getElementById('ledeScored');
+  const strongEl = document.getElementById('ledeStrong');
+  if (!totalEl) return; // 页面没有导语区（不太可能，但防一下）
+  totalEl.textContent = total;
+  scoredEl.textContent = scored;
+  strongEl.textContent = strong;
+}
+
+// 顶部统计卡片兼任筛选按钮（取代原来独立的一排"新/已收藏/已忽略/全部"chip）：
+// 三张审核状态卡按 data-status 跟 currentStatus 比对高亮，currentStatus 为空（"全部"）时都不亮；
+// 「重点关注」是独立开关（data-filter="starred"，可跟任何状态叠加），按 starredOnly 高亮。
 function updateStatCardActive() {
   document.querySelectorAll('.stat-card.clickable').forEach((card) => {
+    if (card.dataset.filter === 'starred') {
+      card.classList.toggle('active', starredOnly);
+      return;
+    }
     card.classList.toggle('active', card.dataset.status === currentStatus && currentStatus !== '');
   });
 }
 
 function toggleStarredFilter() {
   starredOnly = !starredOnly;
-  document.getElementById('starredChip').classList.toggle('active', starredOnly);
+  updateStatCardActive();
   renderJobs();
 }
 
@@ -305,6 +527,15 @@ function filterByStatus(status) {
   currentStatus = currentStatus === status ? '' : status;
   updateStatCardActive();
   renderJobs();
+}
+
+// first_seen 存的是完整 ISO 时间戳（models.insert_job 用 datetime.now().isoformat()），
+// 列表里只需要"几号"，原样显示一长串反而糊了真正该看的分数/标题。解析失败（脏数据）
+// 原样返回，不隐藏问题。
+function shortDate(iso) {
+  if (!iso) return '';
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  return m ? `${m[2]}-${m[3]}` : iso;
 }
 
 function matchBadge(job) {
@@ -325,8 +556,8 @@ function matchBadge(job) {
 }
 
 function originBadge(companyOrigin) {
-  if (companyOrigin === 'foreign') return '<span class="badge" title="AI分析判断为外企/海外总部公司">🌍 外企</span>';
-  if (companyOrigin === 'domestic') return '<span class="badge" title="AI分析判断为中国大陆本土公司">🇨🇳 中国公司</span>';
+  if (companyOrigin === 'foreign') return `<span class="badge" title="AI分析判断为外企/海外总部公司">${GLOBE_ICON}外企</span>`;
+  if (companyOrigin === 'domestic') return `<span class="badge" title="AI分析判断为中国大陆本土公司">${BUILDING_ICON}中国公司</span>`;
   return '';
 }
 
@@ -362,7 +593,8 @@ function applicationStatusSelectHtml(job) {
 
 const CHECK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 const X_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-const SPARK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>';
+const SEARCH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>';
+// SPARK_ICON 挪到 common.js 了（题库/简历/职位详情页也要用，不止这一页）
 const STAR_PATH = '<path d="m12 3.2 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6-4.4-4.3 6.1-.9L12 3.2z"/>';
 const STAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAR_PATH}</svg>`;
 const STAR_ICON_FILLED = `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAR_PATH}</svg>`;
@@ -435,19 +667,39 @@ async function pollEasyApplyUntilSettled(id, { intervalMs = 3000, timeoutMs = 60
 
 function resumeLinkHtml(job) {
   if (!job.resume_path) return '';
-  return `<a class="dot-sep job-link" href="/api/jobs/${job.id}/resume" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">📄 定制简历</a>`;
+  return `<a class="dot-sep job-link" href="/api/jobs/${job.id}/resume" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${RESUME_ICON}定制简历</a>`;
 }
 
 function coverLetterLinkHtml(job) {
-  const e = trackerIndex[dedupeKey(job.company, job.title)];
-  if (!e || !e.cover_letter) return '';
-  return `<a class="dot-sep job-link" href="#" onclick="event.stopPropagation(); openJobDetailModal(${job.id}); return false;">✉️ Cover Letter</a>`;
+  if (!job.cover_letter) return '';
+  return `<a class="dot-sep job-link" href="/jobs/${job.id}">${MAIL_ICON}Cover Letter</a>`;
+}
+
+// 空列表分两种情况，原来共用一句"暂时没有职位"，非常容易误导：默认筛选是
+// "待审核 + 外企"，刚跑完搜索抓到的若全是国内公司，页面看起来就像搜索失败了。
+function renderEmptyState(el) {
+  if (allJobs.length === 0) {
+    el.innerHTML = `
+      <div class="icon">${INBOX_ICON}</div>
+      <div class="title">还没有任何职位</div>
+      <div class="desc">点击右上角"智能搜索"跑一次，或在"更多 → 设置"里先填好搜索关键词。</div>`;
+    return;
+  }
+  // 库里有数据，只是被当前筛选组合挡住了——直接说清楚挡了多少条，并给一键清除
+  el.innerHTML = `
+    <div class="icon">${SEARCH_ICON}</div>
+    <div class="title">当前筛选下没有职位</div>
+    <div class="desc">库里一共有 ${allJobs.length} 条职位，都被现在的筛选条件挡住了。</div>
+    <button class="btn btn-secondary btn-sm" onclick="clearAllFilters()">清除全部筛选</button>`;
 }
 
 function renderJobs() {
   const list = document.getElementById('jobList');
   const empty = document.getElementById('jobsEmpty');
   const q = document.getElementById('jobSearch').value.trim().toLowerCase();
+
+  // 所有改筛选的入口最后都会走到这里，所以 URL 同步放这一处就够，不用每个 handler 各写一遍
+  writeFiltersToUrl();
 
   let jobs = allJobs;
   if (currentStatus) jobs = jobs.filter((j) => j.status === currentStatus);
@@ -460,44 +712,92 @@ function renderJobs() {
 
   if (jobs.length === 0) {
     list.innerHTML = '';
+    renderEmptyState(empty);
     empty.style.display = 'block';
     return;
   }
   empty.style.display = 'none';
 
-  list.innerHTML = jobs.map((j) => {
-    const clickable = j.overall_match != null;
-    return `
-    <div class="job-card${clickable ? ' clickable' : ''}" data-id="${j.id}" ${clickable ? `onclick="openJobDetailModal(${j.id})"` : ''}>
+  // 分组排序（2026-08-17 视觉改版）：重点关注置顶 + 全部按匹配度从高到低，取代原来
+  // "最新抓取排最前"——服务"一眼看到该看什么"这个目标，跟用户确认过采用这个方案
+  // （而不是"只置顶重点关注、其余仍按最新排序"的折中方案），见 spec/roadmap.md。
+  const hasScore = (j) => j.overall_match != null;
+  const byScoreDesc = (a, b) => {
+    if (hasScore(a) && hasScore(b)) return b.overall_match - a.overall_match;
+    if (hasScore(a)) return -1;
+    if (hasScore(b)) return 1;
+    return 0; // 都没有分数，保持原来的相对顺序（数组 sort 是稳定排序）
+  };
+
+  const scoredJobs = jobs.filter(hasScore);
+  const heroJob = scoredJobs.length
+    ? scoredJobs.reduce((a, b) => (b.overall_match > a.overall_match ? b : a))
+    : null;
+  const rest = heroJob ? jobs.filter((j) => j.id !== heroJob.id) : jobs;
+  const starredJobs = rest.filter((j) => j.starred).sort(byScoreDesc);
+  const otherJobs = rest.filter((j) => !j.starred).sort(byScoreDesc);
+
+  let html = '';
+  if (heroJob) html += jobCardHtml(heroJob, { hero: true });
+  if (starredJobs.length) {
+    html += `<div class="job-group-head">${STAR_ICON_FILLED}重点关注 <span class="n">${starredJobs.length}</span></div>`;
+    html += starredJobs.map((j) => jobCardHtml(j)).join('');
+  }
+  if (otherJobs.length) {
+    if (heroJob || starredJobs.length) html += `<div class="job-group-head plain">其余职位</div>`;
+    html += otherJobs.map((j) => jobCardHtml(j)).join('');
+  }
+  list.innerHTML = html;
+}
+
+// 单条职位行的完整 HTML。原来直接写在 renderJobs() 的 .map() 里，抽出来是因为现在
+// 同一个模板要给三处复用：hero 大卡、重点关注置顶组、其余职位——避免三份重复模板互相
+// 漂移。matchBadge()/siteBadge()/...等生成局部 HTML 的函数一个没改，只是这里把
+// matchBadge() 挪到了最前面（左侧分数列），interviewPrepBadgeHtml()/noteBadgeHtml()
+// 挪进了标题行（小徽标形式），视觉调整，不影响它们各自的判断逻辑。
+function jobCardHtml(j, opts) {
+  opts = opts || {};
+  const clickable = j.overall_match != null;
+  const starred = !!j.starred;
+  const cls = ['job-card'];
+  if (clickable) cls.push('clickable');
+  if (starred) cls.push('star');
+  if (opts.hero) cls.push('hero');
+  return `
+    <div class="${cls.join(' ')}" data-id="${j.id}" ${clickable ? `onclick="location.href='/jobs/${j.id}'"` : ''}>
+      ${matchBadge(j)}
       <div class="job-main">
         <div class="job-title-row">
+          ${starred ? `<span class="job-title-star" title="重点关注">${STAR_ICON_FILLED}</span>` : ''}
           <a class="job-title" href="${safeUrl(j.job_url)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${escapeHtml(j.title)}</a>
           ${siteBadge(j.site)}
           ${originBadge(j.company_origin)}
           ${currentStatus === '' ? statusBadge(j.status) : ''}
+          ${interviewPrepBadgeHtml(j)}
+          ${noteBadgeHtml(j)}
         </div>
         <div class="job-meta">
           <span>${escapeHtml(j.company)}</span>
           ${j.location ? `<span class="dot-sep">${escapeHtml(j.location)}</span>` : ''}
-          <span class="dot-sep">${escapeHtml(j.first_seen)}</span>
+          <span class="dot-sep" title="${escapeHtml(j.first_seen)}">${shortDate(j.first_seen)}</span>
           ${j.status === 'dismissed' ? '' : `${resumeLinkHtml(j)}${coverLetterLinkHtml(j)}`}
         </div>
+        ${jobTagsRowHtml(j)}
       </div>
-      ${matchBadge(j)}
-      ${interviewPrepBadgeHtml(j)}
       <div class="job-actions">
         ${j.status === 'dismissed' ? '' : `
         ${j.status === 'new' ? '' : applicationStatusSelectHtml(j)}
         ${j.status === 'reviewed' ? '' : analysisStateButtonHtml(j)}
         ${j.status === 'reviewed' ? easyApplyButtonHtml(j) : ''}
+        ${j.status === 'reviewed' ? materialsButtonHtml(j) : ''}
+        <button class="icon-btn" title="编辑标签" onclick="event.stopPropagation(); editCardTags(${j.id})">${TAG_ICON}</button>
         `}
         ${starButtonHtml(j)}
-        ${j.status === 'reviewed' ? '' : `<button class="icon-btn" title="标记已收藏" onclick="event.stopPropagation(); setJobStatus(${j.id}, 'reviewed')">${CHECK_ICON}</button>`}
-        ${j.status === 'dismissed' ? '' : `<button class="icon-btn" title="忽略" onclick="event.stopPropagation(); setJobStatus(${j.id}, 'dismissed')">${X_ICON}</button>`}
+        ${j.status === 'reviewed' ? '' : `<button class="icon-btn" title="标记已收藏" onclick="event.stopPropagation(); setJobStatus(${j.id}, 'reviewed', '${j.status}')">${CHECK_ICON}</button>`}
+        ${j.status === 'dismissed' ? '' : `<button class="icon-btn" title="忽略" onclick="event.stopPropagation(); setJobStatus(${j.id}, 'dismissed', '${j.status}')">${X_ICON}</button>`}
       </div>
     </div>
   `;
-  }).join('');
 }
 
 async function analyzeJob(id, btn) {
@@ -505,9 +805,16 @@ async function analyzeJob(id, btn) {
   try {
     const res = await fetch(`/api/jobs/${id}/analyze`, { method: 'POST' });
     const data = await res.json();
+    if (handleNeedResume(data)) return;
     if (!res.ok) throw new Error(data.error || '未知错误');
-    const pct = Math.round(data.overall_match * 100);
-    showToast(`分析完成：匹配度 ${pct}%${data.resume_path ? '，已生成定制简历' : ''}`, 'success', 6000);
+    if (data.discarded) {
+      // 分析还没跑完这条职位就被标记「忽略」了（见 job_state.discard_job）——结果没有
+      // 保存，不是失败，也不是真的分析完成，用中性的提示说清楚，不要弹绿色的"完成"。
+      showToast('这条职位在分析过程中被标记为忽略，结果不会保留', 'info', 5000);
+    } else {
+      const pct = Math.round(data.overall_match * 100);
+      showToast(`分析完成：匹配度 ${pct}%`, 'success', 6000);
+    }
   } catch (e) {
     showToast(`分析失败：${e.message}`, 'error', 6000);
   } finally {
@@ -547,7 +854,7 @@ async function pollJobUntilSettled(id, beforeJd, beforeError, { intervalMs = 400
         const pct = job.overall_match != null ? Math.round(job.overall_match * 100) : null;
         showToast(
           pct != null
-            ? `已重新获取JD正文，AI分析完成：匹配度 ${pct}%${job.resume_path ? '，已生成定制简历' : ''}`
+            ? `已重新获取JD正文，AI分析完成：匹配度 ${pct}%`
             : `已重新获取JD正文，但AI分析失败：${job.analysis_error || '未知错误'}`,
           pct != null ? 'success' : 'error', 6000,
         );
@@ -563,7 +870,9 @@ async function pollJobUntilSettled(id, beforeJd, beforeError, { intervalMs = 400
 async function refetchAllJd(btn) {
   setBtnLoading(btn, '已开始…');
   try {
-    await fetch('/api/jobs/refetch_jd', { method: 'POST' });
+    const res = await fetch('/api/jobs/refetch_jd', { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
+    // 提示里让用户点"刷新"，工具栏上就得真有这个按钮（见 index.html 的 #refreshBtn）
     showToast('已开始批量重新获取JD正文（后台进行，完成后点"刷新"查看结果）', 'info', 6000);
   } catch (e) {
     showToast(`触发失败：${e.message}`, 'error');
@@ -575,7 +884,8 @@ async function refetchAllJd(btn) {
 async function classifyCompanyOrigin(btn) {
   setBtnLoading(btn, '已开始…');
   try {
-    await fetch('/api/jobs/classify_origin', { method: 'POST' });
+    const res = await fetch('/api/jobs/classify_origin', { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
     showToast('已开始批量识别公司国籍（后台进行，完成后点"刷新"查看结果）', 'info', 6000);
   } catch (e) {
     showToast(`触发失败：${e.message}`, 'error');
@@ -584,11 +894,22 @@ async function classifyCompanyOrigin(btn) {
   }
 }
 
-async function setJobStatus(id, status) {
+// previousStatus 传了就在成功提示里挂一个"撤销"。
+// 「忽略」是一次点击就生效、又没有确认弹窗的破坏性操作，点错了原来只能去"已忽略"里翻回来；
+// 加确认弹窗会拖慢日常操作（这是每天要点几十次的动作），所以走"先执行、给撤销"这条路。
+async function setJobStatus(id, status, previousStatus = null) {
   try {
-    await fetch(`/api/jobs/${id}/status`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+    const res = await fetch(`/api/jobs/${id}/status`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
+    });
+    // 原来这里不看 res.ok，后端 500 也照样弹绿色的"已标记为「已收藏」"
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
     const label = STATUS_LABELS[status] ? STATUS_LABELS[status][0] : status;
-    showToast(`已标记为「${label}」`, 'success', 2000);
+    const undoable = previousStatus && previousStatus !== status;
+    showToast(
+      `已标记为「${label}」`, 'success', undoable ? 6000 : 2000,
+      undoable ? { label: '撤销', onClick: () => setJobStatus(id, previousStatus) } : null,
+    );
   } catch (e) {
     showToast(`操作失败：${e.message}`, 'error');
   } finally {
@@ -616,10 +937,11 @@ async function setApplicationStatus(id, applicationStatus) {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ application_status: applicationStatus }),
     });
     const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '未知错误');
     showToast(`投递状态已更新为「${APPLICATION_STATUS_LABELS[applicationStatus] || applicationStatus}」`, 'success', 2000);
     if (data.interview_prep_started) {
-      // 后端已经起了后台线程在生成，这里只负责告知 + 安排轮询，等生成完卡片上会出现 🎤 标记
-      showToast('已开始生成这条职位的面试准备材料，完成后卡片上会出现 🎤 标记', 'info', 6000);
+      // 后端已经起了后台线程在生成，这里只负责告知 + 安排轮询，等生成完卡片上会出现「面试准备」标记
+      showToast('已开始生成这条职位的面试准备材料，完成后卡片上会出现「面试准备」标记', 'info', 6000);
       pollInterviewPrepUntilDone(id);
     }
   } catch (e) {
@@ -631,8 +953,28 @@ async function setApplicationStatus(id, applicationStatus) {
 
 // ---------- runs ----------
 async function loadRuns() {
-  const runs = await (await fetch('/api/runs')).json();
   const tbody = document.querySelector('#runsTable tbody');
+  let runs;
+  try {
+    const res = await fetch('/api/runs');
+    if (!res.ok) throw new Error('未知错误');
+    runs = await res.json();
+  } catch (e) {
+    // 原来这里没有任何错误处理：接口挂了就静默抛出，表格空着、统计卡片停在占位符"–"，
+    // 看起来跟"还没跑过"一模一样
+    tbody.innerHTML = `<tr><td colspan="7" class="run-error">运行记录加载失败：${escapeHtml(e.message)}</td></tr>`;
+    renderFunnel([]);
+    return;
+  }
+
+  renderFunnel(runs);
+
+  if (!runs.length) {
+    // 空 tbody 只会剩一行光秃秃的表头，不写点什么用户不知道是没跑过还是没加载出来
+    tbody.innerHTML = '<tr><td colspan="7" class="run-ok">还没有运行记录，点右上角"智能搜索"跑一次。</td></tr>';
+    return;
+  }
+
   tbody.innerHTML = runs.map((r) => `
     <tr>
       <td>${escapeHtml(r.ran_at)}</td>
@@ -644,23 +986,36 @@ async function loadRuns() {
       <td>${r.error ? `<span class="run-error">${escapeHtml(r.error)}</span>` : '<span class="run-ok">正常</span>'}</td>
     </tr>
   `).join('');
+}
 
-  if (runs.length) {
-    const last = runs[0];
-    document.getElementById('statLastRun').textContent = last.ran_at;
-  } else {
-    document.getElementById('statLastRun').textContent = '暂无';
+// 首页「今日抓取」漏斗：把 ran_at 是今天的几条运行记录（可能一天跑好几次）加总，
+// 展示 今日抓取 → 不相关跳过 → 重复跳过 → 新增。list_runs() 默认只返回最近 20 条，
+// 正常使用（每天定时跑一次 + 偶尔手动点几次）足够覆盖当天。
+function renderFunnel(runs) {
+  const el = document.getElementById('funnelRow');
+  if (!el) return;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayRuns = runs.filter((r) => (r.ran_at || '').startsWith(todayStr) && !r.error);
+  if (!todayRuns.length) {
+    el.style.display = 'none';
+    return;
   }
+  const sum = (key) => todayRuns.reduce((acc, r) => acc + (r[key] || 0), 0);
+  const found = sum('found');
+  const irrelevant = sum('skipped_irrelevant');
+  const duplicate = sum('skipped_duplicate');
+  const added = sum('added');
+  el.innerHTML = `<b>今日抓取</b> <span>${found} 条</span><i>→</i>` +
+    `<span>不相关 ${irrelevant}</span><i>→</i>` +
+    `<span>重复 ${duplicate}</span><i>→</i>` +
+    `<b>新增 ${added}</b>`;
+  el.style.display = 'flex';
 }
 
-// ---------- job detail modal ----------
-function reqListHtml(items) {
-  if (!items || !items.length) return '<div class="plain-text" style="color:var(--text-faint);">（无）</div>';
-  return `<ul class="req-list">${items.map((it) => `<li class="${it.is_gap ? 'gap' : ''}">${escapeHtml(it.text)}</li>`).join('')}</ul>`;
-}
+// reqListHtml 搬进了 common.js（跟职位详情页共用）。
 
 // 把投递状态改成"面试中"会触发后台生成面试准备材料。这里跟进到跑完为止，好让卡片上的
-// 🎤 标记自己冒出来，不用用户手动刷新。真正看内容是在 /jobs/<id>/interview 页面上，
+// 「面试准备」标记自己冒出来，不用用户手动刷新。真正看内容是在 /jobs/<id>/interview 页面上，
 // 那边有自己的轮询，跟这条互不相干。
 function pollInterviewPrepUntilDone(jobId, elapsed = 0) {
   if (elapsed > 300000) return; // 最多跟5分钟，超时就不管了，用户手动刷新也能看到
@@ -677,106 +1032,116 @@ function pollInterviewPrepUntilDone(jobId, elapsed = 0) {
   }, 5000);
 }
 
-// 职位卡片上的 🎤 标记：有面试准备材料就点进那条职位的面试准备页。
-// （以前这里是打开详情弹窗并切到"面试准备"tab，现在面试准备是独立页面了。）
+// 职位卡片上的面试准备标记：有面试准备材料就点进那条职位的面试准备页。
 function interviewPrepBadgeHtml(job) {
   if (job.interview_prep_state === 'generating') {
-    return '<span class="match-pill prep-pill" title="正在生成面试准备材料">🎤 准备中…</span>';
+    return `<span class="match-pill prep-pill" title="正在生成面试准备材料">${MIC_ICON}准备中…</span>`;
   }
   if (!job.has_interview_prep) return '';
   return `<a class="match-pill prep-pill done" href="/jobs/${job.id}/interview"
-    title="已有面试准备材料，点击查看" onclick="event.stopPropagation()">🎤 面试准备</a>`;
+    title="已有面试准备材料，点击查看" onclick="event.stopPropagation()">${MIC_ICON}面试准备</a>`;
 }
 
-function openJobDetailModal(jobId) {
+// 职位卡片上的备注数角标：有备注就点进详情页（备注在那边看/加/删）。
+function noteBadgeHtml(job) {
+  if (!job.note_count) return '';
+  return `<a class="match-pill prep-pill done" href="/jobs/${job.id}"
+    title="有 ${job.note_count} 条备注" onclick="event.stopPropagation()">${NOTE_ICON}${job.note_count}</a>`;
+}
+
+// 职位卡片上的标签行：展示已有标签 + 一个编辑入口。「分析详情」弹窗拆成独立页面
+// （/jobs/<id>）之后，这是列表页唯一直接操作标签的地方。
+function jobTagsRowHtml(job) {
+  const tags = (job.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  if (!tags.length) return '';
+  return `<div class="job-tags-row" onclick="event.stopPropagation()">
+    ${tags.map((t) => `<span class="badge tag-badge">${escapeHtml(t)}</span>`).join('')}
+  </div>`;
+}
+
+function editCardTags(jobId) {
   const job = allJobs.find((j) => j.id === jobId);
   if (!job) return;
-  const e = trackerIndex[dedupeKey(job.company, job.title)] || null;
-  if (!e && !job.has_interview_prep) {
-    showToast('未在追踪表中找到匹配的分析详情，可能追踪表文件路径已更改', 'error');
-    return;
-  }
-
-  document.getElementById('jobDetailModalTitle').textContent = `${(e && e.job_title) || job.title || ''} · ${(e && e.company) || job.company || ''}`;
-  document.getElementById('jobDetailPrepLink').href = `/jobs/${jobId}/interview`;
-
-  const jobUrl = (e && e.job_url) || job.job_url;
-  const body = !e ? `
-    ${jobUrl ? `<div class="detail-section"><a class="job-title" href="${safeUrl(jobUrl)}" target="_blank" rel="noopener noreferrer">查看原职位页面 ↗</a></div>` : ''}
-    <div class="detail-section"><div class="plain-text" style="color:var(--text-faint);">未在追踪表中找到这条职位的匹配分析记录（可能追踪表路径变了，或还没跑过 AI 分析）。面试准备不受影响，点右上角「🎤 面试准备」查看。</div></div>
-  ` : `
-    ${jobUrl ? `<div class="detail-section"><a class="job-title" href="${safeUrl(jobUrl)}" target="_blank" rel="noopener noreferrer">查看原职位页面 ↗</a></div>` : ''}
-    <div class="detail-section">
-      <h4>公司简介</h4>
-      <div class="plain-text">${escapeHtml(e.company_overview || '（未获取到公司简介）')}</div>
-    </div>
-    <div class="detail-section">
-      <h4>职位内容</h4>
-      ${bulletListHtml(e.job_content_bullets)}
-    </div>
-    <div class="detail-section">
-      <h4>任职要求（红色 = 未达标）</h4>
-      ${reqListHtml(e.requirement_items)}
-    </div>
-    <div class="detail-grid">
-      <div class="detail-section">
-        <h4>技能匹配 · 已匹配</h4>
-        ${bulletListHtml(e.skill_matched_bullets)}
-      </div>
-      <div class="detail-section">
-        <h4>技能匹配 · 未达标</h4>
-        ${bulletListHtml(e.skill_gap_bullets)}
-      </div>
-    </div>
-    <div class="detail-grid">
-      <div class="detail-section">
-        <h4>相关经验年限</h4>
-        <div class="plain-text">${escapeHtml(e.experience_years || '—')}</div>
-      </div>
-      <div class="detail-section">
-        <h4>薪资范围</h4>
-        <div class="plain-text">${escapeHtml(e.salary || '—')}</div>
-      </div>
-    </div>
-    <div class="detail-section">
-      <h4>行业背景</h4>
-      ${bulletListHtml(e.industry_bullets)}
-    </div>
-    <div class="detail-section">
-      <h4>团队规模 / 汇报线</h4>
-      ${bulletListHtml(e.team_bullets)}
-    </div>
-    <div class="detail-section">
-      <h4>地理位置 / 远程要求</h4>
-      <div class="plain-text">${escapeHtml(e.location || '—')}</div>
-    </div>
-    <div class="detail-section">
-      <h4>状态 / 下一步</h4>
-      <div class="plain-text">${escapeHtml(e.status || '—')}</div>
-    </div>
-    <div class="detail-section">
-      <h4>定制简历</h4>
-      ${job.resume_path
-        ? `<a class="job-title" href="/api/jobs/${job.id}/resume" target="_blank" rel="noopener noreferrer">打开定制简历 ↗</a>
-           <div class="plain-text" style="color:var(--text-faint); font-size:0.75rem; margin-top:0.25rem;">${escapeHtml(e.resume_path || '')}</div>
-           <div style="margin-top:0.5rem;">${bulletListHtml(e.resume_optimization_bullets)}</div>`
-        : '<div class="plain-text">（未生成）</div>'}
-    </div>
-    <div class="detail-section">
-      <h4>Cover Letter</h4>
-      <div class="plain-text">${e.cover_letter ? escapeHtml(e.cover_letter) : '（未生成）'}</div>
-    </div>
-  `;
-  document.getElementById('detailSubpanel-analysis').innerHTML = body;
-  document.getElementById('jobDetailModalOverlay').classList.add('active');
+  const tags = (job.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  openTagEditor(jobId, tags, collectAllTags(), (savedTags) => {
+    job.tags = savedTags.join(',');
+    renderTagChips();
+    renderJobs();
+  });
 }
 
-function closeJobDetailModal() {
-  document.getElementById('jobDetailModalOverlay').classList.remove('active');
+// ---------- 定制简历 / Cover Letter 材料生成 ----------
+function materialsButtonHtml(job) {
+  if (job.overall_match == null) return '';
+  if (job.materials_state === 'queued') {
+    return `<button class="btn btn-secondary btn-sm" disabled>材料排队中…</button>`;
+  }
+  if (job.materials_state === 'generating') {
+    return `<button class="btn btn-secondary btn-sm" disabled><span class="spinner"></span>生成材料中…</button>`;
+  }
+  if (job.resume_path || job.cover_letter) return '';
+  return `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); generateMaterialsFromCard(${job.id}, this)">${SPARK_ICON}生成材料</button>`;
+}
+
+async function generateMaterialsFromCard(id, btn) {
+  setBtnLoading(btn, '启动中…');
+  try {
+    const res = await fetch(`/api/jobs/${id}/generate_materials`, { method: 'POST' });
+    const data = await res.json();
+    if (handleNeedResume(data)) return;
+    if (!res.ok) throw new Error(data.error || '未知错误');
+    showToast('已开始生成定制简历 + Cover Letter，完成后卡片会自动更新', 'info', 5000);
+  } catch (e) {
+    showToast(`启动失败：${e.message}`, 'error', 6000);
+  } finally {
+    await loadJobs();
+  }
+}
+
+async function batchGenerateMaterials(btn) {
+  const jobs = allJobs.filter((j) => j.overall_match != null && !j.resume_path && !j.cover_letter
+    && j.materials_state !== 'queued' && j.materials_state !== 'generating');
+  // 对"当前筛选出来的职位"生效，跟眼睛看到的一致；已经生成过/正在生成的不重复算进去
+  const q = document.getElementById('jobSearch').value.trim().toLowerCase();
+  let candidates = jobs;
+  if (currentStatus) candidates = candidates.filter((j) => j.status === currentStatus);
+  if (currentOrigin === 'foreign') candidates = candidates.filter((j) => j.company_origin !== 'domestic');
+  else if (currentOrigin === 'domestic') candidates = candidates.filter((j) => j.company_origin === 'domestic');
+  if (currentAppStatus) candidates = candidates.filter((j) => (j.application_status || 'not_applied') === currentAppStatus);
+  if (starredOnly) candidates = candidates.filter((j) => !!j.starred);
+  if (currentTag) candidates = candidates.filter((j) => (j.tags || '').split(',').map((t) => t.trim()).includes(currentTag));
+  if (q) candidates = candidates.filter((j) => (j.title || '').toLowerCase().includes(q) || (j.company || '').toLowerCase().includes(q));
+
+  if (!candidates.length) {
+    showToast('当前筛选下没有可以生成材料的职位（都已分析过并生成过，或还没做AI分析）', 'info', 5000);
+    return;
+  }
+  if (!window.confirm(`将为当前筛选下的 ${candidates.length} 条职位批量生成定制简历 + Cover Letter，每条都会产生一次 API 调用费用，确定继续吗？`)) return;
+
+  setBtnLoading(btn, '启动中…');
+  try {
+    const res = await fetch('/api/jobs/generate_materials', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_ids: candidates.map((j) => j.id) }),
+    });
+    const data = await res.json();
+    if (handleNeedResume(data)) return;
+    if (!res.ok) throw new Error(data.error || '未知错误');
+    showToast(`已开始批量生成，共 ${data.count} 条待处理`, 'info', 5000);
+  } catch (e) {
+    showToast(`启动失败：${e.message}`, 'error');
+  } finally {
+    restoreBtn(btn);
+    await loadJobs();
+  }
 }
 
 // ---------- init ----------
+// 顺序有讲究：先把 URL 里的筛选读回内存、同步到控件高亮，再拉数据，
+// 否则 loadJobs() 里的首次 renderJobs() 用的还是默认筛选。
 initTheme();
+readFiltersFromUrl();
+syncFilterControls();
 loadConfig();
 loadJobs(true);
 loadRuns();

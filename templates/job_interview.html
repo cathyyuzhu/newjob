@@ -11,9 +11,6 @@
 
   <header class="topbar">
     <div class="brand">
-      <div class="brand-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
-      </div>
       <div>
         <h1 id="prepJobTitle">面试准备</h1>
         <div class="sub">
@@ -24,7 +21,14 @@
     </div>
     <div class="topbar-actions">
       <a class="btn btn-secondary btn-sm" href="/">← 返回职位列表</a>
-      <a class="btn btn-secondary btn-sm" href="/interview" title="跨职位通用的自我介绍、通用问题、STAR 故事">🎤 通用题库</a>
+      <!-- 题库是"坐下来改很久"的一页，开新标签页，不要把当前这份面试准备顶掉 -->
+      <a class="btn btn-secondary btn-sm" href="/interview" target="_blank" rel="noopener"
+        title="跨职位通用的自我介绍、STAR 故事、过往工作、通用问题（新标签页打开）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
+        通用题库 ↗
+      </a>
+      <select class="model-select" id="prepModelSelect" title="生成面试准备用哪个模型"
+        onchange="setTaskModel('interview_prep', this.value, this)"></select>
       <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
         <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
       </button>
@@ -32,6 +36,17 @@
   </header>
 
   <section id="prepRoot"></section>
+
+  <!-- 只读展示：备注是在职位详情页（/jobs/<id>）里记的，这里显示出来方便面试前
+       扫一眼「查过什么」，加/删还是回详情页那边操作，这里不重复一套增删UI。 -->
+  <section id="prepNotesSection" class="detail-section" style="display:none;">
+    <h4>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;vertical-align:-2px;margin-right:0.3rem"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      备注
+    </h4>
+    <div class="note-list" id="prepNotesList"></div>
+    <a class="job-link" id="prepNotesLink" href="#">去职位详情页管理备注 →</a>
+  </section>
 
 </div>
 

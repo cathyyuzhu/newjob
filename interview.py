@@ -146,7 +146,7 @@ def generate_prep(
     provider="anthropic",
 ):
     if not resume_text:
-        raise RuntimeError("未能读取基础简历文件，请确认 config.json 中 base_resume_path 是否正确。")
+        raise RuntimeError("读不到简历内容，请在「我的简历」页重新上传一份 .docx 简历。")
     if not (jd_text or "").strip():
         raise RuntimeError("这条职位没有JD正文，无法生成面试准备（可先点「重新获取」抓取JD）。")
 
@@ -250,6 +250,36 @@ BANK_COMMON_PROMPT = _BANK_HEADER + """
 }}
 """
 
+BANK_WORK_PROMPT = _BANK_HEADER + """
+## 任务
+帮候选人准备「讲述过往工作」——面试里几乎必问的那一类：把简历上每一段工作经历逐个展开讲清楚。
+
+**把简历里的每一段工作经历都覆盖到，每段出 3-4 道题**，围绕这几个角度（按这段经历的实际
+情况取舍）：
+- 在这家公司具体负责什么、团队多大、你在其中是什么角色
+- 这段经历里最有代表性的成果是什么（一定要落到简历里真实存在的数据）
+- 遇到过的最大挑战/困难是怎么解决的
+- 为什么离开这家公司 / 为什么从这段经历走到下一段
+
+`question` 里**必须带上公司名（或"上一家/上上家 + 岗位"）**，比如「在 XX 公司这段，你具体
+负责什么？」。多段经历的题会排在同一个列表里，不带公司名就分不清哪题问的是哪段。
+题目按简历上的时间顺序从近到远排列。
+
+每道题的答案分 2-4 段，口头回答 60-90 秒的量。
+
+## 硬性约束
+{answer_rules}
+{reuse_rule}
+
+## 输出格式
+只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
+{{
+  "items": [
+    {{"question": "在 XX 公司这段，你具体负责什么？", "answer_zh": "…\\n\\n…", "answer_en": "…\\n\\n…"}}
+  ]
+}}
+"""
+
 BANK_STAR_PROMPT = _BANK_HEADER + """
 ## 任务
 从简历里提炼 3-5 个可以反复复用的完整故事。尽量覆盖不同类型：从0到1做成一件事 /
@@ -281,10 +311,13 @@ BANK_STAR_PROMPT = _BANK_HEADER + """
 # 起草分三次调用，一次只出一个类别。这么拆的原因见 spec/tech-solution.md：双语+分段之后
 # 单次输出量会翻倍，一次性出完容易顶到 max_tokens 上限被截断；分开跑还有两个好处——
 # 一段失败不影响另外两段，而且每段跑完能立刻入库让用户看到进度（见 pipeline.generate_bank_draft）。
+# 顺序 = 页面上的区块顺序 = 起草时一段一段跑的顺序，先讲自己、再讲故事、再逐段过往工作，
+# 最后才是通用套题。要跟 models.BANK_CATEGORIES 和 bank.js 的 BANK_SECTIONS 保持一致。
 BANK_SECTIONS = (
     {"key": "self_intro", "label": "自我介绍", "prompt": BANK_INTRO_PROMPT},
-    {"key": "common", "label": "通用问题", "prompt": BANK_COMMON_PROMPT},
     {"key": "star_story", "label": "STAR 故事库", "prompt": BANK_STAR_PROMPT},
+    {"key": "work_history", "label": "讲述过往工作", "prompt": BANK_WORK_PROMPT},
+    {"key": "common", "label": "通用问题", "prompt": BANK_COMMON_PROMPT},
 )
 
 SELF_INTRO_QUESTION = "自我介绍（60-90秒）"
@@ -295,8 +328,9 @@ _NO_EXISTING = "（题库现在是空的，这是第一次起草，下面那条�
 # 哪一条属于哪个字段。
 _BANK_CATEGORY_LABELS = (
     ("self_intro", "self_intro 自我介绍"),
-    ("common", "items 通用问题"),
     ("star_story", "star_stories 核心故事库"),
+    ("work_history", "work_history 讲述过往工作"),
+    ("common", "items 通用问题"),
 )
 
 
@@ -358,7 +392,7 @@ def generate_bank_section(
     不要每轮换个说法（见 build_existing_block）。
     """
     if not resume_text:
-        raise RuntimeError("未能读取基础简历文件，请确认 config.json 中 base_resume_path 是否正确。")
+        raise RuntimeError("读不到简历内容，请在「我的简历」页重新上传一份 .docx 简历。")
 
     section = get_bank_section(section_key)
     prompt = section["prompt"].format(
@@ -528,7 +562,7 @@ def chat_bank_answer(
     if lang not in _LANG_LABELS:
         raise RuntimeError(f"不支持的语言：{lang}（只能是 zh 或 en）")
     if not resume_text:
-        raise RuntimeError("未能读取基础简历文件，请确认 config.json 中 base_resume_path 是否正确。")
+        raise RuntimeError("读不到简历内容，请在「我的简历」页重新上传一份 .docx 简历。")
 
     system = BANK_CHAT_SYSTEM.format(
         resume_text=resume_text,
@@ -568,7 +602,7 @@ def chat_bank_assistant(
     """全局题库助手：只做跨题诊断，不改写具体答案（改写走 chat_bank_answer）。
     返回 {"reply": str}——刻意不带 answer 字段，前端也就不会出现"采用"按钮。"""
     if not resume_text:
-        raise RuntimeError("未能读取基础简历文件，请确认 config.json 中 base_resume_path 是否正确。")
+        raise RuntimeError("读不到简历内容，请在「我的简历」页重新上传一份 .docx 简历。")
 
     system = BANK_ASSISTANT_SYSTEM.format(
         resume_text=resume_text,
