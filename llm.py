@@ -70,7 +70,10 @@ MODELS = [
 # materials（定制简历+cover letter）跟分析同源但拆成了单独一次调用（见 analyzer.generate_materials
 # 顶部的说明），是用户点按钮才触发的一次性生成，质量优先，不该继续沾"分析"那档便宜模型的光。
 # job_chat（职位详情页的自由问答）单独一档：追问式的小问题，回复要快、聊起来不心疼调用次数。
-LLM_TASKS = ("analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat")
+LLM_TASKS = (
+    "analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat",
+    "preference_profile",
+)
 
 MODELS_BY_ID = {m["id"]: m for m in MODELS}
 

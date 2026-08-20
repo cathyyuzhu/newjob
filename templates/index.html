@@ -14,13 +14,17 @@
       <!-- 2026-08-17 视觉改版：去掉了原来的渐变图标方块，纯文字 wordmark 更贴近
            克制的编辑感方向，不需要额外一个图形符号撑门面 -->
       <h1>职达<span class="brand-en">Landed</span></h1>
-      <div class="sub">求职路上，滤掉噪音，只留信号</div>
+      <div class="sub">智能领航，过滤噪音，保留信号</div>
     </div>
     <div class="topbar-actions">
-      <!-- 简历用新标签页打开：坐下来改很久的一页，不该把职位列表顶掉。 -->
-      <a class="btn btn-secondary btn-sm" id="resumeBtn" href="/resume" target="_blank" rel="noopener"
+      <!-- 面试题库/我的简历都是偶尔才点一次的导航项（新标签页打开，不该把职位列表顶掉），
+           2026-08-18 从中间操作区挪过来、去掉边框（.btn-plain），面试题库放我的简历左边 -->
+      <a class="btn btn-secondary btn-plain btn-sm" id="bankBtn" href="/interview" target="_blank" rel="noopener"
+        title="通用面试题库：自我介绍、STAR 故事、讲述过往工作、通用问题（新标签页打开）">
+        面试题库
+      </a>
+      <a class="btn btn-secondary btn-plain btn-sm" id="resumeBtn" href="/resume" target="_blank" rel="noopener"
         title="我的简历：上传简历、跑 AI 体检、按建议生成优化版（新标签页打开）">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>
         我的简历
       </a>
       <!-- 主题切换搬进了「更多 → 设置 → 外观」：顶栏是高频动作区，而深色模式是设一次
@@ -33,8 +37,9 @@
 
   <!-- 导语行：把原来四张 KPI 卡片式的统计压成一句话，只放大一个数字（越过投递线的条数）
        ——这是整页要回答的问题"今天有什么值得出手"。数字由 updateLede() 填，不发额外请求。
-       2026-08-17 对齐设计稿 v2：智能搜索/AI分析/面试题库 三个高频入口不放在最上方顶栏，
-       跟导语文案同一行、贴在右侧——顶栏只留「我的简历」这类偶尔才点的导航项。 -->
+       2026-08-17 对齐设计稿 v2：智能抓取/AI分析 两个高频入口不放在最上方顶栏，
+       跟导语文案同一行、贴在右侧；「添加链接」2026-08-18 收进了智能抓取的下拉菜单
+       （见下面 .split-btn），不再单独占一个按钮位。 -->
   <div class="lede-row">
     <p class="lede">
       在库 <span class="lede-num" id="ledeTotal">–</span> 条职位，已完成 AI 匹配
@@ -42,29 +47,34 @@
       <span class="lede-figure" id="ledeStrong">–</span> 条越过 70% 投递线，值得今天出手。
     </p>
     <div class="lede-actions">
-      <button class="btn btn-primary btn-sm" id="runNowBtn" onclick="runNow()"
-        title="按「设置」里的关键词和城市，去 Indeed / LinkedIn 抓一轮新职位。抓到的新职位会自动排队做 AI 匹配分析，重复的和明显不相关的会直接跳过">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-        智能搜索
-      </button>
-      <!-- 手动贴链接入库：按关键词×城市的自动搜索总有漏的（标题措辞对不上、城市没配、
-           朋友直接转过来一条），这个入口让"我自己在 LinkedIn 上看到的这条"也能进同一个
-           待审核队列，后面的 AI 匹配/材料/面试准备全部照常。 -->
-      <button class="btn btn-secondary btn-sm" id="addLinkBtn" onclick="openAddLinkModal()"
-        title="把你在 LinkedIn 上自己看到的职位链接贴进来，抓取后存入待审核（每行一条，可一次贴多条）">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
-        添加链接
-      </button>
+      <!-- 「智能抓取」分裂按钮：主体点击照常直接搜索，右侧箭头点开下拉露出「添加链接」
+           ——添加链接用得比搜索/AI分析低频，合并进下拉能省一个按钮位（2026-08-18） -->
+      <div class="split-btn">
+        <button class="btn btn-primary btn-sm" id="runNowBtn" onclick="runNow()"
+          title="按「设置」里的关键词和城市，去 Indeed / LinkedIn 抓一轮新职位。抓到的新职位会自动排队做 AI 匹配分析，重复的和明显不相关的会直接跳过">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          智能抓取
+        </button>
+        <button class="btn btn-primary btn-sm split-btn-caret" id="runNowCaretBtn" onclick="toggleRunNowMenu(event)"
+          title="更多操作" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="split-btn-menu" id="runNowMenu">
+          <!-- 手动贴链接入库：按关键词×城市的自动搜索总有漏的（标题措辞对不上、城市没配、
+               朋友直接转过来一条），这个入口让"我自己在 LinkedIn 上看到的这条"也能进同一个
+               待审核队列，后面的 AI 匹配/材料/面试准备全部照常。 -->
+          <button type="button" id="addLinkBtn" onclick="closeRunNowMenu(); openAddLinkModal();"
+            title="把你在 LinkedIn 上自己看到的职位链接贴进来，抓取后存入待审核（每行一条，可一次贴多条）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
+            添加链接
+          </button>
+        </div>
+      </div>
       <button class="btn btn-primary btn-sm" id="aiAnalyzeAllBtn" onclick="toggleAnalyzeAll()"
         title="拿你上传的简历，逐条对比待审核职位的 JD：算出匹配度、列出你达标和未达标的要求。定制简历和 Cover Letter 不会跟着自动生成，看中了再去职位详情页按按钮单独生成。会一并处理历史积压，再点一次可停止">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 4.9L19 9l-5.1 1.9L12 16l-1.9-5.1L5 9l5.1-1.9L12 3z"/></svg>
         <span id="aiAnalyzeAllBtnLabel">AI分析</span>
       </button>
-      <a class="btn btn-secondary btn-sm" id="bankBtn" href="/interview" target="_blank" rel="noopener"
-        title="通用面试题库：自我介绍、STAR 故事、讲述过往工作、通用问题（新标签页打开）">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
-        面试题库
-      </a>
     </div>
   </div>
 
@@ -74,10 +84,24 @@
       <div class="label">待审核</div>
       <div class="hint">还没决定要不要</div>
     </div>
-    <div class="stat-card accent-ok clickable" id="statCardReviewed" data-status="reviewed" onclick="filterByStatus('reviewed')" title="点击筛选「已收藏」，再点一次恢复「全部」">
+    <div class="stat-card accent-ok clickable" id="statCardReviewed" data-status="reviewed" onclick="filterByStatus('reviewed')" title="点击筛选「已收藏待投递」，再点一次恢复「全部」">
       <div class="value" id="statReviewed">–</div>
       <div class="label">已收藏</div>
-      <div class="hint">打算投的</div>
+      <div class="hint">已收藏待投递</div>
+    </div>
+    <!-- 「已投递」「面试中」底层筛选字段（application_status）跟前两张卡（status）不是同一列，
+         但在交互上跟「待审核/已收藏/已忽略」是同一个单选组：点这几张卡中的任意一张会把另一维度
+         的筛选清掉，不会同时选中两张。也跟底部 appStatusChips 那排共用同一个 currentAppStatus，
+         点这里或点那排 chip 会互相同步高亮（见 filterByStatus()/filterByAppStatus()）。 -->
+    <div class="stat-card clickable" id="statCardApplied" data-appstatus="applied" onclick="filterByAppStatus('applied')" title="点击筛选「已投递」，再点一次恢复「全部」">
+      <div class="value" id="statApplied">–</div>
+      <div class="label">已投递</div>
+      <div class="hint">交出去了</div>
+    </div>
+    <div class="stat-card clickable" id="statCardInterviewing" data-appstatus="interviewing" onclick="filterByAppStatus('interviewing')" title="点击筛选「面试中」，再点一次恢复「全部」">
+      <div class="value" id="statInterviewing">–</div>
+      <div class="label">面试中</div>
+      <div class="hint">流程走着</div>
     </div>
     <!-- 「重点关注」原来是筛选栏里一个不起眼的 chip，但它是用户自己动手标出来的短名单，
          比系统算出来的任何一档都重要，所以提到最上面这排、紧跟「已收藏」。它不是 status
@@ -101,6 +125,33 @@
        是今天的几条记录求和（可能一天跑好几次）。renderFunnel() 在 loadRuns() 拿到数据后
        调用，不额外发请求。 -->
   <p class="funnel" id="funnelRow" style="display:none;"></p>
+
+  <!-- 每日任务清单（P0-1，2026-08-18；折叠改版见 2026-08-18 讨论）：把"待审核几条/待
+       生成材料几条/待投递几条/该跟进哪条"这些散落各处的信息收进一处，勾掉当天不再提醒
+       （自动生成的几项不落库，见 renderChecklist() 的说明）；底部可以加自己的待办，真正
+       持久化到服务端。数字来自 loadJobs() 之后调用的 renderChecklist()，不额外发请求
+       （followups/自定义待办/简历体检状态由 loadChecklist() 拉一次 /api/checklist 缓存）。
+       默认展开（class="open" 写死在标签上，不读 localStorage）——每次刷新都想让用户先
+       看一眼今天有什么事，看完自己收起，不用记住上次的开关状态。 -->
+  <div class="checklist-card open" id="checklistCard">
+    <div class="checklist-head" onclick="toggleChecklist()">
+      <div class="checklist-head-left">
+        <svg class="checklist-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+        <span class="checklist-title">今日待办</span>
+        <span class="checklist-count" id="checklistCount" style="display:none;">0</span>
+      </div>
+    </div>
+    <div class="checklist-body">
+      <div class="checklist-body-inner">
+        <div class="checklist-items" id="checklistItems"></div>
+        <div class="checklist-add-row">
+          <input type="text" id="checklistInput" placeholder="+ 添加一条待办" maxlength="200"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();addChecklistItem();}">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="addChecklistItem()">添加</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ===== Jobs (main content) ===== -->
   <section id="panel-jobs">
@@ -168,7 +219,7 @@
     <div class="empty-state" id="jobsEmpty" style="display:none;">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/></svg></div>
       <div class="title">暂时没有职位</div>
-      <div class="desc">点击右上角"智能搜索"，或调整筛选条件试试。</div>
+      <div class="desc">点击右上角"智能抓取"，或调整筛选条件试试。</div>
     </div>
   </section>
 
@@ -252,6 +303,12 @@
               <label>城市（每行一个，留空一行表示不限地点/远程）</label>
               <textarea id="locations" rows="4" placeholder="Beijing&#10;Shanghai&#10;Remote"></textarea>
             </div>
+            <div class="field span-2">
+              <label>重点关注公司（每行一个，可选）</label>
+              <textarea id="linkedinTargetCompanies" rows="3" placeholder="Amazon&#10;HSBC&#10;Riot Games"></textarea>
+              <p class="field-hint">额外对这些公司单独跑一次 LinkedIn 定向搜索，不受关键词搜索的排名/条数上限影响——沿用上面的关键词，不用重复填。保存时会解析成 LinkedIn 内部 ID，公司别配太多（5~8 家为宜），解析结果见下方。</p>
+              <p class="field-hint" id="targetCompanyStatus"></p>
+            </div>
             <div class="field">
               <label>Indeed 国家代码</label>
               <input id="country_indeed" type="text" placeholder="china">
@@ -289,7 +346,7 @@
           <div class="card-head">
             <div>
               <h2>AI 模型与自动分析设置</h2>
-              <p>用 Claude 需要设 <code>ANTHROPIC_API_KEY</code> 环境变量，用 DeepSeek 需要设 <code>DEEPSEEK_API_KEY</code>（密钥只读环境变量，不进配置文件）。六块功能可以各配各的模型：匹配分析每条职位都要跑一次，便宜优先；定制简历/Cover Letter、面试准备、题库、简历体检都是生成一次看很久，质量优先；职位AI对话追问频繁，便宜优先。点击职位的"AI 分析"只计算匹配度并写入追踪表（不产生简历/CL），定制简历 + cover letter 改成职位详情页里按按钮单独生成。</p>
+              <p>用 Claude 需要设 <code>ANTHROPIC_API_KEY</code> 环境变量，用 DeepSeek 需要设 <code>DEEPSEEK_API_KEY</code>（密钥只读环境变量，不进配置文件）。七块功能可以各配各的模型：匹配分析每条职位都要跑一次，便宜优先；定制简历/Cover Letter、面试准备、题库、简历体检、偏好档案都是生成一次看很久，质量优先；职位AI对话追问频繁，便宜优先。点击职位的"AI 分析"只计算匹配度并写入追踪表（不产生简历/CL），定制简历 + cover letter 改成职位详情页里按按钮单独生成。</p>
             </div>
           </div>
           <div class="form-grid">
@@ -317,6 +374,10 @@
               <label>职位详情页 AI 对话用的模型</label>
               <select class="model-select" id="modelTask-job_chat" onchange="setTaskModel('job_chat', this.value, this)"></select>
             </div>
+            <div class="field">
+              <label>偏好档案总结用的模型</label>
+              <select class="model-select" id="modelTask-preference_profile" onchange="setTaskModel('preference_profile', this.value, this)"></select>
+            </div>
             <!-- 简历本身不在这里配了：改成在「我的简历」页上传，这里只读展示当前用的是哪份。
                  保存设置时也不再提交 base_resume_path（后端白名单里已经去掉），否则这个
                  空的只读框会把用户刚传的简历覆盖掉。 -->
@@ -332,6 +393,20 @@
               <input id="resume_output_dir" type="text" placeholder="留空默认跟基础简历同目录">
             </div>
           </div>
+        </div>
+
+        <!-- 偏好档案：忽略职位时留的原因攒够几条后自动总结成的一段话，会被塞进以后每次
+             匹配分析的 prompt 里。放在设置面板里给用户看到，是为了让"被塞进 prompt 的
+             内容"可见、可信任，不是又开一个独立页面（内容就一段话，用不上）。 -->
+        <div class="card">
+          <div class="card-head">
+            <div>
+              <h2>偏好档案</h2>
+              <p>忽略职位时留的原因攒够几条后，AI 会自动总结成一段话，帮以后的匹配分析更懂你排斥什么。忽略职位后会弹一个可跳过的原因小弹窗；已忽略但还没补过原因的职位，卡片上有单独的补录入口。</p>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="regeneratePreferenceProfile(this)">立即重新生成</button>
+          </div>
+          <div id="preferenceProfileCard">加载中…</div>
         </div>
 
         <div class="card">

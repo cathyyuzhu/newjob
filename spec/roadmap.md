@@ -451,6 +451,98 @@ AI 起草只是初稿，改成"我自己的说法"原来全靠手打。涉及 `i
 - 去重沿用公司+职位名的 `make_dedupe_key`，库里和追踪表里已有的都跳过；`keyword` 列存职位名（不展示给用户，用途是让 `scraper.refetch_job_jd()` 以后还能重新定位这条职位）
 - 涉及文件：`job_link.py`（新增）、`app.py`（`POST /api/jobs/add_by_url`）、`pipeline.py`、`templates/index.html`、`static/app.js`、`static/style.css`、`tests/test_add_by_url.py`（新增，网络与 LLM 全 mock）
 
+### 每日任务清单 + 忽略原因收集→偏好档案（2026-08-18）
+「求职决策闭环」P0 批次里的两条（[product-review.md](product-review.md#p0-本周) 的 P0-1、P0-3），一起做是因为两者共用同一批 UI 基建（首页新增区块、`checklist_custom_items`/`job_dismiss_reasons`/`preference_profiles` 三张新表都走 `models.py` 现成的迁移模式）。P0-2（投递状态自动化）本轮不做，只顺带补了它需要的最小前提。
+
+**每日任务清单**
+- 首页统计卡片下方新增可勾选清单：今日抓取（原有漏斗）/ N 条待审核 / M 条待生成材料 / K 条已收藏未投递 / J 条投递超7天该跟进 / 简历从没体检过的提醒，点文案直接跳转/筛选到对应视图（`static/app.js` 的 `renderChecklist()`）
+- 自动生成的几项**不落库**：真实来源永远是当前数据库状态，勾掉只是"今天已经看过、先别提醒"，存 `localStorage`（按日期分 key，换一天自动失效）；用户自己加的待办才真正持久化（新表 `checklist_custom_items`），勾掉即删除
+- 待审核/待生成材料/已收藏未投递三项直接复用前端已有的 `allJobs`（`jobsNeedingMaterials()` 从 `batchGenerateMaterials()` 里抽出来给两处共用，不重复一份判断标准）；后端只多算它算不出来的部分（超7天未跟进、自定义待办、简历体检状态），新增 `GET/POST /api/checklist`、`DELETE /api/checklist/<id>`
+- **顺带补上 `jobs.applied_at` 时间戳**（P0-2 的最小前提，不是完整投递自动化）：`models.set_application_status()` 只在状态**变成** `applied` 的那一刻记一次，改成其它状态不清空、已经是 `applied` 不覆盖；`models.list_stale_applications(days=7)` 只看有时间戳的行，历史上早就是 `applied` 但没有时间戳的数据不会被武断地当成"超7天"误报
+
+**忽略原因收集 → 偏好档案**
+- 预设原因（来自 product-review 的痛点③⑦分析）：薪资不符 / 职能不对 / 公司不感兴趣 / 地点 / 行业 / 层级不匹配，+ 自由文本，都是选填
+- **不阻塞"忽略"本身**：忽略仍然是点一下立刻生效、给撤销的低摩擦操作（`static/app.js:897-899` 那条设计取舍不变），原因弹窗在忽略成功**之后**才弹出，跳过/关闭都不算错误（`static/common.js` 的 `openDismissReasonPrompt()`，结构仿标签编辑器 `openTagEditor()`）
+- 已忽略但还没补过原因的历史职位（含 product-review 提到的"11 条高分被忽略"冷启动样本），卡片上有单独的"记录忽略原因"图标入口，走同一个弹窗组件（`dismissReasonButtonHtml()`）
+- 新表 `job_dismiss_reasons`（一条职位可以有多行，忽略/收藏/再忽略的历史都是信号，不覆盖式存储）；新增 `preference_profile.py`（仿 `resume_review.py` 的模式：一次 LLM 调用把原因记录总结成一段偏好档案，失败也落一行，见新表 `preference_profiles`）
+- **攒够 5 条新原因才自动重新生成一次**（`pipeline.PREFERENCE_PROFILE_THRESHOLD`），避免样本太少还没稳定就跟着零星波动；`job_state.py` 新增单例并发锁（同 `_bank_generating` 的模式），防止并发触发互相覆盖。设置面板里也留了"立即重新生成"手动入口，跳过阈值检查
+- 生成好的档案通过 `analyzer.analyze_job()` 新增的可选参数 `preference_profile_text` 注入 `PROMPT_TEMPLATE`（没有档案时这个区块整段不出现，行为跟以前完全一样）；prompt 里明确要求"酌情参考、不能一票否决"，跟 `company_origin` 判断"不确定就填 unknown 不要瞎猜"同一个审慎标准
+- 偏好档案本身展示在"更多 → 设置"面板的只读卡片里（不单独开页面，内容就一段话），让"被塞进 prompt 的内容"可见可信任；新增第7个 LLM 功能位 `preference_profile`
+- 涉及文件：新增 `preference_profile.py`；改 `models.py`（3 新表 + `applied_at` 列 + 一堆 DAL 函数）、`app.py`、`pipeline.py`、`job_state.py`、`analyzer.py`、`llm.py`、`static/{common,app}.js`、`templates/index.html`、`static/style.css`
+- 测试：新增 `tests/test_preference_profile.py`（校验、阈值触发/不触发、强制重新生成、失败落库、prompt 注入、pipeline 接线）、`tests/test_checklist.py`（`applied_at` 记账、超7天查询、清单接口增删查）；`tests/test_llm.py`/`tests/test_frontend.py` 补了第7个功能位的断言；`tests/run_all.py` 全量跑过，11 个套件 + 6 个 JS 语法检查全部通过
+
+### 顶部统计卡片新增「已投递」「面试中」（2026-08-18）
+- 起因：用户希望统计卡片区在「已收藏」后面能直接看到「已投递」「面试中」各多少条，不用去翻底部「投递状态」筛选chip
+- `templates/index.html` 在「已收藏」卡片后新增两张卡（`data-appstatus="applied"`/`"interviewing"`），复用现有 `.stat-card.clickable` 样式，不引入新配色（沿用「重点关注」卡片定下的克制配色原则）
+- 这两张卡按的是 `application_status` 维度，跟前两张按 `status`（新/收藏/忽略）不是同一个维度，也不是同一套互斥关系；`static/app.js` 新增 `filterByAppStatus()`，并把 `updateStatCardActive()` 扩展成同时识别 `data-appstatus`，让顶部新卡片和底部「投递状态」筛选chip共享同一个 `currentAppStatus`、双向同步高亮
+- `static/style.css` 统计卡片栅格从 4 列改成 3 列（6 张卡两行更整齐，避免 4+2 的半空行）
+
+### 「已收藏」卡片数字改为只算"待投递"（2026-08-20）
+- 起因：新增「已投递」「面试中」两张卡后，「已收藏」的数字仍然是不分投递状态的全部 `status==='reviewed'`，跟旁边两张卡的口径重叠、容易看混
+- `static/app.js` 的 `updateStats()` 新增 `reviewedPending` 统计（`status==='reviewed' && application_status==='not_applied'`），`statReviewed` 改显示这个数字；卡片小字同步改成「已收藏待投递，已经投出的不在这个下面展示」，说清楚这条数字不包含已投递/面试中等
+- 小字文案变长后原来单行截断（`white-space: nowrap` + 省略号）会把话切掉，`static/style.css` 新增 `.hint.wrap` 允许换行，只用在这张卡上，其它卡片小字维持原来的单行截断
+- 点击卡片跟着数字口径改：`filterByStatus('reviewed')` 打开筛选时顺带把 `currentAppStatus` 设成 `'not_applied'`（再点一次取消筛选时两个一起清空），列表跟卡片数字保持一致，不会出现"卡片写 5 条、点开列表却有 8 条"；跟已有的 `focusChecklistStatus('reviewed', 'not_applied')`（清单里"M 条已收藏还没投递"那一行）是同一个筛选组合，只是触发入口不同
+- 用户反馈"点已收藏、再点已投递，不该两张卡同时选中"：`status`（新/收藏/忽略）和 `application_status`（已投递/面试中）原来是两个可以叠加的独立维度，现在把顶部这五张卡改成同一个单选组——`filterByStatus()`/`filterByAppStatus()` 互相清空对方那个维度，底部「投递状态」筛选chip（选中具体状态、非"全部"时）也跟着清空审核状态筛选，保持两处入口行为一致
+- 用户还反馈每日待办里"M 条已收藏、还没生成材料"这条数字不对：`jobsNeedingMaterials(allJobs)` 当时是对全量 `allJobs` 算的，没有按 `status==='reviewed'` 过滤，待审核/已忽略里符合条件的也被算了进去，跟文案对不上；用户明确表示不需要这条清单项，直接从 `renderChecklist()` 删掉（`static/app.js`），`jobsNeedingMaterials()` 函数本身保留（"批量生成材料"按钮 `batchGenerateMaterials()` 还在用），只是不再单独出现在待办清单里
+
+### 简历体检改成后台任务 + 完成提醒（2026-08-20）
+- 起因：用户点了「AI 简历体检」按钮后跳回首页，再跳回来发现体检被打断了——`POST /api/resume/review` 当时是同步阻塞到 LLM 调用完成才返回（跟单条职位 `/analyze` 一样的设计取舍，见 `spec/tech-solution.md` 旧版决策记录），跳页会让浏览器取消这个还没返回的请求
+- 讨论后确定方案：照搬题库起草（`generate_bank_draft`）已经在用的"后台线程 + 前端轮询"模式，不新引入架构；完成后除了体检那一页自己的 toast，还要在首页每日待办清单里加一条提醒——用户明确要求文案是"体检已给出建议，去优化简历"
+- `job_state.py` 新增 `start_resume_review()`/`finish_resume_review()`/`resume_review_generating()`/`resume_review_error()`，单例锁同一时刻最多跑一次，跟 `_bank_generating`/`_bank_error` 同构
+- `app.py`：`POST /api/resume/review` 改成起后台线程立刻返回 `{"started": true}`，重复点击拿 409；`GET /api/resume/review` 加 `generating`/`background_error` 两个字段；`GET /api/checklist` 新增 `resume_review_ready`——最新一条体检记录的 `created_at` 是今天、且有 `content_json` 没 `error` 才为真，只覆盖"今天完成"这个窗口，不需要额外一个"已读"状态
+- `static/resume.js`：`startReview()` 改成"发请求就返回"，轮询 `GET /api/resume/review` 的 `generating` 直到跑完再弹 toast；页面刚加载（含从别的页面跳转回来）时如果发现体检还在后台跑，自动显示"体检中"并接着轮询，不会因为离开过页面就跟体检失去联系
+- `static/app.js`：`renderChecklist()` 新增一行"体检已给出建议，去优化简历"（`resume_review_ready` 为真且当天没点掉时出现），跟已有的"还没体检过"提醒共用同一套按天重置的勾掉逻辑，两条互斥不会同时出现
+- `pipeline.run_resume_review()` 本身不用改，管并发/线程从来是调用方的事；`tests/test_resume.py` 改成起后台线程后轮询 `job_state.resume_review_generating()` 等它跑完，`tests/test_checklist.py` 新增 `resume_review_ready` 的今天/昨天/失败三种场景断言
+
+### 「已收藏」卡片小字精简 + 体检待办的消失 bug 修复（2026-08-20）
+- 「已收藏」卡片小字从"已收藏待投递，已经投出的不在这个下面展示"精简成"已收藏待投递"，`static/style.css` 里为长文案加的 `.hint.wrap` 换行样式随之移除（`templates/index.html`）
+- 用户反馈：点了"体检已给出建议，去优化简历"这条待办跳去简历页，还没做优化这条自己就没了。排查出两个问题，都在这次修掉：
+  - **bug**：`checklistRowHtml()`（`static/app.js`）里 `<span onclick="...">` 套在关联着 checkbox 的 `<label>` 内，点文字触发跳转的同时，浏览器会顺带执行这个 `<label>` 的默认动作——连带勾选那个 checkbox，等价于用户自己顺手把这条待办勾掉了。所有走这个函数生成的待办条目（待审核/待投递/该跟进/该体检）都受影响，不止体检这一条。修法：`onclick` 表达式前面加 `event.preventDefault()`，取消 label 的默认联动
+  - **语义**：上一版"体检完成提醒"是按日期收敛的（`resume_review_ready` 只在"今天完成"当天为真），过了今天就自动消失，不符合用户这次明确要求的"保留到我完成优化、或者主动点忽略"。改成 `app.py` 的 `get_checklist()` 判断"优化版文件的 mtime 有没有晚于这次体检的 `created_at`"——`optimized.docx` 不存在或者比这次体检更早，都算"建议还没被采纳"，继续提醒；同时新增 `resume_review_id` 字段。前端不再复用其它条目那套按天重置的 `dismissedToday`，改成 `ignoreResumeReviewReady()` 把"忽略"状态按 `resume_review_id` 存进 `localStorage`，跟着这一次体检这个具体对象走，不跟着日期走，换了新的体检结果会自动重新提醒
+- `tests/test_checklist.py` 补上 `resume_store.RESUME_DIR` 隔离（之前会读写真实项目目录下的 `resumes/`），并把断言从"今天/昨天"改成"生成过更晚的优化版文件"；`tests/test_frontend.py` 的内联函数引用白名单里加了 `preventDefault`（`event.preventDefault()` 不是本项目定义的函数，属于跟 `stopPropagation` 同一类需要放行的浏览器内置方法）
+
+### 每日待办卡片改为默认展开的可折叠卡片（2026-08-18）
+- 起因：用户反馈待办模块位置不好（通栏卡片挤在统计卡和职位列表之间，占地方）。讨论过悬浮按钮（角标计数、点开弹面板）和可折叠卡片两个方案，用高保真效果图（复用真实配色/字体做的可交互 HTML mockup）对比后选定折叠卡片——不引入新的浮层交互模式，且折叠后的标题栏本身就带数字，可见性不比悬浮按钮差
+- 卡片顶部新增标题栏（`checklist-head`）：chevron 图标 + "今日待办" + 数量角标（`checklist-count`，条数为 0 时隐藏），点击整行触发展开/收起（`toggleChecklist()`）
+- 折叠动画用 `grid-template-rows: 0fr → 1fr` 技巧（`checklist-body`/`checklist-body-inner`），而不是固定 `max-height` 或 JS 量 `scrollHeight`——待办条数是动态的（followups/自定义待办数量不定），这样不会裁内容，也不用额外写测量逻辑
+- 默认展开（`checklist-card` 标签上直接写死 `open` class）：每次刷新页面都想让用户先看一眼今天有什么事，看完自己点标题栏收起；折叠状态不持久化（不读/不写 localStorage），不需要记住上次开关状态
+- 涉及文件：`templates/index.html`、`static/style.css`、`static/app.js`（`renderChecklist()` 顺带更新数量角标，新增 `toggleChecklist()`）
+
+### LinkedIn/Indeed 跨源重复只留 LinkedIn（2026-08-18）
+- 起因：用户要求"LinkedIn 和 Indeed 重复的职位也要去重，只留 LinkedIn"。排查发现库里当时有 4 对标题（归一化后）一字不差、显然是同一条被两个源都抓到的严格重复，都在 Amazon 名下：Senior Product Manager - AI, NBS AI and OPS；Senior Product Manager - AI, Amazon Global Selling - PMO；Senior AI Product Manager, Amazon Global Selling - PMO；AI Product Manager, MKT AI & Seller Exp。用户确认只处理"标题完全相同"这个确定性场景，不动亚马逊那一整簇标题不同但相似的近似职位（那是模糊相似度判断，风险不一样，已经有「疑似重复」角标处理，见上面一条）
+- 分两层实现：① `models._merge_cross_source_duplicates()`，`init_db()` 里每次启动都跑一次（幂等）：按新版 `make_dedupe_key()` 重新分组，同组里出现 linkedin+indeed 两个来源时，留进度更靠前的一行（投递状态 > 是否标星，打平时优先留 LinkedIn），被合并掉那行名下的备注/面试准备材料先过户再删除；如果留下来的那行恰好是 Indeed 来源、但另一行是 LinkedIn，把 site/job_url/jd_text 换成 LinkedIn 版本——"留哪行状态"和"链接指向哪个源"分开处理。② `models.upgrade_to_linkedin_if_needed()` + `scraper.py` 的 `_ingest_df()`：以后新抓到的场景，判重命中已有 Indeed 行时，如果这次抓到的是 LinkedIn 版本，原地把已有那行升级成 LinkedIn，不新插入一行
+- 在真实库跑过一次：89 条→85 条，4 对严格重复各留了 1 行；已投递的那条（id 58，Indeed 来源）因为标题跟邻居们不完全一致，不在这次合并范围内，保持不动，仍靠「疑似重复」角标提示。执行前对 `jobs.db` 做了一次快照备份
+- 跟 `_migrate_dedupe_keys()`"绝不删除、绝不合并"的原则刻意不同——那个函数处理任意撞车（包括同源、还没验证是不是真的同一条），这个函数只处理"新规则算出来 company+title 完全相同、且一边 linkedin 一边 indeed"这个更窄更确定的场景，见 [tech-solution.md](tech-solution.md#关键决策)
+- 涉及文件：`models.py`、`scraper.py`、`tests/test_dedupe_normalize.py`
+
+### 匹配分析补一条"职级错配"降分规则（讨论于 2026-08-18）
+- 起因：用户反馈如果 JD 只要求 4-6 年经验、职位 title 不带 Senior 等资深字样，大概率是初级 PM 岗位，这种情况下匹配度应该降低——现有 prompt 里只有"硬性门槛未达标拖累 cognitive_match"这一条降分规则，没有覆盖"技能都对得上，但职级/职责范围明显低于候选人现在的资历"这种错配
+- `analyzer.py` 的 `PROMPT_TEMPLATE` 打分规则（步骤3）里新增一条，跟"用户偏好档案"那条紧挨着：JD 要求经验年限明显低于候选人简历体现的实际经验、且 title 不带 Senior/Staff/Principal/Director/Head/VP 等资深字样时，在 `content_match` 上体现降级——候选人有没有这个资历不是靠数据库字段判断，是 LLM 本来就在同时读简历全文和 JD，让它在打分这一步顺带比较
+- 这条只改了 prompt 文案，不改评分公式（仍是 `0.5*cognitive_match + 0.5*content_match`）、不改输出 JSON 结构，只对**之后新跑的分析**生效，库里已经打好分的职位不会补跑
+- 涉及文件：`analyzer.py`
+
+### 「疑似重复」提示角标 + 三处视觉/文案小修（2026-08-18）
+- 起因：用户反馈一条已标星、84% 匹配的 Amazon 职位其实是已投递岗位换标题重新挂出来的，追问"为什么没有去重"。核实后发现 `annotate_similar_groups()`（见上面「跨源去重加固」）其实已经把两条关联到同一个 `similar_group_id`，只是因为这条自己也标了星，被"重点关注不参与折叠"的规则挡住，提示没有露出来——不是去重逻辑漏判，是折叠展示的设计没覆盖到"标星 + 组内有一条已投递"这个组合。详细取舍见 [tech-solution.md](tech-solution.md#关键决策)
+- 修法：`models.annotate_similar_groups()` 新增 `duplicate_of_applied` 字段——同组里有成员 `application_status` 是 applied/interviewing（优先取 interviewing），其余成员打上这个字段（指向那条的 id/标题/状态），不受是否标星、是否被折叠影响；前端 `static/app.js` 新增 `duplicateOfAppliedBadgeHtml()`，跟面试准备角标同形状、warning 语义色，点击跳到那条已投递/面试中的职位。`tests/test_dedupe_normalize.py` 新增断言覆盖
+- 顺手改了三处：①「智能搜索」按钮改名「智能抓取」（更准确描述这是抓取动作而非查询），涉及 `templates/index.html`、`static/app.js`、`README.md` 里所有面向用户的引用；②顶栏「面试题库」「我的简历」两个链接按钮去掉图标、修掉浏览器默认下划线（`.btn` 基类补 `text-decoration: none`，是所有 `<a class="btn">` 的通用问题，不止这两个按钮）；③「今日抓取」漏斗行原来整行强制等宽字体（`--font-mono` 没有中文字形，中文标签被迫用系统兜底字体渲染，跟页面其它中文不一致），改成不强制字体、用 `tabular-nums` 对齐数字，跟导语行 `.lede-num` 的处理方式一致
+- 追问了漏斗数据来源：确认「566条→不相关356→重复205→新增4」是真实数据，汇总当天所有「智能抓取」运行记录（`renderFunnel()`，见 `static/app.js`），每次抓取都更新。用户提议的"功能性陈述"文案其实已经是漏斗上方导语行（lede）在做的事，两者不重复（导语=库存状态，漏斗=当天抓取过程），讨论后决定两行都保留现状，包括导语里「N 条越过 70% 投递线」这句本已被「求职决策闭环」P1 批次标记为待改的措辞——**这句话仍待改，不算这次的范围**
+- 涉及文件：`models.py`、`static/app.js`、`static/style.css`、`templates/index.html`、`README.md`、`tests/test_dedupe_normalize.py`
+
+### 首页顶部视觉调整：统计卡片改一排 + 导航入口重排 + 智能搜索下拉（2026-08-18）
+- 起因：上一条加了「已投递」「面试中」两张统计卡后变成 3 列 2 排，用户反馈太长；同时想把「我的简历」「面试题库」这两个低频入口从中间操作区挪到顶栏并去掉边框、「添加链接」合并进「智能搜索」做成下拉、副标题文案也想换一版
+- 统计卡片改回一排：`static/style.css` 的 `.stat-grid` 从 `repeat(3,1fr)` 改回 `repeat(6,1fr)`，`.stat-card` 整体等比缩小（padding/数字字号/标签字号都调小，小字提示保留不砍），960px 以下（笔记本变窄但还没到手机断点）单独加了一条媒体查询退回 `repeat(3,1fr)` 两排，避免六列在中等宽度挤得看不清；原有 720px 手机断点不变
+- 「我的简历」「面试题库」从 `.lede-actions` 挪到顶栏 `.topbar-actions`，顺序为 面试题库→我的简历→更多⚙️；去边框没有改共享的 `.btn-secondary`（12 个文件复用 50 次，改了影响面太大），新增 `.btn-plain` 修饰类叠加使用，平时无边框、hover 才露出一条浅边；「更多⚙️」同理没改共享的 `.icon-btn`（10 个文件在用），单独给 `#moreBtn` 去边框
+- 「添加链接」从独立按钮合并进「智能搜索」的下拉菜单：新增 `.split-btn` 分裂按钮组件（主体按钮照常点击直接搜索，右侧箭头按钮点开下拉），下拉本身没有遮罩层，靠新增的 `document` 级点击监听判断点击是否落在 `.split-btn` 外部来自动收起（`static/app.js` 新增 `toggleRunNowMenu()`/`closeRunNowMenu()`）；下拉里的「添加链接」项复用原有的 `openAddLinkModal()`，弹窗本身没改，`id="addLinkBtn"` 也保留在新位置（`tests/test_frontend.py` 有断言依赖这个 id）
+- 顶栏副标题文案从「求职路上，滤掉噪音，只留信号」改成「智能领航，过滤噪音，保留信号」（用户自定）
+- 「面试题库」按钮**没有改名**：讨论时想过改叫「面试准备」，但跟职位详情页里已有的「面试准备」材料概念（`job_interview.html`）撞名，用户确认保留原名
+- 涉及文件：`static/style.css`、`templates/index.html`、`static/app.js`；`tests/test_frontend.py`、`tests/run_all.py` 全量跑过（13 个套件 + 6 个 JS 语法检查）确认没有破坏现有断言
+
+### 投递状态自动化：一键「我投了」（2026-08-20，P0-2）
+- 「求职决策闭环」P0 批次最后一条（痛点⑥），补上 `applied_at` 时间戳记录（2026-08-18 已顺带做完）之后的自动化本体
+- **职位卡片新增「我投了」按钮**：只在"已收藏但还没记录投递状态"（`status==='reviewed' && application_status==='not_applied'`）的卡片上出现，点击直接调用现成的 `setApplicationStatus(id, 'applied')`，`applied_at` 由已有的 `models.set_application_status()` 记录，没引入新接口（`static/app.js` 新增 `appliedButtonHtml()`）
+- **Easy Apply 完成时特意不自动置 `applied`**：讨论后确认 `run_easy_apply()` 的"成功"只代表"浏览器打开、材料填好、停在提交按钮前"，不代表用户真的点了 LinkedIn 的提交——如果拿这个当信号自动置状态，会把"打开看了一眼但没投"也算成已投递，污染"超7天该跟进"提醒和以后的复盘统计，跟 `mission.md` "绝不代替用户提交"的原则在语义上也擦边。改成 Easy Apply 完成的成功提示里加一句引导，请用户提交完成后自己回来点「我投了」确认（`static/app.js` 的 `pollEasyApplyUntilSettled()`）
+- 涉及文件：`static/app.js`（新增 `appliedButtonHtml()`，`jobCardHtml()` 接入，`pollEasyApplyUntilSettled()` 文案调整）；后端 `set_application_status`/`applied_at` 逻辑复用已有代码，未改动
+
 ## 计划中 / 讨论中
 
 > 优先级说明（2026-08-18 产品 review 后确立）：使用者处于**已离职、求职紧迫**的时期，本节按"这件事能不能在两周内增加真实面试机会"排序。下面「求职决策闭环」是 P0/P1，其余批次（UI/UX P1+P2、P3 模拟面试、界面双语切换）**明确冻结**，等求职告一段落再动。完整论证见 [product-review.md](product-review.md)（2026-08-18 快照）。
@@ -459,14 +551,15 @@ AI 起草只是初稿，改成"我自己的说法"原来全靠手打。涉及 `i
 来自使用者提出的 7 条一手痛点。review 把它们归因到三个根因：**评分器没有记忆**（痛点③⑦）、**没有工作流状态机**（痛点④⑥）、**抓取层**（痛点①②）。数据佐证：37 条 ≥0.7 的职位里被人工忽略 11 条、只投了 5 条；6 条已投递中 5 条是星标——星标比 AI 分数更能预测投递。
 
 **P0 批次（本周）**
-- [ ] **每日任务清单**（痛点④）：首页顶部按库状态自动生成可勾选清单（今日抓取 / N 条待审核 / M 条待生成材料 / K 条待投递 / J 条投了超 7 天该跟进），支持自定义条目。顺带把零使用率的备注/简历体检/标签带到用户面前
-- [ ] **投递状态自动化**（痛点⑥）：Easy Apply 走完后自动置 `applied` 并记录投递时间；列表页加一键「我投了」；投递时间用于上面的跟进提醒。这是效果闭环的入口
-- [ ] **忽略原因收集 → 偏好档案**（痛点③⑦的地基）：忽略时弹一行原因（预设标签 + 自由文本）存库；累计到阈值后一次 LLM 调用总结成「偏好档案」，注入 `analyzer.py` 的 prompt。可用现有 11 条"高分被忽略"补录冷启动。review 判断这是整个项目**唯一有结构性差异化**的能力——竞品的反馈学习全在雇主端，to-C 侧因拿不到足量单用户信号而做不了，本地单用户工具反而做得到
+- [x] **每日任务清单**（痛点④）：首页顶部按库状态自动生成可勾选清单（今日抓取 / N 条待审核 / M 条待生成材料 / K 条待投递 / J 条投了超 7 天该跟进），支持自定义条目。顺带把零使用率的备注/简历体检/标签带到用户面前 —— 2026-08-18 完成，见下面「每日任务清单 + 忽略原因收集→偏好档案」
+- [x] **投递状态自动化**（痛点⑥）：列表页加一键「我投了」，投递时间用于上面的跟进提醒 —— 2026-08-20 完成，见上面「投递状态自动化：一键「我投了」」。范围有调整：Easy Apply 走完**没有**自动置 `applied`（讨论后确认那一刻只代表浏览器打开、材料填好，不代表已提交，自动置状态会有假阳性），改成引导用户提交后自己点「我投了」
+- [x] **忽略原因收集 → 偏好档案**（痛点③⑦的地基）：忽略时弹一行原因（预设标签 + 自由文本）存库；累计到阈值后一次 LLM 调用总结成「偏好档案」，注入 `analyzer.py` 的 prompt。可用现有 11 条"高分被忽略"补录冷启动。review 判断这是整个项目**唯一有结构性差异化**的能力——竞品的反馈学习全在雇主端，to-C 侧因拿不到足量单用户信号而做不了，本地单用户工具反而做得到 —— 2026-08-18 完成
 
 **P1 批次（两周内）**
 - [ ] **每日/每周复盘报告**（痛点⑦）：今天审核 N 条 / 投递 M 条 / 生成材料 K 份 + 偏好总结 + 下一步综合建议。数据源是上面两条 P0
 - [x] **LinkedIn 推荐职位手动导入**（痛点①）：**不做**个性化推荐流的抓取（需登录态高频请求，封号风险直接命中求职主通道）；改做「粘贴 URL / 批量粘贴」导入通道，走完整分析链路 —— 2026-08-18 完成，见上面「手动粘贴 LinkedIn 职位链接入库」
-- [ ] **跨源去重加固**（痛点②）：`make_dedupe_key()` 增加归一化——剥离 `Senior/Sr./资深`、括号后缀 `(Shanghai)`、公司后缀 `Inc./Ltd./有限公司`、全半角统一。最近一次运行 98/281 判重，真实重复率更高
+- [x] **重点关注公司定向搜索**（讨论于 2026-08-18，痛点①的补充方案）：使用者反馈普通关键词搜索不保证每次都能覆盖到重点公司的新职位。设置页新增「重点关注公司」（每行一个名字），保存时用 `linkedin_company.resolve_company_ids()` 解析成 LinkedIn 数字公司 ID（访客页优先，抓不到再退化到已登录浏览器兜底，复用 `job_link.py` 的两级抓取骨架）并缓存，避免每次保存都重新解析。`scraper.run_search_once()` 对每个已解析的目标公司额外跑一次 `linkedin_company_ids` 定向搜索（jobspy/LinkedIn 官方过滤器，不是自建爬虫逻辑）——沿用现有关键词，不收窄范围；不按城市循环，交给过滤器返回全量结果；跟常规搜索共用同一套去重/粗筛（`_ingest_df()` 从原来内联在循环里的逻辑抽出来，两处调用同一份代码，不会有"两处标准不一致"的风险）—— 2026-08-18 完成，涉及文件：`linkedin_company.py`（新增）、`config.py`（`linkedin_target_companies`）、`scraper.py`、`app.py`、`templates/index.html`、`static/app.js`、`tests/test_linkedin_company.py`（新增，网络与浏览器全 mock）
+- [x] **跨源去重加固**（痛点②，讨论于 2026-08-16）：核实后发现痛点描述有偏差——11 条"高分被忽略"里跨源（Indeed↔LinkedIn）重复其实只有 1 对，真正的大头是**同一家公司在同一个源上连续发近似岗位**（Amazon 一家占 10 条，全在 Indeed），外加公司名后缀不统一（库里 "Amazon.com" 和 "Amazon" 被当成两家公司）。修了两层：① `models.normalize()` 加标点/空白清理 + `normalize_company()` 剥离常见法律实体后缀（`.com`/`Inc`/`Ltd`/`有限公司`等），`make_dedupe_key()` 用新规则；一次性迁移历史行的 `dedupe_key`（幂等、两行撞车时只更新更早那行，不删除/不合并任何数据）。② `annotate_similar_groups()`：同公司标题词汇 Jaccard 相似度 ≥0.5（用真实库数据验证的阈值——能分开 Amazon 那批近似 AI PM 岗位，同时不误合并 Blizzard 的 Hearthstone/WoW 两个产品线，相似度 0.33）打 `similar_group_id`，首页「其余职位」区块里折叠展示成一组，展开后每条仍完整可操作，不删除/不合并数据（重点关注和今日最高不参与折叠，避免弱化已经标星的决定）—— 2026-08-18 完成，涉及文件：`models.py`、`app.py`、`static/app.js`、`static/style.css`、`tests/test_dedupe_normalize.py`（新增）
 - [ ] **材料生成触发点后移**：从"详情页随时可点"改成"标记准备投递时才生成"。现状是 24 条已生成里 20 条没投、7 条所在职位后来被忽略，约 80% 打水漂
 - [ ] **首页主数字改口径**：从「N 条越过 70% 投递线」改成诚实口径（如「N 条待你决定」）。评分器已被数据证伪，不该把它的输出放在全页最大字号上
 
@@ -490,13 +583,14 @@ AI 起草只是初稿，改成"我自己的说法"原来全靠手打。涉及 `i
 ### 面试准备模块（讨论于 2026-08-16，剩余 P3 **2026-08-18 起冻结**）
 现有流水线到"投递 + 状态跟踪"就结束了，对方约面试之后又回到全手工准备。分三期补上这一段，每期独立可用。P1、P2 已完成（见上面"已完成"部分），剩余：
 - [ ] **P3 模拟面试**：AI 扮演面试官多轮提问、用户打字作答，结束后给评价报告（维度评分 + 优势/改进 + 逐题改写参考）；支持"针对某个职位"和"通用"两种模式、中/英文两种语言。会话状态需要持久化（支持刷新页面恢复 + 轮询），`llm.chat()` 的多轮 `messages` 支持已在 P1 就位
+- [ ] **面试准备内容并入面试题库**（讨论于 2026-08-20，冻结）：职位详情页"面试准备"的内容整合进首页"面试题库"页面，职位详情页快捷入口保留、跳转目标改为题库页里按 job_id 展示的对应分区。两者数据模型不同（面试准备按职位分版本、不双语、只读；题库跨职位复用、双语、可编辑），暂定"轻整合"——不合并 `interview_preps`/`interview_bank` 两张表和各自的生成逻辑，只在展示层加个分区入口。因处于求职优先级冻结期不直接产生面试机会，用户确认先记录、不实现
 
 ### 其它
 - [ ] kpi 中体现哪些是 linkedin 的哪些是 indeed（当前 LinkedIn 50 / Indeed 35）
 - [ ] 右上角"原文 / 中文"语言切换按钮，支持界面双语切换（讨论于 2026-08-15，尚未实现；**2026-08-18 起冻结**）
 
 ---
-最后更新：2026-08-18（新增「手动粘贴 LinkedIn 职位链接入库」：首页「添加链接」按钮 → 弹窗批量贴链接 → 访客页抓取、抓不到时用已登录浏览器兜底 → 入库待审核并自动排队分析，对应 P1 批次里的「LinkedIn 推荐职位手动导入」痛点①，该条已勾掉）
+最后更新：2026-08-20（P0 批次收尾：投递状态自动化，职位卡片新增「我投了」一键按钮，Easy Apply 完成故意不自动置状态（讨论后确认那一刻不代表已提交），改成引导用户提交后自己点。上一版：新增讨论：职位详情页"面试准备"内容整合进首页"面试题库"入口的方案，倾向"轻整合"不合并数据层，冻结期内先记录不实现，见上面「面试准备模块」小节新增条目。上一版：修了一个待办条目通用 bug：点文字跳转会顺带把 checkbox 也勾上，等于自动把这条待办点掉了，`checklistRowHtml()` 加 `event.preventDefault()` 堵住；顺带把"体检已给出建议"这条提醒的语义从"按天重置"改成"留到真的生成过优化版、或者用户主动忽略"，不再因为跨天就凭空消失。「已收藏」卡片小字精简回「已收藏待投递」。上一版：简历体检从同步阻塞请求改成后台线程跑，跳去别的页面不再等于打断体检；首页每日待办清单新增"今天完成"提醒（体检已给出建议，去优化简历），跟已有的"还没体检过"提醒互斥、按天自动重置。上一版：每日待办清单删掉"M 条已收藏、还没生成材料"这条——数字算法有 bug（没按已收藏过滤），用户也确认不需要这条提醒；顶部统计卡片改成单选组，点「已收藏」再点「已投递」会取消前一个而不是同时选中两张。上一版：「已收藏」统计卡片数字改成只算"收藏且还没投递"，不再把已投递/面试中的也混进这个数字；卡片小字同步改成「已收藏待投递，已经投出的不在这个下面展示」，小字换行不再单行截断。上一版：2026-08-18（LinkedIn/Indeed 跨源重复只留 LinkedIn：库里 4 对标题完全相同的严格重复（都在 Amazon 名下）合并成 1 行，优先保留投递进度更靠前的那行，打平时留 LinkedIn；`scraper.py` 的入库判重也顺手加了"以后抓到 LinkedIn 版本就升级已有 Indeed 行"的逻辑，不用等下次迁移。删除前对 `jobs.db` 做了快照备份。顺手在匹配分析 prompt 里加了一条"职级错配"降分规则：JD 只要求 4-6 年经验、title 不带 Senior 等资深字样时，`content_match` 要体现"职责范围可能低于候选人现在资历"这层错配，只影响之后新跑的分析，不补跑历史职位。上一版：新增「疑似重复」提示角标：`annotate_similar_groups()` 补上 `duplicate_of_applied` 字段，同组里有一条已投递/面试中时，其余近似岗位（包括标星的）都会打上提示角标，不再因为"标星不参与折叠"而被完全遮住；顺手改了三处小问题：「智能搜索」改名「智能抓取」、顶栏「面试题库」「我的简历」去图标去下划线、「今日抓取」漏斗行的中文字体 bug（不该强制等宽字体）。上一版：首页顶部再调一版视觉：统计卡片从两排改回一排、整体缩小，960px 以下退回两排；「我的简历」「面试题库」挪进顶栏并去边框；「添加链接」合并进「智能搜索」做成下拉菜单；副标题文案改成「智能领航，过滤噪音，保留信号」。上一版：每日待办卡片改成默认展开、可折叠：标题栏加 chevron + 数量角标，点击展开/收起，折叠动画用 `grid-template-rows` 技巧兼容任意条数不裁内容；每次刷新页面都默认展开，折叠状态不持久化，看完自己收起。上一版：顶部统计卡片在「已收藏」后新增「已投递」「面试中」两张卡，跟底部「投递状态」筛选chip共享同一个状态、点哪个都双向同步高亮，栅格从4列改3列。上一版：使用者反馈「高分被忽略的职位」跨源重复、且想按公司定向抓取，两件事一起处理，都完成：① 核实后发现真正原因不是跨源重复（Indeed↔LinkedIn 实际只有 1 对），是同源近似岗位堆积 + 公司名后缀不统一（"Amazon.com"/"Amazon" 被当成两家），修了 `normalize()`/`normalize_company()`/`make_dedupe_key()` 三处 + 历史数据迁移，并加了 `annotate_similar_groups()` 在首页折叠展示相似职位；②「重点关注公司」定向搜索：设置页填公司名，自动解析成 LinkedIn 数字 ID 并对每家跑一次 `linkedin_company_ids` 定向搜索，不受关键词排名/条数上限影响。详见上面「求职决策闭环」P1 批次的两条新完成条目。上一版：完成「求职决策闭环」P0 批次里的两条：每日任务清单（首页新增可勾选清单，把待审核/待生成材料/待投递/超7天待跟进/简历体检提醒收进一处）、忽略原因收集→偏好档案（忽略时选填原因，攒够阈值自动总结成偏好档案并注入匹配分析 prompt）。P0 批次第三条「投递状态自动化」仍未做，只顺带补了它需要的 `applied_at` 时间戳。上一版：新增「手动粘贴 LinkedIn 职位链接入库」：首页「添加链接」按钮 → 弹窗批量贴链接 → 访客页抓取、抓不到时用已登录浏览器兜底 → 入库待审核并自动排队分析，对应 P1 批次里的「LinkedIn 推荐职位手动导入」痛点①，该条已勾掉）
 
 2026-08-18（完成一次资深产品总监视角的全面 review，含联网竞品调研，整体覆盖重写 [product-review.md](product-review.md) 为 2026-08-18 快照。核心结论：降噪这一层已做成，产品该从「降噪」升级到「决策」；评分器已被真实数据证伪——37 条 ≥0.7 里人工忽略 11 条、只投 5 条，星标比 AI 分数更能预测投递；7 条一手痛点收敛到三个根因。本节新增「求职决策闭环」P0/P1/P2 批次与「待决策：自动投递红线」，并把 UI/UX P1+P2、P3 模拟面试、界面双语切换明确冻结。未改 mission.md，等自动投递红线决策后再动）
 

@@ -170,7 +170,10 @@ try:
     raise AssertionError("未知模型应该当场报错，而不是一路走到 API 才 404")
 except RuntimeError as e:
     assert "未知的模型：gpt-9" in str(e), str(e)
-assert set(llm.LLM_TASKS) == {"analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat"}
+assert set(llm.LLM_TASKS) == {
+    "analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat",
+    "preference_profile",
+}
 print("per-task model resolution ok")
 
 

@@ -20,7 +20,7 @@ PROMPT_TEMPLATE = """你是一个JD-简历匹配分析助手，严格按以下�
 职位名称：{title}
 JD正文：
 {jd_text}
-
+{preference_profile_block}
 ## 任务
 1. 从JD中提取：职位内容要点、任职要求（拆成一条条，标注每条是否在简历中已达标 is_gap=false / 未达标 is_gap=true）、相关经验年限要求、行业背景要求、薪资范围（JD未提及则填"JD未公开，需进一步询问"）、团队规模或汇报线（JD未提及则如实说明未提及）、地理位置/远程政策。
    以上所有提取内容（职位内容要点、任职要求、相关经验年限、行业背景、薪资范围、团队规模、地理位置等）一律用中文输出：如果JD原文是英文，请翻译成通顺自然的中文，不要逐字机翻；公司名、产品名、技术/工具名、职级缩写等专有名词可保留英文原文。
@@ -36,6 +36,8 @@ JD正文：
    - content_match：JD描述的日常职责/工作性质/角色范围是否和候选人过去/现在实际做的、想做的工作内容相符
    （不要把经验年限、薪资、团队规模、地理位置这些因素混入这两个分数）
    - 硬性门槛拖累总分：任职要求里如果有条目被JD原文明确标注为强制性（如"required"、"must have"、"mandatory"、"必须"、"强制要求"等措辞，常见于certification/资质类要求），并且该条目 is_gap=true（简历未覆盖），cognitive_match 最高不能超过0.5——不能仅凭"迁移技能可以覆盖精神"这类理由把分数打高来掩盖这个硬缺口；如果同时有两条以上这类未覆盖的强制性要求，cognitive_match 要进一步下调（比如0.3左右），如实反映硬门槛不满足的严重程度。
+   - 职级错配拖累 content_match：如果JD要求的相关经验年限明显低于候选人简历体现的实际经验（比如只要求4-6年），且职位title不带Senior/Staff/Principal/Director/Head/VP等资深字样，这通常意味着职责范围是初级/中级IC岗位，跟候选人现在的资历定位不符——即使技能条目表面都对得上，也要在 content_match 上体现这层"职级偏低"的错配，往下调，不能只看技能清单、忽略候选人可能"高配低就"这个问题。
+   - 如果上面提供了"用户偏好档案"，且这个职位明显撞上档案里反复出现的排斥点，可以酌情在 content_match 上体现（往下调），但不能仅凭一次不完全匹配就一票否决——档案是参考信号，不是硬性排除规则，不确定时不要过度套用。
 ## 输出格式
 只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
 {{
@@ -108,12 +110,17 @@ def classify_companies(companies, model=None, provider="anthropic"):
     return {c: (result.get(c) if result.get(c) in ("foreign", "domestic") else "unknown") for c in companies}
 
 
-def analyze_job(company, title, jd_text, resume_text, model=None, provider="anthropic"):
+def analyze_job(company, title, jd_text, resume_text, model=None, provider="anthropic", preference_profile_text=None):
     if not resume_text:
         raise RuntimeError("读不到简历内容，请在「我的简历」页重新上传一份 .docx 简历。")
 
+    preference_profile_block = (
+        f"\n## 用户偏好档案（供参考，用法见下面任务3的说明）\n{preference_profile_text}\n"
+        if preference_profile_text else ""
+    )
     prompt = PROMPT_TEMPLATE.format(
-        resume_text=resume_text, company=company, title=title, jd_text=jd_text or "(未获取到JD正文)"
+        resume_text=resume_text, company=company, title=title, jd_text=jd_text or "(未获取到JD正文)",
+        preference_profile_block=preference_profile_block,
     )
     result = llm.ask_json(prompt, provider=provider, model=model)
 

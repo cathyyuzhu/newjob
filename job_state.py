@@ -337,3 +337,62 @@ def bank_error():
     """上一次起草的失败原因（成功或没跑过则为 None）。"""
     with _lock:
         return _bank_error
+
+
+# 偏好档案生成状态——跟题库起草同一类"全局单例，同一时刻最多跑一次"，理由也一样：
+# 重复跑除了浪费钱，两次结果还会互相覆盖（后写入的覆盖先写入的，没有实际意义）。
+_profile_generating = False
+
+
+def start_profile_generation():
+    global _profile_generating
+    with _lock:
+        if _profile_generating:
+            return False
+        _profile_generating = True
+        return True
+
+
+def finish_profile_generation():
+    global _profile_generating
+    with _lock:
+        _profile_generating = False
+
+
+def profile_generating():
+    with _lock:
+        return _profile_generating
+
+
+# 简历体检状态——跟题库起草（_bank_generating/_bank_error）同一个模式：全局单例、
+# 同一时刻最多跑一次，改成后台线程跑之后需要这组状态让前端知道"还在跑"还是"跑挂了"，
+# 不然刷新页面/跳转回来会看不出体检是否还在进行，误以为被打断了。
+_resume_review_generating = False
+_resume_review_error = None
+
+
+def start_resume_review():
+    global _resume_review_generating, _resume_review_error
+    with _lock:
+        if _resume_review_generating:
+            return False
+        _resume_review_generating = True
+        _resume_review_error = None
+        return True
+
+
+def finish_resume_review(error=None):
+    global _resume_review_generating, _resume_review_error
+    with _lock:
+        _resume_review_generating = False
+        _resume_review_error = error
+
+
+def resume_review_generating():
+    with _lock:
+        return _resume_review_generating
+
+
+def resume_review_error():
+    with _lock:
+        return _resume_review_error

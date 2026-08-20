@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
@@ -10,6 +11,7 @@ from easy_apply import EasyApplyError, EasyApplyInProgress, run_easy_apply
 from llm import LLM_TASKS, MODELS, get_model
 from llm import resolve as llm_resolve
 from job_link import MAX_URLS, add_jobs_from_urls
+from linkedin_company import resolve_company_ids
 from job_state import (
     bank_error,
     bank_generating,
@@ -18,6 +20,7 @@ from job_state import (
     easy_apply_opening,
     finish_bank_generation,
     finish_easy_apply,
+    finish_resume_review,
     get_easy_apply_error,
     get_easy_apply_states,
     get_interview_prep_states,
@@ -27,29 +30,40 @@ from job_state import (
     materials_in_progress,
     request_materials_stop,
     request_stop,
+    resume_review_error,
+    resume_review_generating,
     start_bank_generation,
     start_easy_apply,
+    start_resume_review,
 )
 from models import (
     BANK_CATEGORIES,
     add_bank_item,
+    add_checklist_item,
+    add_dismiss_reason,
     add_job_note,
+    annotate_similar_groups,
     delete_bank_item,
+    delete_checklist_item,
     delete_interview_prep,
     delete_job_note,
     get_bank_item,
     get_job,
     get_latest_interview_prep,
+    get_latest_preference_profile,
     get_latest_resume_review,
     init_db,
+    job_ids_with_dismiss_reason,
     job_ids_with_interview_prep,
     list_bank_items,
+    list_checklist_items,
     list_interview_preps,
     list_job_notes,
     list_jobs,
     list_jobs_missing_cover_letter,
     list_jobs_with_tailored_resume,
     list_runs,
+    list_stale_applications,
     make_dedupe_key,
     note_counts,
     set_application_status,
@@ -72,6 +86,7 @@ from pipeline import (
     generate_interview_prep_safe,
     generate_materials_batch,
     generate_materials_for_job_safe,
+    maybe_refresh_preference_profile,
     queue_pending_jobs,
     refetch_jd,
     refetch_missing_jd_jobs,
@@ -196,6 +211,29 @@ def update_config():
     for key in ("keywords", "locations", "sites"):
         if key in data:
             cfg[key] = [v.strip() for v in data[key] if v and v.strip()]
+    if "linkedin_target_companies" in data:
+        names = [v.strip() for v in data["linkedin_target_companies"] if v and str(v).strip()]
+        existing = {c["name"]: c for c in (cfg.get("linkedin_target_companies") or [])}
+        # 只解析新增的名字、或者上次解析失败的名字——已经成功解析过的不用每次保存设置都
+        # 重新抓一遍公司主页（解析是真实网络请求，量一大会让保存设置变得很慢）。
+        to_resolve = [n for n in names if existing.get(n, {}).get("status") != "resolved"]
+        resolved = {}
+        if to_resolve:
+            try:
+                resolved = resolve_company_ids(to_resolve)
+            except Exception as e:
+                logging.exception("resolve_company_ids failed")
+                return jsonify({"error": f"解析公司列表失败：{e}"}), 400
+        target_list = []
+        for n in names:
+            if n in resolved:
+                info = resolved[n]
+                target_list.append({"name": n, "company_id": info["company_id"], "status": info["status"]})
+            elif n in existing:
+                target_list.append(existing[n])
+            else:
+                target_list.append({"name": n, "company_id": None, "status": "failed"})
+        cfg["linkedin_target_companies"] = target_list
     if "easy_apply_profile" in data:
         # 前端一次性提交整份 profile（三个固定字段 + extra_answers 列表），直接整体替换，
         # 不做逐字段合并——设置页每次保存都是带着当前完整表单内容提交的，不存在"只改一个
@@ -244,6 +282,15 @@ def _classify_company_origins_background(job_ids=None):
         logging.info("company origin classify done: %s", result)
     except Exception:
         logging.exception("background company origin classify failed")
+
+
+def _profile_refresh_background(force=False):
+    try:
+        maybe_refresh_preference_profile(force=force)
+    except Exception:
+        # maybe_refresh_preference_profile() 内部已经把"生成失败"落库成 error 行了，
+        # 这里兜的是更早的异常（比如攒计数的那次查询本身就出错）。
+        logging.exception("background preference profile refresh failed")
 
 
 @app.route("/api/search/run", methods=["POST"])
@@ -362,6 +409,7 @@ def get_jobs():
     # 一次查询取回"哪些职位已经有面试准备"/"每条职位有几条备注"，而不是逐条职位查一次库（N+1）。
     prep_job_ids = job_ids_with_interview_prep()
     notes_count_by_job = note_counts()
+    dismiss_reason_job_ids = job_ids_with_dismiss_reason()
     for job in jobs:
         job["analysis_state"] = states.get(job["id"])
         job["easy_apply_state"] = easy_apply_states.get(job["id"])
@@ -371,6 +419,8 @@ def get_jobs():
         job["has_interview_prep"] = job["id"] in prep_job_ids
         job["materials_state"] = materials_states.get(job["id"])
         job["note_count"] = notes_count_by_job.get(job["id"], 0)
+        job["has_dismiss_reason"] = job["id"] in dismiss_reason_job_ids
+    jobs = annotate_similar_groups(jobs)
     return jsonify(jobs)
 
 
@@ -404,6 +454,46 @@ def update_job_status(job_id):
         # 下次被排进批次时会莫名其妙被当场丢弃结果。
         clear_discard(job_id)
     return jsonify({"ok": True})
+
+
+# 预设忽略原因（来自 spec/product-review.md 的 P0-3），用户也可以只填自由文本不选标签，
+# 或者两者都填。跟"忽略"本身解耦——见 add_dismiss_reason_route 的说明。
+DISMISS_REASON_TAGS = ("薪资不符", "职能不对", "公司不感兴趣", "地点", "行业", "层级不匹配")
+
+
+@app.route("/api/jobs/<int:job_id>/dismiss_reason", methods=["POST"])
+def add_dismiss_reason_route(job_id):
+    """记一次忽略原因。刻意不要求这条职位当前状态一定是 dismissed——补录冷启动数据时
+    (见 static/app.js 已忽略卡片上的"记录忽略原因"入口) 职位可能早就被忽略过、状态没变化，
+    这里只负责存一条原因记录，不去校验/联动 jobs.status。"""
+    job = get_job(job_id)
+    if not job:
+        return jsonify({"error": "职位不存在"}), 404
+    data = request.get_json(force=True)
+    tags = data.get("tags") or []
+    note = (data.get("note") or "").strip()
+    if not isinstance(tags, list) or any(t not in DISMISS_REASON_TAGS for t in tags):
+        return jsonify({"error": "invalid tags"}), 400
+    if not tags and not note:
+        return jsonify({"error": "原因不能为空"}), 400
+    add_dismiss_reason(job_id, tags, note)
+    # 攒够阈值才会真的触发一次 LLM 调用（见 maybe_refresh_preference_profile），这里无论
+    # 有没有攒够都后台线程里查一次，不阻塞保存这个动作本身。
+    threading.Thread(target=_profile_refresh_background, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/preferences", methods=["GET"])
+def get_preference_profile_route():
+    return jsonify(get_latest_preference_profile() or {})
+
+
+@app.route("/api/preferences/regenerate", methods=["POST"])
+def regenerate_preference_profile_route():
+    """手动强制重新生成，跳过阈值检查——用于补录完冷启动数据后想立刻验证效果，
+    不用真的再攒够 5 条新原因。"""
+    threading.Thread(target=_profile_refresh_background, kwargs={"force": True}, daemon=True).start()
+    return jsonify({"started": True})
 
 
 @app.route("/api/jobs/<int:job_id>/starred", methods=["POST"])
@@ -963,28 +1053,48 @@ def download_base_resume_route():
 @app.route("/api/resume/review", methods=["GET"])
 def get_resume_review_route():
     """最近一次体检结果。stale=True 表示这份结果是对着另一个版本的简历跑的——
-    它里面的段落索引已经对不上现在这份文件了，照着改会改错段落。"""
-    review = get_latest_resume_review()
-    if not review:
-        return jsonify({})
-    review["stale"] = bool(
-        review.get("resume_fingerprint")
-        and review["resume_fingerprint"] != resume_store.fingerprint()
-    )
+    它里面的段落索引已经对不上现在这份文件了，照着改会改错段落。
+
+    体检在后台线程里跑（见下面 POST 路由），generating 让前端知道"还在跑"，不然刷新
+    页面/从别的页面跳回来只看得到上一次的结果，会误以为这次点的体检被打断了什么都
+    没发生。background_error 只覆盖"体检还没跑到能落库那一步就整个挂了"的边缘情况
+    （比如简历文件读取失败）——正常的 LLM 调用失败已经落进 resume_reviews 表的 error
+    列，直接读 review.error 就够了，不用等这个字段。"""
+    review = get_latest_resume_review() or {}
+    if review:
+        review["stale"] = bool(
+            review.get("resume_fingerprint")
+            and review["resume_fingerprint"] != resume_store.fingerprint()
+        )
+    review["generating"] = resume_review_generating()
+    review["background_error"] = resume_review_error()
     return jsonify(review)
+
+
+def _resume_review_background():
+    error = None
+    try:
+        run_resume_review()
+    except Exception as e:
+        logging.exception("resume review failed")
+        error = str(e) or e.__class__.__name__
+    finally:
+        finish_resume_review(error)
 
 
 @app.route("/api/resume/review", methods=["POST"])
 def review_resume_route():
-    # 同步返回（跟单条职位的 /analyze 一样）：只有一次 LLM 调用，用户就守在按钮前面等，
-    # 不值得为它再搭一套后台状态 + 轮询。
+    # 后台线程里跑，立刻返回——跟题库起草（generate_bank_route）同一个模式。之前是同步
+    # 阻塞到 LLM 调用完成才返回，用户跳去别的页面会让浏览器直接取消这个还没返回的请求，
+    # 体检等于被打断；现在请求只负责"启动"，真正的生成不挂在这次 HTTP 请求的生死上。
     try:
-        return jsonify(run_resume_review())
+        resume_store.require_base_resume()
     except ResumeMissingError as e:
         return need_resume_response(e)
-    except Exception as e:
-        logging.exception("resume review failed")
-        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+    if not start_resume_review():
+        return jsonify({"error": "体检正在进行中，请稍等它完成"}), 409
+    threading.Thread(target=_resume_review_background, daemon=True).start()
+    return jsonify({"started": True})
 
 
 @app.route("/api/resume/optimize", methods=["POST"])
@@ -1023,6 +1133,69 @@ def list_tailored_resumes_route():
 @app.route("/api/runs", methods=["GET"])
 def get_runs():
     return jsonify(list_runs())
+
+
+# ---------------------------------------------------------------- 每日任务清单
+MAX_CHECKLIST_ITEM_LENGTH = 200
+
+
+@app.route("/api/checklist", methods=["GET"])
+def get_checklist():
+    """待审核/待投递两项前端已经有 allJobs 全量数据，直接在 static/app.js 里现算，
+    不占这个接口的字段——这里只负责后端才算得出来的部分：超过7天没跟进的投递、
+    用户自建的待办条目、简历有没有体检过、体检给出的建议是不是还没去优化。"""
+    followups = [
+        {"job_id": j["id"], "title": j["title"], "company": j["company"], "applied_at": j["applied_at"]}
+        for j in list_stale_applications(days=7)
+    ]
+    latest_review = get_latest_resume_review()
+    resume_review_ready = False
+    resume_review_id = None
+    if latest_review and latest_review.get("content_json") and not latest_review.get("error"):
+        resume_review_id = latest_review.get("id")
+        # 不用"今天完成"这种按日期收敛的提醒——用户明确要求这条要一直留到真的处理完
+        # （生成过优化版）或者自己主动点掉，跨天也不该凭空消失。用「优化版文件的 mtime
+        # 有没有晚于这次体检」判断"处理完"了没有：optimized.docx 不存在，或者存在但是
+        # 上一次体检之前生成的，都算这次体检的建议还没被采纳过。
+        optimized_path = resume_store.optimized_path()
+        if not os.path.exists(optimized_path):
+            resume_review_ready = True
+        else:
+            try:
+                optimized_at = datetime.fromtimestamp(os.path.getmtime(optimized_path))
+                reviewed_at = datetime.fromisoformat(latest_review["created_at"])
+                resume_review_ready = optimized_at < reviewed_at
+            except (OSError, ValueError):
+                resume_review_ready = True
+    return jsonify(
+        {
+            "followups": followups,
+            "custom_items": list_checklist_items(),
+            "resume_review_done": bool(latest_review),
+            "resume_review_ready": resume_review_ready,
+            "resume_review_id": resume_review_id,
+        }
+    )
+
+
+@app.route("/api/checklist", methods=["POST"])
+def add_checklist_item_route():
+    data = request.get_json(force=True)
+    content = (data.get("content") or "").strip()
+    if not content:
+        return jsonify({"error": "内容不能为空"}), 400
+    if len(content) > MAX_CHECKLIST_ITEM_LENGTH:
+        return jsonify({"error": f"内容太长（超过{MAX_CHECKLIST_ITEM_LENGTH}字符）"}), 400
+    item_id = add_checklist_item(content)
+    return jsonify({"id": item_id})
+
+
+@app.route("/api/checklist/<int:item_id>", methods=["DELETE"])
+def delete_checklist_item_route(item_id):
+    deleted = delete_checklist_item(item_id)
+    if not deleted:
+        return jsonify({"error": "记录不存在"}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/api/tracker", methods=["GET"])

@@ -8,6 +8,11 @@ let resumeMeta = { exists: false };
 let reviewContent = null;   // 体检结果（已解析的 JSON）
 let reviewMeta = null;      // 体检那一行的元信息：created_at / error / stale
 let selectedEdits = new Set(); // 勾选了要应用的改写建议（存 paragraph_edits 的数组下标）
+// 体检在后台线程里跑（见 startReview()），这两个只用来驱动按钮/卡片的"进行中"状态，
+// 不是体检结果本身——结果本身还是走 reviewContent/reviewMeta。
+let reviewGenerating = false;
+let reviewBackgroundError = null;
+let reviewPollTimer = null;
 
 const DIMENSION_LABELS = {
   structure: '结构与排版',
@@ -170,9 +175,14 @@ async function deleteResume(btn) {
 }
 
 // ---------- AI 体检 ----------
+// 体检改成后台线程跑（见 review_resume_route）之后，"点开始体检"和"看到结果"是两件
+// 分开的事：POST 只负责启动，真正的结果靠这里轮询 GET 拿到。这样跳去别的页面再回来
+// 也能看到"还在跑"或者已经跑完的结果，不会因为离开过页面就跟体检失去联系。
 async function loadReview() {
   try {
     const row = await (await fetch('/api/resume/review')).json();
+    reviewGenerating = !!(row && row.generating);
+    reviewBackgroundError = (row && row.background_error) || null;
     if (!row || !row.id) {
       reviewContent = null;
       reviewMeta = null;
@@ -187,22 +197,52 @@ async function loadReview() {
   selectedEdits = new Set((reviewContent && reviewContent.paragraph_edits || []).map((_, i) => i));
   renderReviewCard();
   renderEditsCard();
+  if (reviewGenerating) startReviewPoll();
 }
 
 async function startReview(btn) {
-  setBtnLoading(btn, '体检中（约 30 秒）…');
+  setBtnLoading(btn, '启动中…');
   try {
     const res = await fetch('/api/resume/review', { method: 'POST' });
     const data = await res.json();
     if (handleNeedResume(data)) return;
     if (!res.ok) throw new Error(data.error || '未知错误');
-    showToast('体检完成', 'success');
-    await loadReview();
+    showToast('已开始体检（约 30 秒），可以先去做别的事，跑完首页待办里会提醒你', 'info', 6000);
+    reviewGenerating = true;
+    renderReviewCard();
+    startReviewPoll();
   } catch (e) {
-    showToast(`体检失败：${e.message}`, 'error', 8000);
-  } finally {
+    showToast(`体检启动失败：${e.message}`, 'error', 8000);
     restoreBtn(btn);
   }
+}
+
+function stopReviewPoll() {
+  if (reviewPollTimer) {
+    clearTimeout(reviewPollTimer);
+    reviewPollTimer = null;
+  }
+}
+
+function startReviewPoll() {
+  stopReviewPoll();
+  reviewPollTimer = setTimeout(async () => {
+    reviewPollTimer = null;
+    // 页面切到后台标签页就先歇着，回来再继续（跟题库起草轮询同一个理由）
+    if (document.hidden) {
+      startReviewPoll();
+      return;
+    }
+    await loadReview();
+    if (reviewGenerating) return;
+    if (reviewBackgroundError) {
+      showToast(`体检失败：${reviewBackgroundError}`, 'error', 10000);
+    } else if (reviewMeta && reviewMeta.error) {
+      showToast(`体检失败：${reviewMeta.error}`, 'error', 10000);
+    } else {
+      showToast('体检完成，已给出建议', 'success', 5000);
+    }
+  }, 4000);
 }
 
 function renderReviewCard() {
@@ -212,11 +252,19 @@ function renderReviewCard() {
     return;
   }
 
-  const runBtn = `<button class="btn btn-primary btn-sm" id="reviewBtn" onclick="startReview(this)">
+  const runBtn = reviewGenerating
+    ? `<button class="btn btn-primary btn-sm" id="reviewBtn" disabled>${SPARK_ICON}体检中（约 30 秒）…</button>`
+    : `<button class="btn btn-primary btn-sm" id="reviewBtn" onclick="startReview(this)">
     ${SPARK_ICON}${reviewContent ? '重新体检' : '开始体检'}
   </button>`;
 
   if (!reviewContent) {
+    let placeholder = '<div class="plain-text" style="color:var(--text-faint);">还没有体检记录。</div>';
+    if (reviewGenerating) {
+      placeholder = '<div class="plain-text" style="color:var(--text-faint);">体检中，可以先去做别的事，跑完这里会自动出现结果。</div>';
+    } else if (reviewMeta && reviewMeta.error) {
+      placeholder = `<div class="review-error">上次体检失败：${escapeHtml(reviewMeta.error)}</div>`;
+    }
     root.innerHTML = `
       <div class="card">
         <div class="card-head">
@@ -227,9 +275,7 @@ function renderReviewCard() {
           </div>
           ${runBtn}
         </div>
-        ${reviewMeta && reviewMeta.error
-          ? `<div class="review-error">上次体检失败：${escapeHtml(reviewMeta.error)}</div>`
-          : '<div class="plain-text" style="color:var(--text-faint);">还没有体检记录。</div>'}
+        ${placeholder}
       </div>`;
     return;
   }

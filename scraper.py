@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from config import load_config
-from models import get_conn, init_db, insert_job, log_run, job_exists, make_dedupe_key
+from models import get_conn, init_db, insert_job, log_run, job_exists, make_dedupe_key, upgrade_to_linkedin_if_needed
 from relevance import location_looks_relevant, title_looks_relevant
 from tracker_xlsx import existing_keys_from_tracker
 
@@ -27,6 +27,56 @@ def _clean(val):
     return "" if s.lower() in ("nan", "none") else s
 
 
+def _ingest_df(df, conn, keyword, tracker_keys, configured_locations, stats, new_job_ids):
+    """把一次 scrape_jobs() 返回的结果落库：清洗 → 去重键判断 → 标题/地点粗筛 → 入库。
+    关键词×城市的常规搜索、和下面按公司定向的搜索共用同一套处理逻辑，避免两处各写
+    一份、其中一处漏改标准（粗筛/去重规则）而悄悄跑偏。stats 在调用方之间累加，
+    直接原地更新（found/added/skipped/skipped_irrelevant 四个 key 必须已存在）。
+    """
+    if df is None or df.empty:
+        return
+    stats["found"] += len(df)
+    for _, row in df.iterrows():
+        title = _clean(row.get("title"))
+        company = _clean(row.get("company"))
+        if not title or not company:
+            continue
+
+        dedupe_key = make_dedupe_key(company, title)
+        job = {
+            "title": title,
+            "company": company,
+            "location": _clean(row.get("location")),
+            "site": _clean(row.get("site")),
+            "job_url": _clean(row.get("job_url")),
+            "date_posted": _clean(row.get("date_posted")),
+            "keyword": keyword,
+            "jd_text": _clean(row.get("description")),
+        }
+
+        if dedupe_key in tracker_keys or job_exists(conn, dedupe_key):
+            stats["skipped"] += 1
+            # 已经在库里的这条如果是 Indeed 版本、这次抓到的是同一条的 LinkedIn 版本，
+            # 把库里那行的来源换成 LinkedIn（「只留 LinkedIn」，2026-08-18），不新插入一行。
+            upgrade_to_linkedin_if_needed(conn, dedupe_key, job)
+            continue
+
+        # 标题/地点粗筛：Indeed/LinkedIn 自己的搜索匹配比较宽松（比如搜"Senior
+        # Product Manager"会混进"Senior Premier Relationship Manager"这类只是
+        # 碰巧共享"Senior"/"Manager"的不相关结果），跟关键词、配置城市完全不沾边
+        # 的直接不入库，而不是等它们堆在待审核列表里靠人工/AI分析再筛一遍——复用
+        # pipeline.py 批量分析前用的同一套判断逻辑（见 relevance.py），保证两处
+        # 标准一致。
+        if not title_looks_relevant(job) or not location_looks_relevant(job, configured_locations):
+            stats["skipped_irrelevant"] += 1
+            continue
+
+        new_id = insert_job(conn, job)
+        if new_id is not None:
+            stats["added"] += 1
+            new_job_ids.append(new_id)
+
+
 def run_search_once():
     init_db()
     cfg = load_config()
@@ -40,6 +90,12 @@ def run_search_once():
     hours_old = int(cfg["days_old"]) * 24 if cfg.get("days_old") else None
     tracker_keys = existing_keys_from_tracker(cfg.get("tracker_xlsx_path", ""))
     configured_locations = cfg.get("locations") or []
+    # 重点关注公司（2026-08-18）：普通关键词×城市搜索受 LinkedIn 排名和 results_wanted 条数
+    # 上限影响，不保证这些公司的新职位每次都能被搜到——见下面 target_company_ids 那段。
+    target_companies = [
+        c for c in (cfg.get("linkedin_target_companies") or [])
+        if c.get("status") == "resolved" and c.get("company_id")
+    ]
 
     try:
         from jobspy import scrape_jobs
@@ -66,10 +122,7 @@ def run_search_once():
 
     linkedin_cutoff = pd.Timestamp(datetime.now() - timedelta(hours=hours_old)) if hours_old else None
 
-    total_found = 0
-    total_added = 0
-    total_skipped = 0
-    total_skipped_irrelevant = 0
+    stats = {"found": 0, "added": 0, "skipped": 0, "skipped_irrelevant": 0}
     new_job_ids = []
     errors = []
 
@@ -109,44 +162,7 @@ def run_search_once():
                     # 宁可多留、不要悄悄漏掉），只排除明确早于 days_old 窗口的条目。
                     df = df[posted.isna() | (posted >= linkedin_cutoff)]
 
-                if df is not None and not df.empty:
-                    total_found += len(df)
-                    for _, row in df.iterrows():
-                        title = _clean(row.get("title"))
-                        company = _clean(row.get("company"))
-                        if not title or not company:
-                            continue
-
-                        dedupe_key = make_dedupe_key(company, title)
-                        if dedupe_key in tracker_keys or job_exists(conn, dedupe_key):
-                            total_skipped += 1
-                            continue
-
-                        job = {
-                            "title": title,
-                            "company": company,
-                            "location": _clean(row.get("location")),
-                            "site": _clean(row.get("site")),
-                            "job_url": _clean(row.get("job_url")),
-                            "date_posted": _clean(row.get("date_posted")),
-                            "keyword": keyword,
-                            "jd_text": _clean(row.get("description")),
-                        }
-
-                        # 标题/地点粗筛：Indeed/LinkedIn 自己的搜索匹配比较宽松（比如搜"Senior
-                        # Product Manager"会混进"Senior Premier Relationship Manager"这类只是
-                        # 碰巧共享"Senior"/"Manager"的不相关结果），跟关键词、配置城市完全不沾边
-                        # 的直接不入库，而不是等它们堆在待审核列表里靠人工/AI分析再筛一遍——复用
-                        # pipeline.py 批量分析前用的同一套判断逻辑（见 relevance.py），保证两处
-                        # 标准一致。
-                        if not title_looks_relevant(job) or not location_looks_relevant(job, configured_locations):
-                            total_skipped_irrelevant += 1
-                            continue
-
-                        new_id = insert_job(conn, job)
-                        if new_id is not None:
-                            total_added += 1
-                            new_job_ids.append(new_id)
+                _ingest_df(df, conn, keyword, tracker_keys, configured_locations, stats, new_job_ids)
 
                 if call["is_linkedin"] and linkedin_request_delay:
                     time.sleep(linkedin_request_delay)
@@ -156,23 +172,53 @@ def run_search_once():
             # 跑很容易互相"database is locked"（配合 models.get_conn() 的 WAL + timeout）。
             conn.commit()
 
+    # 重点关注公司：额外对每家公司单独跑一次 LinkedIn 定向搜索（linkedin_company_ids，
+    # 对应 LinkedIn 官方搜索页的公司过滤器），沿用跟常规搜索一样的关键词列表——普通
+    # 关键词×城市搜索受排名和 results_wanted 条数上限影响，不保证这些公司的新职位每次
+    # 都能被搜到；这个过滤器让"这家公司下所有匹配关键词的职位"不受排名影响地被看到。
+    # 不按城市循环：大型外企职位通常跨多个城市，交给 LinkedIn 自己按公司返回全量结果，
+    # 免得再乘一个 locations 维度、额外请求量涨得太快。
+    # 复用现有去重（job_exists）：已经在库里的职位自然被挡掉，不需要额外处理。
+    if target_companies and "linkedin" in sites:
+        for keyword in keywords:
+            for company in target_companies:
+                try:
+                    df = scrape_jobs(
+                        site_name=["linkedin"],
+                        search_term=keyword,
+                        results_wanted=linkedin_results_wanted,
+                        country_indeed=country_indeed,
+                        linkedin_fetch_description=True,
+                        linkedin_company_ids=[int(company["company_id"])],
+                    )
+                except Exception as e:
+                    logger.exception("company-targeted search failed for %s / %s", keyword, company.get("name"))
+                    errors.append(f"{keyword}/{company.get('name')}: {e}")
+                    df = None
+
+                _ingest_df(df, conn, keyword, tracker_keys, configured_locations, stats, new_job_ids)
+
+                if linkedin_request_delay:
+                    time.sleep(linkedin_request_delay)
+            conn.commit()
+
     log_run(
         conn,
         keywords,
-        total_found,
-        total_added,
-        total_skipped,
-        skipped_irrelevant=total_skipped_irrelevant,
+        stats["found"],
+        stats["added"],
+        stats["skipped"],
+        skipped_irrelevant=stats["skipped_irrelevant"],
         error="; ".join(errors) if errors else None,
     )
     conn.commit()
     conn.close()
 
     return {
-        "found": total_found,
-        "added": total_added,
-        "skipped_duplicate": total_skipped,
-        "skipped_irrelevant": total_skipped_irrelevant,
+        "found": stats["found"],
+        "added": stats["added"],
+        "skipped_duplicate": stats["skipped"],
+        "skipped_irrelevant": stats["skipped_irrelevant"],
         "errors": errors,
         "new_job_ids": new_job_ids,
     }

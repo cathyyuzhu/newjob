@@ -1,6 +1,6 @@
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from config import DB_PATH
 
@@ -76,6 +76,10 @@ def init_db():
         # jd-resume-matcher 技能和用户自己看的另一份产物。
         ("cover_letter", "ALTER TABLE jobs ADD COLUMN cover_letter TEXT"),
         ("resume_bullets", "ALTER TABLE jobs ADD COLUMN resume_bullets TEXT"),
+        # 投递时间：只在 application_status 变成 'applied' 时顺带记一笔（见 set_application_status），
+        # 用于"每日任务清单"里"投了超过7天该跟进"这一项。不是完整的投递自动化（那需要 Easy Apply
+        # 走完自动置状态、列表页"我投了"一键按钮，是另一件更大的事，这里只补最小的时间戳）。
+        ("applied_at", "ALTER TABLE jobs ADD COLUMN applied_at TEXT"),
     ):
         if col not in existing_cols:
             conn.execute(ddl)
@@ -170,21 +174,300 @@ def init_db():
         )
         """
     )
+    # 忽略某条职位时顺手记一笔原因（预设标签+自由文本）。一条职位可以有多行——忽略/收藏/
+    # 再忽略反复横跳时，每次的原因都是信号，不做成"每条职位只留一行"的覆盖式存储。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS job_dismiss_reasons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            tags TEXT,
+            note TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dismiss_reasons_job ON job_dismiss_reasons(job_id)")
+    # 偏好档案：攒够一批忽略原因后一次 LLM 调用总结出来的一段话，全局单例（不挂 job_id），
+    # 跟 resume_reviews 同一个模式——失败也落一行，source_reason_count 记录"生成这份档案时
+    # 一共有多少条原因记录"，用于判断攒够新原因时要不要重新生成（见 pipeline.py）。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS preference_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            source_reason_count INTEGER NOT NULL DEFAULT 0,
+            content_text TEXT,
+            error TEXT,
+            llm_provider TEXT,
+            llm_model TEXT
+        )
+        """
+    )
+    # 每日任务清单里用户自己加的待办条目（跟自动生成的几项不同，这是真正需要持久化的
+    # 待办，勾掉即删除，不需要"已完成"归档状态）。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS checklist_custom_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
+    _migrate_dedupe_keys(conn)
+    _merge_cross_source_duplicates(conn)
     conn.close()
 
 
+# 去重键归一化的噪声字符：跟题库去重（normalize_bank_question）思路一致——职位名/公司名
+# 只差标点、空格、大小写的两条记录，业务含义上是完全一样的（2026-08-18 实测案例：
+# "Associate Director, Product Development" vs "Associate Director Product Development"，
+# 一个逗号让原来只做大小写折叠的 normalize() 判断成两条不同职位）。不做词根收敛（比如
+# 去掉"Senior"/"资深"）——那类词承载真实的职级差异，收敛了会把本该分开的职位悄悄合并。
+_DEDUPE_NOISE_RE = re.compile(
+    r"[\s　。，、；：？！…—～·「」『』（）【】《》"
+    r"\.,;:?!\-–—_/\\|<>\[\]\(\)\{\}'\"`~@#$%^&*+=]+"
+)
+
+# 公司名常见法律实体后缀：同一家公司在不同职位描述里抬头带不带这些后缀并不一致
+# （2026-08-18 实测：库里 "Amazon.com" 和 "Amazon" 被当成两家不同公司，导致同一雇主的
+# 职位完全分不到一组）。只去后缀本身，不做更激进的公司名归一（比如缩写展开）——缩写
+# 映射要维护一张长期会漂移的表，收益不确定，先只处理这个已验证存在的具体问题。
+_COMPANY_SUFFIX_RE = re.compile(
+    r"[,，]?\s*(\.com|\.cn|inc|ltd|llc|corp|corporation|limited|company|co)\.?\s*$",
+    re.IGNORECASE,
+)
+_COMPANY_SUFFIX_CN_RE = re.compile(r"(股份有限公司|有限公司|集团|公司)$")
+
+
 def normalize(s):
-    return (s or "").strip().lower()
+    s = (s or "").strip().lower()
+    return _DEDUPE_NOISE_RE.sub("", s)
+
+
+def normalize_company(s):
+    """公司名归一化：先剥掉法律实体后缀（可能叠加，如"XYZ Inc."里 . 和 Inc 分两步剥），
+    再走跟职位名一样的标点/空白/大小写清理。只用于去重键和职位分组——展示用的公司名
+    不经过这个函数，保留原始抓取数据里的写法。"""
+    s = (s or "").strip()
+    prev = None
+    while prev != s:
+        prev = s
+        s = _COMPANY_SUFFIX_RE.sub("", s).strip()
+        s = _COMPANY_SUFFIX_CN_RE.sub("", s).strip()
+    return normalize(s)
 
 
 def make_dedupe_key(company, title):
-    return f"{normalize(company)}::{normalize(title)}"
+    return f"{normalize_company(company)}::{normalize(title)}"
+
+
+def _migrate_dedupe_keys(conn):
+    """去重键归一化规则加强后（2026-08-18），历史行的 dedupe_key 是用旧规则算的，不重算
+    的话新抓到的职位就算标题只差一个逗号也判断不出"这是同一条"。按新规则重算所有行；
+    如果两行重算后撞了同一个 key（说明这两行本来就该合并，比如上面那条 HSBC 案例），
+    只更新较早那行（first_seen 更早）的 key，另一行的 dedupe_key 保持不变——不删除、
+    不合并任何历史数据，只是不让它去抢一个已被占用的新 key，也不悄悄改变你已经对这条
+    记录做过的忽略/收藏决定。幂等：已经是新格式的行重算结果不变，重复运行无副作用。
+    """
+    rows = conn.execute(
+        "SELECT id, company, title, dedupe_key FROM jobs ORDER BY first_seen ASC, id ASC"
+    ).fetchall()
+    claimed = {row["dedupe_key"] for row in rows}
+    for row in rows:
+        new_key = make_dedupe_key(row["company"], row["title"])
+        if new_key == row["dedupe_key"] or new_key in claimed:
+            continue
+        try:
+            conn.execute("UPDATE jobs SET dedupe_key = ? WHERE id = ?", (new_key, row["id"]))
+        except sqlite3.IntegrityError:
+            continue
+        claimed.discard(row["dedupe_key"])
+        claimed.add(new_key)
+    conn.commit()
+
+
+# 投递状态的"进度"排序，只用于下面挑「哪一行该留下」——数字越大越靠前。不复用
+# job_state.py 那套（那是分析队列的运行时状态，跟这里的"值不值得当保留依据"是两回事）。
+_APPLICATION_PROGRESS_RANK = {
+    "offer": 4, "interviewing": 3, "applied": 2,
+    "not_applied": 1, "rejected": 1, "declined": 1,
+}
+
+
+def _merge_cross_source_duplicates(conn):
+    """LinkedIn 和 Indeed 抓到同一条职位时会各生成一行——标题、公司归一化后完全相同，
+    不是"近似"（那是 annotate_similar_groups() 管的、跨公司也可能命中的模糊相似度，
+    风险和确定性都不一样），是同一条招聘信息被两个源都收录了。2026-08-18 使用者要求
+    "只留 LinkedIn"：合并成一行，保留进度更靠前的那行（投递状态 > 是否标星，看
+    _APPLICATION_PROGRESS_RANK），进度打平时优先留 LinkedIn 那行；如果留下来的那行
+    恰好是 Indeed 来源、但另一行是 LinkedIn，把留下来那行的 site/job_url/jd_text 换成
+    LinkedIn 的版本——"留哪行的状态"和"最终链接指向哪个源"是两件事，前者按进度选，
+    后者只要有 LinkedIn 版本就优先用。被合并掉那行如果自己名下有备注/面试准备材料，
+    先过户给留下来的那行再删除，不丢数据。
+
+    跟 _migrate_dedupe_keys()「绝不删除、绝不合并」的原则刻意不同：那个函数处理的是
+    "任意撞车"（任何原因导致新规则算出同一个 key，包括同源、包括还没验证过是不是真的
+    同一条），保守处理更安全；这里只处理"新规则算出来 company+title 完全相同、且一边
+    linkedin 一边 indeed"这个更窄、更确定的场景，可以放心当成真重复来合并。
+    """
+    from collections import defaultdict
+
+    rows = conn.execute(
+        "SELECT id, company, title, site, application_status, starred, job_url, jd_text "
+        "FROM jobs"
+    ).fetchall()
+    by_key = defaultdict(list)
+    for row in rows:
+        by_key[make_dedupe_key(row["company"], row["title"])].append(row)
+
+    def progress_score(row):
+        rank = _APPLICATION_PROGRESS_RANK.get(row["application_status"], 1)
+        return (rank, 1 if row["starred"] else 0)
+
+    for group in by_key.values():
+        sites = {row["site"] for row in group}
+        if len(group) < 2 or "linkedin" not in sites or "indeed" not in sites:
+            continue  # 只处理跨源都出现的情况；同源撞车不是这个函数管的
+
+        ranked = sorted(group, key=lambda r: (progress_score(r), r["site"] == "linkedin"), reverse=True)
+        winner, losers = ranked[0], ranked[1:]
+
+        if winner["site"] != "linkedin":
+            linkedin_loser = next((r for r in losers if r["site"] == "linkedin"), None)
+            if linkedin_loser is not None:
+                conn.execute(
+                    "UPDATE jobs SET site = 'linkedin', job_url = ?, "
+                    "jd_text = COALESCE(NULLIF(?, ''), jd_text) WHERE id = ?",
+                    (linkedin_loser["job_url"], linkedin_loser["jd_text"], winner["id"]),
+                )
+
+        for loser in losers:
+            for table in ("interview_preps", "job_notes", "job_dismiss_reasons"):
+                conn.execute(f"UPDATE {table} SET job_id = ? WHERE job_id = ?", (winner["id"], loser["id"]))
+            conn.execute("DELETE FROM jobs WHERE id = ?", (loser["id"],))
+
+    conn.commit()
+
+
+_TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+|[一-鿿]")
+_TITLE_STOPWORDS = {
+    "senior", "sr", "junior", "jr", "manager", "product", "the", "and", "of",
+    "for", "a", "an", "to", "in", "on", "at", "with", "tech", "ai", "team",
+    "lead", "staff", "principal",
+}
+# 2026-08-18 用真实数据验证的阈值：能分开 Amazon 一批近似 AI PM 岗位（相似度 0.5~1.0），
+# 同时不会误合并产品线完全不同的职位（如 Blizzard 的 Hearthstone/WoW 两个团队经理，
+# 相似度 0.33，正确地没被合并）。
+_SIMILAR_GROUP_THRESHOLD = 0.5
+
+
+def _title_tokens(title):
+    toks = _TITLE_TOKEN_RE.findall((title or "").lower())
+    return {t for t in toks if t not in _TITLE_STOPWORDS and len(t) > 1}
+
+
+def annotate_similar_groups(jobs):
+    """给同公司下标题高度相似的职位（如同一家公司同时开的多个相近方向岗位）打一个共同的
+    similar_group_id，供前端折叠展示成一组——不改变、不合并任何数据。同公司真的开了很多
+    个不同方向岗位时很常见（如 Amazon 一家占了库里 10 条近似 PM 岗），逐条铺满列表会让
+    "这批我已经决定过了"这件事在视觉上被放大成很多条独立的忽略动作，其实是一次判断。
+
+    只在同一家公司内部两两比较标题的词汇 Jaccard 相似度（去掉通用词后），不跨公司比较，
+    也不引入 LLM 调用——纯规则、可解释、对这批数据量（单用户本地库）零性能顾虑。
+    """
+    from collections import defaultdict
+
+    for j in jobs:
+        j.setdefault("similar_group_id", None)
+        j.setdefault("duplicate_of_applied", None)
+
+    by_company = defaultdict(list)
+    for j in jobs:
+        by_company[normalize_company(j.get("company"))].append(j)
+
+    group_seq = 0
+    for company_key, group_jobs in by_company.items():
+        if len(group_jobs) < 2 or not company_key:
+            continue
+        toksets = [_title_tokens(j.get("title")) for j in group_jobs]
+        parent = list(range(len(group_jobs)))
+
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i, j):
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+
+        for i in range(len(group_jobs)):
+            for j in range(i + 1, len(group_jobs)):
+                a, b = toksets[i], toksets[j]
+                if not a or not b:
+                    continue
+                if len(a & b) / len(a | b) >= _SIMILAR_GROUP_THRESHOLD:
+                    union(i, j)
+
+        clusters = defaultdict(list)
+        for i in range(len(group_jobs)):
+            clusters[find(i)].append(i)
+
+        for members in clusters.values():
+            if len(members) < 2:
+                continue
+            group_seq += 1
+            gid = f"{company_key}-{group_seq}"
+            for idx in members:
+                group_jobs[idx]["similar_group_id"] = gid
+
+            # 组里如果已经有一条投递过/在面试，其余几条大概率是同一个岗位换了个标题重新
+            # 挂出来的（Amazon 尤其常见）。标星的职位故意不参与上面的折叠展示（避免削弱
+            # "我特意标星"这个动作），但这个提示不折叠、只是提醒，标星的也照样打上。
+            advanced = [group_jobs[idx] for idx in members
+                        if group_jobs[idx].get("application_status") in ("applied", "interviewing")]
+            if advanced:
+                best = next((j for j in advanced if j.get("application_status") == "interviewing"), advanced[0])
+                for idx in members:
+                    j = group_jobs[idx]
+                    if j is best:
+                        continue
+                    j["duplicate_of_applied"] = {
+                        "id": best.get("id"),
+                        "title": best.get("title"),
+                        "application_status": best.get("application_status"),
+                    }
+
+    return jobs
 
 
 def job_exists(conn, dedupe_key):
     row = conn.execute("SELECT 1 FROM jobs WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
     return row is not None
+
+
+def upgrade_to_linkedin_if_needed(conn, dedupe_key, candidate):
+    """入库判重时命中已有的一行：如果那行来自 Indeed、这次新抓到的同一条是 LinkedIn
+    版本，把它的 site/job_url/jd_text 换成 LinkedIn 的，其余状态（status/starred/
+    application_status/notes 等）原样不动，也不新插入一行。这是「只留 LinkedIn」在
+    "以后新抓到的"这一侧的落地；库里已经攒下的历史重复由 _merge_cross_source_
+    duplicates() 处理。"""
+    if candidate.get("site") != "linkedin":
+        return
+    row = conn.execute("SELECT id, site FROM jobs WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
+    if row is None or row["site"] == "linkedin":
+        return
+    conn.execute(
+        "UPDATE jobs SET site = 'linkedin', job_url = ?, "
+        "jd_text = COALESCE(NULLIF(?, ''), jd_text) WHERE id = ?",
+        (candidate.get("job_url", ""), candidate.get("jd_text", ""), row["id"]),
+    )
+    conn.commit()
 
 
 def insert_job(conn, job):
@@ -421,9 +704,37 @@ def note_counts():
 
 def set_application_status(job_id, application_status):
     conn = get_conn()
-    conn.execute("UPDATE jobs SET application_status = ? WHERE id = ?", (application_status, job_id))
+    if application_status == "applied":
+        # 只在"变成已投递"这一刻记一次时间，改成其它状态不清空——万一改错又改回来，
+        # 不需要精确记录"第几次投的"，只要"最近一次是什么时候投的"够跟进提醒用就行。
+        row = conn.execute("SELECT application_status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row and row["application_status"] != "applied":
+            conn.execute(
+                "UPDATE jobs SET application_status = ?, applied_at = ? WHERE id = ?",
+                (application_status, datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+        else:
+            conn.execute("UPDATE jobs SET application_status = ? WHERE id = ?", (application_status, job_id))
+    else:
+        conn.execute("UPDATE jobs SET application_status = ? WHERE id = ?", (application_status, job_id))
     conn.commit()
     conn.close()
+
+
+def list_stale_applications(days=7):
+    """已投递（application_status='applied'）超过 days 天还没有更新过状态的职位——
+    "每日任务清单"里"该跟进了"这一项。只看 applied_at 有值的行：没有时间戳的（比如
+    applied_at 这一列刚加上时已经是 applied 状态的历史数据）没法判断投了多久，不武断
+    地当成"超过7天"去提醒，避免翻旧账式的误报。"""
+    conn = get_conn()
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    rows = conn.execute(
+        "SELECT * FROM jobs WHERE application_status = 'applied' AND applied_at IS NOT NULL AND applied_at <= ? "
+        "ORDER BY applied_at ASC",
+        (cutoff,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def delete_jobs(job_ids):
@@ -740,3 +1051,122 @@ def replace_ai_bank_items(items):
     conn.commit()
     conn.close()
     return stats
+
+
+# ---------------------------------------------------------------- 忽略原因 / 偏好档案
+
+
+def add_dismiss_reason(job_id, tags, note):
+    """记一次忽略原因。tags 传列表（沿用 tags 列同款的逗号分隔存法），note 是自由文本，
+    两者都可以为空（用户跳过了原因弹窗，只是单纯忽略）——但那种情况下调用方不该调用
+    这个函数，见 app.py 的校验。返回新插入行的 id。"""
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO job_dismiss_reasons (job_id, tags, note, created_at) VALUES (?, ?, ?, ?)",
+        (job_id, ",".join(tags) if tags else None, note or None, datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+    return cur.lastrowid
+
+
+def count_dismiss_reasons():
+    conn = get_conn()
+    row = conn.execute("SELECT COUNT(*) AS n FROM job_dismiss_reasons").fetchone()
+    conn.close()
+    return row["n"]
+
+
+def list_dismiss_reasons(limit=None):
+    """给偏好档案生成 prompt 用，带上关联职位的公司/职位名（帮助 LLM 看出具体案例，
+    而不是只有干巴巴的标签词）。倒序：最近的排最前面。"""
+    conn = get_conn()
+    sql = (
+        "SELECT r.id, r.tags, r.note, r.created_at, j.company, j.title "
+        "FROM job_dismiss_reasons r LEFT JOIN jobs j ON j.id = r.job_id "
+        "ORDER BY r.created_at DESC, r.id DESC"
+    )
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    rows = conn.execute(sql).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def latest_dismiss_reason_for_job(job_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM job_dismiss_reasons WHERE job_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (job_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def job_ids_with_dismiss_reason():
+    """已经补过忽略原因的职位id集合，供 /api/jobs 一次性附带（同 job_ids_with_interview_prep
+    的用意），前端据此判断"记录忽略原因"这个补录入口要不要显示。"""
+    conn = get_conn()
+    rows = conn.execute("SELECT DISTINCT job_id FROM job_dismiss_reasons").fetchall()
+    conn.close()
+    return {r["job_id"] for r in rows}
+
+
+def insert_preference_profile(content_text=None, source_reason_count=0, error=None, provider=None, model=None):
+    """写入一次偏好档案生成结果。跟 insert_resume_review 同一个模式：失败也落一行。"""
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO preference_profiles (created_at, source_reason_count, content_text, error, llm_provider, llm_model) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            datetime.now().isoformat(timespec="seconds"),
+            source_reason_count,
+            content_text,
+            error,
+            provider,
+            model,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return cur.lastrowid
+
+
+def get_latest_preference_profile(success_only=False):
+    conn = get_conn()
+    sql = "SELECT * FROM preference_profiles"
+    if success_only:
+        sql += " WHERE error IS NULL AND content_text IS NOT NULL"
+    sql += " ORDER BY created_at DESC, id DESC LIMIT 1"
+    row = conn.execute(sql).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------- 每日任务清单
+
+
+def add_checklist_item(content):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO checklist_custom_items (content, created_at) VALUES (?, ?)",
+        (content, datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    conn.close()
+    return cur.lastrowid
+
+
+def list_checklist_items():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM checklist_custom_items ORDER BY created_at ASC, id ASC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_checklist_item(item_id):
+    conn = get_conn()
+    cur = conn.execute("DELETE FROM checklist_custom_items WHERE id = ?", (item_id,))
+    conn.commit()
+    conn.close()
+    return cur.rowcount

@@ -134,9 +134,10 @@ for page, (js, html) in PAGES.items():
     defined = common_defined | set(re.findall(r"function\s+(\w+)", js))
     inline = set(re.findall(r'onclick="[^"]*?(\w+)\(', js)) | set(re.findall(r'onclick="[^"]*?(\w+)\(', html))
     inline |= set(re.findall(r'onchange="[^"]*?(\w+)\(', js)) | set(re.findall(r'onchange="[^"]*?(\w+)\(', html))
-    # if/event/stopPropagation 不是函数名，是内联表达式里的关键字（比如
-    # onclick="if(event.target===this) closeMoreModal()"）
-    missing = {f for f in inline if f not in defined and f not in {"if", "event", "stopPropagation"}}
+    # if/event/stopPropagation/preventDefault 不是函数名，是内联表达式里的关键字（比如
+    # onclick="if(event.target===this) closeMoreModal()"，或者
+    # onclick="event.preventDefault(); xxx()"——checklist 那条为了不让点文字连带勾选框）
+    missing = {f for f in inline if f not in defined and f not in {"if", "event", "stopPropagation", "preventDefault"}}
     assert not missing, f"{page}：内联事件引用了本页面加载不到的函数：{missing}"
 print("per-page function refs ok")
 
@@ -176,12 +177,22 @@ assert 'id="prepModelSelect"' in prep_html and "'interview_prep'" in prep_html
 assert 'id="bankModelSelect"' in bank_html and "'interview_bank'" in bank_html
 assert 'id="reviewModelSelect"' in resume_html and "'resume_review'" in resume_html
 assert 'id="detailChatModelSelect"' in detail_html and "'job_chat'" in detail_html
-for task in ["analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat"]:
+for task in ["analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat", "preference_profile"]:
     assert f'id="modelTask-{task}"' in index_html, f"设置页缺少 {task} 的模型下拉"
 # 下拉是"选了就存"的，不跟着设置页的「保存设置」走——saveConfig 再提交一遍 llm_tasks 的话，
 # 会把另外两页刚改的模型覆盖回设置页打开那一刻的值
 assert "llm_tasks" not in fn_body(appjs, "async function saveConfig")
 print("per-task model selects wired ok")
+
+# ---- P0-1 每日任务清单 + P0-3 忽略原因/偏好档案：模板和JS都接上了
+assert 'id="checklistItems"' in index_html and 'id="checklistInput"' in index_html
+assert "function renderChecklist" in appjs and "function loadChecklist" in appjs
+assert "jobsNeedingMaterials" in appjs
+assert 'id="preferenceProfileCard"' in index_html
+assert "function openDismissReasonPrompt" in commonjs
+assert "openDismissReasonPrompt" in appjs, "忽略之后应该接上原因弹窗"
+assert "dismissReasonButtonHtml" in appjs, "已忽略卡片应该有补录原因的入口"
+print("daily checklist + dismiss reason wiring ok")
 
 # ---- 题库从职位列表 / 面试准备页都用新标签页打开（这一页要挂着背题，不该被顶掉）
 for name, html in [("index.html", index_html), ("job_interview.html", prep_html)]:
@@ -244,7 +255,10 @@ print("pages render ok")
 data = c.get("/api/models").get_json()
 assert {m["id"] for m in data["models"]} >= {"claude-sonnet-5", "claude-haiku-4-5", "deepseek-v4-pro"}
 assert all(m["provider"] in ("anthropic", "deepseek") for m in data["models"])
-assert set(data["llm_tasks"]) == {"analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat"}
+assert set(data["llm_tasks"]) == {
+    "analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat",
+    "preference_profile",
+}
 assert data["fallback"], "留空的功能位要能告诉前端它实际会用哪个模型"
 
 assert c.post("/api/config", json={"llm_tasks": {"interview_bank": "claude-haiku-4-5"}}).status_code == 200
@@ -258,6 +272,7 @@ assert tasks == {
     "interview_bank": "claude-haiku-4-5",
     "resume_review": "",
     "job_chat": "",
+    "preference_profile": "",
 }, tasks
 # 界面上选不到的东西存不进去，免得存进一个打不通的模型名
 assert c.post("/api/config", json={"llm_tasks": {"analysis": "gpt-9"}}).status_code == 400

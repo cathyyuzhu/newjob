@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE)
@@ -45,6 +46,9 @@ calls = []
 
 def fake_chat(messages, provider="anthropic", model=None, system=None, max_tokens=None):
     calls.append({"provider": provider, "model": model, "prompt": messages[0]["content"]})
+    # 体检现在是后台线程跑的（见 review_resume_route），留一点延迟让"正在跑的时候
+    # 再点一次应该 409"这条断言不会因为跑得太快而变成偶发失败
+    time.sleep(0.05)
     return "```json\n" + json.dumps(FAKE_REVIEW, ensure_ascii=False) + "\n```"
 
 
@@ -55,7 +59,18 @@ import resume_store
 # 上传的文件落到临时目录，别往真实的项目 resumes/ 里写
 resume_store.RESUME_DIR = os.path.join(tmpdir, "resumes")
 
+import job_state
 import app as flask_app
+
+
+def wait_resume_review(timeout=5.0):
+    """体检在后台线程里跑（见 app.py review_resume_route），POST 立刻返回，结果要等
+    job_state.resume_review_generating() 翻回 False 才算跑完，跟 test_bank.py 里等
+    job_state.bank_generating() 的套路一样。"""
+    deadline = time.time() + timeout
+    while job_state.resume_review_generating():
+        assert time.time() < deadline, "体检后台线程超时没跑完"
+        time.sleep(0.05)
 
 models.init_db()
 flask_app.app.config["TESTING"] = True
@@ -136,9 +151,16 @@ assert c.get("/api/resume/download").status_code == 200
 print("upload ok")
 
 # ---- 4. 体检：LLM 的脏数据要被归一化，坏的 paragraph_edits 要被丢掉
+# 后台线程跑，POST 立刻返回 {"started": True}，不再直接带结果——等 generating 标志
+# 翻回 False（wait_resume_review），结果从 GET /api/resume/review 里读
 r = c.post("/api/resume/review")
-assert r.status_code == 200, r.get_json()
-content = r.get_json()["content"]
+assert r.status_code == 200 and r.get_json()["started"] is True, r.get_json()
+# 正在跑的时候再点一次应该 409，不是重复触发一次新的 LLM 调用
+assert c.post("/api/resume/review").status_code == 409
+wait_resume_review()
+row = c.get("/api/resume/review").get_json()
+assert row["generating"] is False and not row["background_error"], row
+content = json.loads(row["content_json"])
 # 72 是百分制写法，要收成 0.72
 assert abs(content["dimension_scores"]["keyword"] - 0.72) < 1e-6, content["dimension_scores"]
 assert 0 <= content["overall_score"] <= 1
@@ -152,11 +174,7 @@ assert content["paragraph_edits"][0]["index"] == 1
 # 体检用的是 resume_review 功能位，而且 prompt 里带上了配置里的目标岗位方向
 assert calls, "没有调用到 LLM"
 assert "Senior Product Manager" in calls[-1]["prompt"], "体检 prompt 里应该有目标岗位方向"
-
-row = c.get("/api/resume/review").get_json()
 assert row["id"] and row["stale"] is False, row
-saved = json.loads(row["content_json"])
-assert saved["overall_score"] == content["overall_score"]
 print("resume review ok")
 
 # ---- 5. 换一份简历之后，旧体检结果要被标成过期（段落索引已经对不上了）

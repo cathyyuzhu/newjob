@@ -292,3 +292,72 @@ function openTagEditor(jobId, currentTags, allKnownTags, onSaved) {
   render();
   document.body.appendChild(overlay);
 }
+
+// ---------- 忽略原因（职位列表页 dismiss 流程 + 已忽略卡片补录入口共用） ----------
+// 预设原因来自 spec/product-review.md 的 P0-3。跟标签编辑器结构类似（浮层小弹窗、
+// 不依赖模板预先写好的 DOM），但不合并成同一个函数——字段语义不同（这里是"原因"，
+// 不是"标签"），硬凑复用会两头都不干净。
+const DISMISS_REASON_TAGS = ['薪资不符', '职能不对', '公司不感兴趣', '地点', '行业', '层级不匹配'];
+
+// jobId：要记原因的职位。onSaved：保存成功后的回调（没有参数），用于调用方刷新界面上的
+// "已记录原因"标记。跳过/直接关闭都不算错误，静默即可——原因收集全程是可选的，
+// 不能让用户觉得"不填就报错"。
+function openDismissReasonPrompt(jobId, onSaved) {
+  const existing = document.getElementById('dismissReasonOverlay');
+  if (existing) existing.remove();
+
+  let tags = [];
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay active';
+  overlay.id = 'dismissReasonOverlay';
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+  overlay.innerHTML = `
+    <div class="modal tag-editor-modal">
+      <div class="modal-head">
+        <h3>为什么不考虑这个职位？</h3>
+        <button type="button" class="icon-btn" id="dismissReasonClose">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="plain-text" style="color:var(--text-faint); margin-bottom:8px;">选填——攒够几条之后会帮你总结出求职偏好，让以后的匹配分析更懂你。</div>
+        <div class="chip-group tag-preset-row" id="dismissReasonChips">
+          ${DISMISS_REASON_TAGS.map((t) => `<button type="button" class="chip" data-tag="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('')}
+        </div>
+        <textarea id="dismissReasonNote" rows="2" maxlength="300" placeholder="也可以自己写几句（选填）" style="width:100%; margin-top:10px; resize:vertical;"></textarea>
+      </div>
+      <div class="card-footer">
+        <button type="button" class="btn btn-secondary btn-sm" id="dismissReasonSkip">跳过</button>
+        <button type="button" class="btn btn-primary btn-sm" id="dismissReasonSave">记录</button>
+      </div>
+    </div>`;
+
+  overlay.querySelector('#dismissReasonClose').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#dismissReasonSkip').addEventListener('click', () => overlay.remove());
+  overlay.querySelectorAll('#dismissReasonChips .chip').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const t = btn.dataset.tag;
+      tags = tags.includes(t) ? tags.filter((x) => x !== t) : [...tags, t];
+      btn.classList.toggle('active');
+    });
+  });
+  overlay.querySelector('#dismissReasonSave').addEventListener('click', async () => {
+    const note = overlay.querySelector('#dismissReasonNote').value.trim();
+    if (!tags.length && !note) { overlay.remove(); return; }
+    try {
+      const res = await fetch(`/api/jobs/${jobId}/dismiss_reason`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tags, note }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
+      overlay.remove();
+      showToast('已记录，谢谢反馈', 'success', 2000);
+      if (onSaved) onSaved();
+    } catch (e) {
+      showToast(`记录失败：${e.message}`, 'error');
+    }
+  });
+
+  document.body.appendChild(overlay);
+}

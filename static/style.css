@@ -179,10 +179,14 @@ body {
    收藏/忽略图标区分开——不额外引入颜色，靠"填充 vs 描边"这个形状差异来表达 */
 .icon-btn.starred { color: var(--text); border-color: var(--text); }
 .icon-btn.starred:hover { color: var(--text); border-color: var(--text); }
+/* 「更多⚙️」是顶栏里点得最少的一个入口，边框常驻显得太重——不改共享的 .icon-btn
+   （职位卡片上的星标/忽略、各弹窗关闭按钮都在用），只单独给这一个按钮去边框 */
+#moreBtn { border-color: transparent; }
+#moreBtn:hover { border-color: var(--border); }
 
 /* ---------- Lede ---------- */
-/* 智能搜索/AI分析/面试题库这三个高频入口跟导语文案同一行、贴右侧（对齐设计稿 v2），
-   不再占顶栏——顶栏只留「我的简历」这类偶尔才点一次的导航项。 */
+/* 智能搜索/AI分析这两个高频入口跟导语文案同一行、贴右侧（对齐设计稿 v2）；
+   「我的简历」「面试题库」这类偶尔才点一次的导航项放顶栏，去掉边框更轻。 */
 .lede-row {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 1.5rem; flex-wrap: wrap; margin: 1.7rem 0 0;
@@ -198,9 +202,35 @@ body {
 }
 .lede-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; flex-shrink: 0; }
 
+/* 「智能搜索」分裂按钮：主体按钮点了直接搜索，箭头按钮点开下拉露出「添加链接」
+   （原来是并排的独立按钮，反馈操作区太挤，低频的「添加链接」收进下拉） */
+.split-btn { display: inline-flex; position: relative; }
+.split-btn > .btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+.split-btn-caret {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0 !important;
+  border-left: 1px solid rgba(255, 255, 255, 0.3);
+  padding-left: 0.5rem; padding-right: 0.5rem;
+}
+.split-btn-caret svg { width: 12px; height: 12px; transition: transform 0.15s ease; }
+.split-btn-menu {
+  position: absolute; top: calc(100% + 0.35rem); right: 0; z-index: 20;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12); min-width: 8.5rem; padding: 0.3rem;
+  display: none;
+}
+.split-btn-menu.open { display: block; }
+.split-btn-menu button {
+  width: 100%; text-align: left; background: none; border: none;
+  padding: 0.5rem 0.6rem; font: inherit; font-size: 0.8rem; color: var(--text);
+  border-radius: var(--radius-sm); cursor: pointer;
+  display: flex; align-items: center; gap: 0.45rem;
+}
+.split-btn-menu button:hover { background: var(--bg-subtle); }
+.split-btn-menu button svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-muted); }
+
 /* ---------- 今日抓取漏斗 ---------- */
 .funnel {
-  font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.02em;
+  font-size: 0.72rem; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
   color: var(--text-muted); margin: 0 0 1.1rem; padding-top: 0.1rem;
   display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;
 }
@@ -210,26 +240,31 @@ body {
 /* ---------- Stat cards ----------
    大卡片版式（反馈：四张状态卡要更明显）：数字放大、边框换分割线感、选中态整块反色，
    不再是彩色描边+光晕。DOM 结构和 data-status/data-filter 属性完全不变，
-   filterByStatus()/toggleStarredFilter()/updateStatCardActive() 三个函数不用碰。 */
+   filterByStatus()/toggleStarredFilter()/updateStatCardActive() 三个函数不用碰。
+   六张卡（新增「已投递」「面试中」后）反馈两排太长，改回一排、整体缩小尺寸；
+   960px 以下（笔记本变窄但还没到手机断点）退回 3 列两排，避免六列挤得看不清。 */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.7rem;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 0.6rem;
   margin: 1.7rem 0 1.1rem;
 }
 .stat-card {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1.3rem 1.25rem 1.15rem;
+  padding: 0.85rem 0.7rem 0.75rem;
   transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
 }
-.stat-card .label { font-size: 0.88rem; color: var(--text); font-weight: 500; display: flex; align-items: center; gap: 0.3rem; }
+.stat-card .label { font-size: 0.78rem; color: var(--text); font-weight: 500; display: flex; align-items: center; gap: 0.3rem; }
 .stat-card .value {
-  font-size: 2.9rem; font-weight: 250; margin-bottom: 0.3rem;
-  letter-spacing: -0.045em; line-height: .86; color: var(--text);
+  font-size: 1.7rem; font-weight: 250; margin-bottom: 0.2rem;
+  letter-spacing: -0.03em; line-height: .86; color: var(--text);
 }
-.stat-card .hint { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.15rem; }
+.stat-card .hint { font-size: 0.68rem; color: var(--text-muted); margin-top: 0.1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 960px) {
+  .stat-grid { grid-template-columns: repeat(3, 1fr); }
+}
 .stat-card.clickable { cursor: pointer; }
 .stat-card.clickable:hover { border-color: var(--text); transform: translateY(-1px); }
 /* 选中态：整块反色（跟下面"今日最高"hero 卡片是同一套视觉语言），
@@ -243,6 +278,50 @@ body {
 /* 「重点关注」卡片跟其它三张同一套反色选中态，不单独引入金色——星标图标本身
    （实心 vs 描边）已经能表达"这是我自己标的"，不需要靠颜色再强调一次 */
 .stat-card.accent-star .label svg { flex-shrink: 0; width: 0.9em; height: 0.9em; }
+
+/* ---------- 每日任务清单（P0-1，2026-08-18；折叠改版 2026-08-18） ----------
+   折叠/展开用 grid-template-rows: 0fr → 1fr 的写法，而不是量 scrollHeight 或固定
+   max-height：待办条数是动态的（followups/自定义待办数量不定），固定高度会裁内容，
+   量高度要多写一截 JS，grid 这个技巧两者都不用管。 */
+.checklist-card {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elevated); margin: 0 0 1.1rem; overflow: hidden;
+}
+.checklist-head {
+  display: flex; align-items: center; justify-content: space-between; cursor: pointer;
+  padding: 0.75rem 1.1rem; user-select: none;
+}
+.checklist-head-left { display: flex; align-items: center; gap: 0.55rem; }
+.checklist-chevron { width: 15px; height: 15px; color: var(--text-muted); transition: transform 0.15s ease; flex-shrink: 0; }
+.checklist-card.open .checklist-chevron { transform: rotate(90deg); }
+.checklist-title { font-size: 0.85rem; font-weight: 700; }
+.checklist-count {
+  font-family: var(--font-mono); font-size: 0.68rem; color: var(--primary);
+  background: var(--primary-soft); border-radius: 3px; padding: 0.1rem 0.4rem;
+}
+.checklist-body {
+  display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.2s ease;
+}
+.checklist-card.open .checklist-body { grid-template-rows: 1fr; }
+.checklist-body-inner { overflow: hidden; padding: 0 1.1rem; }
+.checklist-card.open .checklist-body-inner { padding: 0 1.1rem 0.9rem; }
+.checklist-items { display: flex; flex-direction: column; gap: 0.15rem; }
+.checklist-row {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.4rem 0.1rem; cursor: default;
+}
+.checklist-row input[type="checkbox"] { flex-shrink: 0; width: 15px; height: 15px; cursor: pointer; }
+.checklist-text { font-size: 0.85rem; color: var(--text); cursor: pointer; }
+.checklist-text:hover { text-decoration: underline; }
+.checklist-empty { font-size: 0.83rem; color: var(--text-faint); padding: 0.4rem 0.1rem; }
+.checklist-add-row {
+  display: flex; gap: 0.5rem; margin-top: 0.5rem; padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+.checklist-add-row input {
+  flex: 1; border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.4rem 0.6rem; font-size: 0.83rem; background: var(--bg);
+}
 
 /* ---------- Tabs ---------- */
 .tabs {
@@ -341,6 +420,7 @@ textarea:focus, input:focus, select:focus {
   border: 1px solid transparent; border-radius: var(--radius-sm);
   padding: 0.55rem 1.05rem; font: inherit; font-weight: 500; font-size: 0.8rem;
   cursor: pointer; transition: all 0.15s ease; white-space: nowrap;
+  text-decoration: none;
 }
 .btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
@@ -350,6 +430,10 @@ textarea:focus, input:focus, select:focus {
 .btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
 .btn-secondary { background: none; color: var(--text); border-color: var(--border); }
 .btn-secondary:hover:not(:disabled) { border-color: var(--text); }
+/* 顶栏「面试题库」「我的简历」这类偶尔才点一次的导航项：跟 .btn-secondary 搭配用，
+   平时不描边，hover 才露出一条浅边提示可点击，视觉上比常驻边框更轻 */
+.btn-plain { background: none; border-color: transparent; }
+.btn-plain:hover:not(:disabled) { border-color: var(--border); }
 .btn-danger { background: var(--danger); color: #fff; border: none; }
 .btn-danger:hover:not(:disabled) { filter: brightness(1.08); }
 .btn-ghost { background: transparent; color: var(--text-muted); padding: 0.4rem 0.7rem; }
@@ -434,6 +518,28 @@ textarea:focus, input:focus, select:focus {
 .job-group-head svg { width: 12px; height: 12px; fill: currentColor; }
 .job-group-head.plain { color: var(--text-muted); }
 .job-group-head .n { font-weight: 400; opacity: 0.7; }
+
+/* 同公司相似职位折叠（2026-08-18）：同一家公司一次开了一堆相近岗位时，逐条铺满列表
+   会让"这批我已经决定过了"被视觉放大成很多条独立忽略——折起来展示成一组，展开后每条
+   还是完整可操作的 job-card，不改变、不合并任何数据。 */
+.job-similar-group { border-bottom: 1px solid var(--border); }
+.job-list .job-similar-group:first-child { border-top: 1px solid var(--border); }
+.job-similar-group summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.8rem 0.5rem 0.8rem 0; cursor: pointer; list-style: none;
+}
+.job-similar-group summary::-webkit-details-marker { display: none; }
+.job-similar-group-label {
+  font-size: 0.85rem; color: var(--text-muted);
+}
+.job-similar-group summary::before {
+  content: '›'; display: inline-block; margin-right: 0.5rem; color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+.job-similar-group[open] summary::before { transform: rotate(90deg); }
+.job-similar-group-body { border-left: 2px solid var(--border); margin: 0 0.5rem 0.6rem 0.4rem; padding-left: 0.9rem; }
+.job-similar-group-body .job-card { padding-right: 0; }
+.job-similar-group-body .job-card:first-child { border-top: 0; }
 
 .job-main { flex: 1; min-width: 0; }
 .job-title-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
@@ -724,6 +830,11 @@ tr:hover td { background: var(--bg-subtle); }
 }
 .prep-pill.done { cursor: pointer; text-decoration: none; }
 .prep-pill.done:hover { filter: brightness(0.95); }
+
+/* 「疑似重复：同公司近似岗位已投递/面试中」提示角标（2026-08-18）：跟 prep-pill 同一套
+   徽标形状，换成 warning 语义色——不阻止操作，只是提醒"这条可能就是你已经投过的那条"。 */
+.dup-pill { background: var(--warning-soft); color: var(--warning-strong); cursor: pointer; text-decoration: none; }
+.dup-pill:hover { filter: brightness(0.95); }
 
 .prep-toolbar {
   display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;

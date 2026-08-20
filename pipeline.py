@@ -7,6 +7,7 @@ from datetime import date
 import interview
 import job_chat
 import llm
+import preference_profile
 import resume_review
 import resume_store
 from analyzer import analyze_job, classify_companies, generate_materials
@@ -19,6 +20,7 @@ from job_state import (
     finish_analyzing,
     finish_interview_prep,
     finish_materials,
+    finish_profile_generation,
     in_progress_ids,
     mark_materials_queued,
     mark_queued,
@@ -31,13 +33,18 @@ from job_state import (
     start_analyzing,
     start_interview_prep,
     start_materials,
+    start_profile_generation,
     stop_requested,
 )
 from models import (
+    count_dismiss_reasons,
     get_job,
+    get_latest_preference_profile,
     insert_interview_prep,
+    insert_preference_profile,
     insert_resume_review,
     list_bank_items,
+    list_dismiss_reasons,
     list_jobs_missing_company_origin,
     list_jobs_missing_jd,
     list_jobs_needing_analysis,
@@ -81,6 +88,8 @@ def analyze_and_record(job_id):
 
     resume_text = read_resume_text(base_resume_path)
 
+    profile = get_latest_preference_profile(success_only=True)
+
     result = analyze_job(
         company=job["company"],
         title=job["title"],
@@ -88,6 +97,7 @@ def analyze_and_record(job_id):
         resume_text=resume_text,
         model=model,
         provider=provider,
+        preference_profile_text=(profile or {}).get("content_text"),
     )
 
     if should_discard(job_id):
@@ -325,6 +335,45 @@ def classify_company_origins(job_ids=None):
             update_job_company_origin(job["id"], origin)
             classified += 1
     return {"classified": classified, "companies": len(companies)}
+
+
+# 攒够这么多条*新*原因（相对上一份档案生成时的样本数）才自动重新生成一次，避免攒 1-2 条
+# 就跑一次 LLM——单条原因信号太弱，档案会跟着零星波动，没有稳定下来的意义。
+PREFERENCE_PROFILE_THRESHOLD = 5
+
+
+def maybe_refresh_preference_profile(force=False):
+    """检查忽略原因是否攒够阈值，够了就重新生成一份偏好档案（见 preference_profile.py）。
+
+    force=True 跳过阈值检查，直接生成（"立即重新生成"手动入口用，也用于补录冷启动数据后
+    立刻验证效果，不用真的再攒够 5 条）。调用方负责决定要不要放后台线程跑——这里本身是
+    同步的，跟 resume_review 一样"只有一次 LLM 调用"，但调用它的地方（保存忽略原因的接口）
+    不该被这次顺带的生成拖慢，所以由 app.py 在后台线程里调用。
+
+    返回 None 表示"没有触发这次生成"（阈值没到，或已经有一次在跑），不代表生成失败——
+    失败也会正常落一行到 preference_profiles（跟 resume_review 同一个"失败也落库"的规矩）。
+    """
+    total = count_dismiss_reasons()
+    if not force:
+        latest = get_latest_preference_profile()
+        last_count = (latest or {}).get("source_reason_count") or 0
+        if total - last_count < PREFERENCE_PROFILE_THRESHOLD:
+            return None
+    if not start_profile_generation():
+        return None
+    cfg = load_config()
+    provider, model = llm.resolve_task(cfg, "preference_profile")
+    try:
+        reasons = list_dismiss_reasons()
+        result = preference_profile.summarize_preferences(reasons, model=model, provider=provider)
+        insert_preference_profile(
+            content_text=result.get("summary"), source_reason_count=total, provider=provider, model=model,
+        )
+    except Exception as e:
+        logging.exception("preference profile generation failed")
+        insert_preference_profile(error=str(e), source_reason_count=total, provider=provider, model=model)
+    finally:
+        finish_profile_generation()
 
 
 def refetch_jd(job_id):
@@ -607,9 +656,10 @@ def generate_interview_prep_safe(job_id, round_label=None):
 def run_resume_review():
     """跑一次简历体检并落库，返回 {"review_id", "content", "fingerprint"}。
 
-    同步执行（不进 job_state 那套内存队列）：只有一次 LLM 调用，而且是用户在「我的简历」
-    页点一个按钮触发的、就守在那儿等结果——跟单条职位的 analyze_and_record 一样的形态，
-    不值得为它再引一套后台状态机。
+    这个函数本身不管并发/后台线程——那部分是调用方（app.py 的 review_resume_route /
+    _resume_review_background）用 job_state.start_resume_review() 之类的函数管的，
+    跟 pipeline 里其它"生成"函数（generate_bank_draft、generate_interview_prep）
+    同一个分工：这里只管"跑一次、落库"，不关心是被谁、在哪个线程里调用的。
     """
     base_resume_path = resume_store.require_base_resume()
     cfg = load_config()

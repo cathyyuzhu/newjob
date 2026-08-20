@@ -119,6 +119,40 @@ function switchMoreTab(subtab) {
   document.querySelectorAll('.modal-tabs .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.moretab === subtab));
   document.querySelectorAll('#moreModalOverlay .tab-panel').forEach((p) => p.classList.toggle('active', p.id === `moreSubpanel-${subtab}`));
   if (subtab === 'runs') loadRuns();
+  if (subtab === 'settings') loadPreferenceProfile();
+}
+
+// ---------- 偏好档案 ----------
+async function loadPreferenceProfile() {
+  const el = document.getElementById('preferenceProfileCard');
+  if (!el) return;
+  try {
+    const profile = await (await fetch('/api/preferences')).json();
+    if (profile.error) {
+      el.innerHTML = `<div class="plain-text" style="color:var(--danger,#c0392b);">上一次生成失败：${escapeHtml(profile.error)}</div>`;
+    } else if (profile.content_text) {
+      el.innerHTML = `<div class="plain-text">${escapeHtml(profile.content_text)}</div>
+        <div class="plain-text" style="color:var(--text-faint); margin-top:4px;">生成于 ${escapeHtml(profile.created_at)}（基于 ${profile.source_reason_count} 条忽略原因）</div>`;
+    } else {
+      el.innerHTML = '<div class="plain-text" style="color:var(--text-faint);">还没有偏好档案——忽略职位时留几次原因，攒够几条会自动生成。</div>';
+    }
+  } catch (e) {
+    el.innerHTML = `<div class="plain-text" style="color:var(--text-faint);">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function regeneratePreferenceProfile(btn) {
+  setBtnLoading(btn, '生成中…');
+  try {
+    const res = await fetch('/api/preferences/regenerate', { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
+    showToast('已开始重新生成，几秒后刷新本面板可看到结果', 'info', 5000);
+  } catch (e) {
+    showToast(`触发失败：${e.message}`, 'error');
+  } finally {
+    restoreBtn(btn);
+    setTimeout(loadPreferenceProfile, 4000);
+  }
 }
 
 // ---------- config ----------
@@ -126,6 +160,8 @@ async function loadConfig() {
   const cfg = await (await fetch('/api/config')).json();
   document.getElementById('keywords').value = (cfg.keywords || []).join('\n');
   document.getElementById('locations').value = (cfg.locations || []).join('\n');
+  document.getElementById('linkedinTargetCompanies').value = (cfg.linkedin_target_companies || []).map((c) => c.name).join('\n');
+  renderTargetCompanyStatus(cfg.linkedin_target_companies || []);
   document.getElementById('country_indeed').value = cfg.country_indeed || '';
   document.getElementById('results_wanted').value = cfg.results_wanted;
   document.getElementById('days_old').value = cfg.days_old;
@@ -141,7 +177,7 @@ async function loadConfig() {
     : '还没有上传简历';
   // 四个模型下拉自己拉 /api/models 填充。它们是"选了就存"的，不跟着下面的「保存设置」走
   // ——所以 saveConfig() 里也不能再提交一遍 llm_tasks，否则会把另外几页刚改的覆盖掉。
-  ['analysis', 'materials', 'interview_prep', 'interview_bank', 'resume_review', 'job_chat'].forEach((task) => {
+  ['analysis', 'materials', 'interview_prep', 'interview_bank', 'resume_review', 'job_chat', 'preference_profile'].forEach((task) => {
     initModelSelect(`modelTask-${task}`, task);
   });
   const eaProfile = cfg.easy_apply_profile || {};
@@ -150,6 +186,20 @@ async function loadConfig() {
   document.getElementById('ea_notice_period').value = eaProfile.notice_period || '';
   document.getElementById('ea_extra_answers').value = (eaProfile.extra_answers || [])
     .map((qa) => `${qa.keyword}=${qa.answer}`).join('\n');
+}
+
+function renderTargetCompanyStatus(list) {
+  const el = document.getElementById('targetCompanyStatus');
+  if (!list.length) {
+    el.textContent = '';
+    return;
+  }
+  const resolved = list.filter((c) => c.status === 'resolved').map((c) => c.name);
+  const failed = list.filter((c) => c.status !== 'resolved').map((c) => c.name);
+  const parts = [];
+  if (resolved.length) parts.push(`已解析：${resolved.join('、')}`);
+  if (failed.length) parts.push(`解析失败（检查拼写，或换成完整 LinkedIn 公司主页链接）：${failed.join('、')}`);
+  el.textContent = parts.join(' · ');
 }
 
 function parseExtraAnswers(text) {
@@ -185,6 +235,7 @@ async function saveConfig() {
   const body = {
     keywords: document.getElementById('keywords').value.split('\n'),
     locations: document.getElementById('locations').value.split('\n'),
+    linkedin_target_companies: document.getElementById('linkedinTargetCompanies').value.split('\n'),
     country_indeed: document.getElementById('country_indeed').value,
     results_wanted: document.getElementById('results_wanted').value,
     days_old: document.getElementById('days_old').value,
@@ -205,6 +256,8 @@ async function saveConfig() {
   try {
     const res = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!res.ok) throw new Error('保存失败');
+    const savedCfg = await res.json();
+    renderTargetCompanyStatus(savedCfg.linkedin_target_companies || []);
     if (invalidLines.length) {
       // 静默丢弃过一次真实数据（用户以为设置没保存），现在必须显式告诉用户哪几行
       // 没解析成功，而不是只保存"看起来对"的那部分就算完事。
@@ -250,6 +303,19 @@ async function runNow() {
     loadJobs();
     loadRuns();
   }
+}
+
+// ---------- 智能抓取下拉（2026-08-18：「添加链接」从独立按钮收进这个下拉菜单） ----------
+function toggleRunNowMenu(e) {
+  e.stopPropagation(); // 不冒泡到 document 的点外部关闭监听，不然刚点开就被自己关掉
+  const menu = document.getElementById('runNowMenu');
+  const open = menu.classList.toggle('open');
+  document.getElementById('runNowCaretBtn').setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+function closeRunNowMenu() {
+  document.getElementById('runNowMenu').classList.remove('open');
+  document.getElementById('runNowCaretBtn').setAttribute('aria-expanded', 'false');
 }
 
 // ---------- 添加职位链接 ----------
@@ -336,9 +402,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('appStatusChips').addEventListener('click', (e) => {
     const chip = e.target.closest('.chip');
     if (!chip) return;
-    document.querySelectorAll('#appStatusChips .chip').forEach((c) => c.classList.remove('active'));
-    chip.classList.add('active');
     currentAppStatus = chip.dataset.appstatus;
+    // 选中具体投递状态时（不是"全部"）把审核状态那组卡片的筛选清掉，跟顶部卡片同一个单选组规则
+    if (currentAppStatus) currentStatus = '';
+    updateStatCardActive(); // 顺带同步顶部「已投递」「面试中」卡片的高亮，两处是同一个状态
     renderJobs();
   });
   // 标签 chips 是动态拼出来的（renderTagChips），用事件委托而不是逐个绑定
@@ -355,6 +422,11 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeMoreModal();
+  });
+  // 「智能抓取」下拉菜单：点它自己以外的任何地方都收起，跟其它 chip/modal 不一样，
+  // 这个下拉没有遮罩层，得靠事件委托判断点击有没有落在 .split-btn 里面
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.split-btn')) closeRunNowMenu();
   });
 });
 
@@ -383,6 +455,7 @@ async function loadJobs(showSkeleton) {
     updateStats();
     renderTagChips();
     renderJobs();
+    renderChecklist();
     updateAiAnalyzeAllBtn();
     scheduleAnalyzingPoll();
   } catch (e) {
@@ -475,13 +548,24 @@ async function stopAnalyzeAll() {
 function updateStats() {
   const counts = { new: 0, reviewed: 0, dismissed: 0 };
   let starred = 0;
+  let applied = 0;
+  let interviewing = 0;
+  let reviewedPending = 0;
   for (const j of allJobs) {
     if (counts[j.status] !== undefined) counts[j.status] += 1;
     // 重点关注是跨状态统计：一条职位可以既"已收藏"又"重点关注"，两个数字本来就该重叠
     if (j.starred) starred += 1;
+    // 已投递/面试中同理是跨 status 的另一个维度（application_status），不跟 new/reviewed/dismissed 互斥
+    const appStatus = j.application_status || 'not_applied';
+    if (appStatus === 'applied') applied += 1;
+    if (appStatus === 'interviewing') interviewing += 1;
+    // 「已收藏」卡片只表示"收藏了但还没投"，已经投出去的改由「已投递」「面试中」两张卡各自计数，不重复算进这里
+    if (j.status === 'reviewed' && appStatus === 'not_applied') reviewedPending += 1;
   }
   document.getElementById('statNew').textContent = counts.new;
-  document.getElementById('statReviewed').textContent = counts.reviewed;
+  document.getElementById('statReviewed').textContent = reviewedPending;
+  document.getElementById('statApplied').textContent = applied;
+  document.getElementById('statInterviewing').textContent = interviewing;
   document.getElementById('statStarred').textContent = starred;
   document.getElementById('statDismissed').textContent = counts.dismissed;
   updateStatCardActive();
@@ -512,7 +596,16 @@ function updateStatCardActive() {
       card.classList.toggle('active', starredOnly);
       return;
     }
+    // 「已投递」「面试中」按 application_status 筛，跟审核状态（新/收藏/忽略）是两个维度，
+    // 分开判断；同时把底部 appStatusChips 那排也同步一下，两处高亮不会各说各话
+    if (card.dataset.appstatus) {
+      card.classList.toggle('active', card.dataset.appstatus === currentAppStatus && currentAppStatus !== '');
+      return;
+    }
     card.classList.toggle('active', card.dataset.status === currentStatus && currentStatus !== '');
+  });
+  document.querySelectorAll('#appStatusChips .chip').forEach((c) => {
+    c.classList.toggle('active', (c.dataset.appstatus || '') === currentAppStatus);
   });
 }
 
@@ -524,7 +617,23 @@ function toggleStarredFilter() {
 
 function filterByStatus(status) {
   // 再点一次已经选中的卡片，等于取消筛选、回到"全部"——省掉专门放一个"全部"按钮的空间。
+  const turningOn = currentStatus !== status;
   currentStatus = currentStatus === status ? '' : status;
+  // 待审核/已收藏/已忽略/已投递/面试中这几张卡是同一个单选组，点其中一张要把另一维度
+  // 清掉，不再同时选中两张（比如"已收藏"没取消、又叠加"已投递"）。
+  // 「已收藏」卡片数字口径是"收藏且还没投递"（见 updateStats() 的 reviewedPending），
+  // 选中它时顺带把 currentAppStatus 设成 not_applied，让列表跟卡片数字对齐。
+  currentAppStatus = (status === 'reviewed' && turningOn) ? 'not_applied' : '';
+  updateStatCardActive();
+  renderJobs();
+}
+
+// 顶部「已投递」「面试中」卡片跟底部 appStatusChips 是同一个 currentAppStatus，
+// 点卡片、点 chip 效果等价，updateStatCardActive() 里两边高亮一起同步
+function filterByAppStatus(status) {
+  currentAppStatus = currentAppStatus === status ? '' : status;
+  // 同上，跟审核状态那几张卡是同一个单选组，选中投递状态时把它们的筛选清掉
+  currentStatus = '';
   updateStatCardActive();
   renderJobs();
 }
@@ -633,6 +742,15 @@ function easyApplyButtonHtml(job) {
   return `<button class="btn btn-secondary btn-sm"${errorTitle} onclick="event.stopPropagation(); startEasyApply(${job.id})">${EASY_APPLY_ICON}Easy Apply${job.easy_apply_state === 'error' ? '（失败，点击重试）' : ''}</button>`;
 }
 
+// 「我投了」：只在"已收藏但还没记录投递状态"的卡片上出现，一键把 application_status
+// 置为 applied（复用 setApplicationStatus，applied_at 时间戳已经在那条链路里记了，
+// 这里不需要新接口）。Easy Apply 走完只是浏览器打开、材料填好、停在提交按钮前——
+// 不代表已经提交，所以不在那条链路里自动置状态，而是让用户自己提交完之后点这个按钮确认。
+function appliedButtonHtml(job) {
+  if ((job.application_status || 'not_applied') !== 'not_applied') return '';
+  return `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); setApplicationStatus(${job.id}, 'applied')">${CHECK_ICON}我投了</button>`;
+}
+
 async function startEasyApply(id) {
   try {
     const res = await fetch(`/api/jobs/${id}/easy_apply`, { method: 'POST' });
@@ -657,7 +775,7 @@ async function pollEasyApplyUntilSettled(id, { intervalMs = 3000, timeoutMs = 60
       if (job && job.easy_apply_state === 'error') {
         showToast(`Easy Apply 未能自动打开：${job.easy_apply_error || '未知错误'}`, 'error', 8000);
       } else {
-        showToast('浏览器窗口已打开，材料已尽量自动填好，请切换过去手动检查并自己点击提交', 'success', 8000);
+        showToast('浏览器窗口已打开，材料已尽量自动填好，请切换过去手动检查并自己点击提交——提交完成后回来点卡片上的「我投了」记录投递状态', 'success', 10000);
       }
       return;
     }
@@ -675,6 +793,14 @@ function coverLetterLinkHtml(job) {
   return `<a class="dot-sep job-link" href="/jobs/${job.id}">${MAIL_ICON}Cover Letter</a>`;
 }
 
+// 只在"已忽略"、且还没补过原因的卡片上出现——这是历史已忽略职位（这次功能上线之前
+// 忽略的，包括产品评审提到的那 11 条"高分被忽略"冷启动样本）补录原因的入口，
+// 新忽略走 setJobStatus 里已经接好的 openDismissReasonPrompt，不需要这个按钮。
+function dismissReasonButtonHtml(job) {
+  if (job.status !== 'dismissed' || job.has_dismiss_reason) return '';
+  return `<button class="icon-btn" title="记录忽略原因" onclick="event.stopPropagation(); openDismissReasonPrompt(${job.id}, loadJobs)">${NOTE_ICON}</button>`;
+}
+
 // 空列表分两种情况，原来共用一句"暂时没有职位"，非常容易误导：默认筛选是
 // "待审核 + 外企"，刚跑完搜索抓到的若全是国内公司，页面看起来就像搜索失败了。
 function renderEmptyState(el) {
@@ -682,7 +808,7 @@ function renderEmptyState(el) {
     el.innerHTML = `
       <div class="icon">${INBOX_ICON}</div>
       <div class="title">还没有任何职位</div>
-      <div class="desc">点击右上角"智能搜索"跑一次，或在"更多 → 设置"里先填好搜索关键词。</div>`;
+      <div class="desc">点击右上角"智能抓取"跑一次，或在"更多 → 设置"里先填好搜索关键词。</div>`;
     return;
   }
   // 库里有数据，只是被当前筛选组合挡住了——直接说清楚挡了多少条，并给一键清除
@@ -745,9 +871,47 @@ function renderJobs() {
   }
   if (otherJobs.length) {
     if (heroJob || starredJobs.length) html += `<div class="job-group-head plain">其余职位</div>`;
-    html += otherJobs.map((j) => jobCardHtml(j)).join('');
+    // 只在"其余职位"里做相似分组折叠（2026-08-18）：重点关注是已经逐条决定过要盯的，
+    // 折叠起来会违背标星的本意；hero 是全场最高分单条拎出来，同理不折叠。真正需要
+    // 折叠的场景是"同公司一次开了一堆相近岗位"，恰好都还没决定，落在这个分组里。
+    html += groupJobsForRender(otherJobs)
+      .map((entry) => (entry.type === 'group' ? similarGroupHtml(entry.jobs) : jobCardHtml(entry.job)))
+      .join('');
   }
   list.innerHTML = html;
+}
+
+// 按后端算好的 similar_group_id 把职位聚成 [{type:'single',job} | {type:'group',jobs}]，
+// 不改变、不丢失任何一条——组内每条职位展开后仍然是完整的 jobCardHtml，逐条可操作。
+function groupJobsForRender(jobs) {
+  const seen = new Set();
+  const out = [];
+  for (const j of jobs) {
+    if (!j.similar_group_id) {
+      out.push({ type: 'single', job: j });
+      continue;
+    }
+    if (seen.has(j.similar_group_id)) continue;
+    seen.add(j.similar_group_id);
+    out.push({ type: 'group', jobs: jobs.filter((x) => x.similar_group_id === j.similar_group_id) });
+  }
+  return out;
+}
+
+function similarGroupHtml(jobs) {
+  const scored = jobs.filter((j) => j.overall_match != null);
+  const best = scored.length ? scored.reduce((a, b) => (b.overall_match > a.overall_match ? b : a)) : jobs[0];
+  return `
+    <details class="job-similar-group">
+      <summary>
+        <span class="job-similar-group-label">${escapeHtml(jobs[0].company)} · ${jobs.length} 个相似职位</span>
+        ${matchBadge(best)}
+      </summary>
+      <div class="job-similar-group-body">
+        ${jobs.map((j) => jobCardHtml(j)).join('')}
+      </div>
+    </details>
+  `;
 }
 
 // 单条职位行的完整 HTML。原来直接写在 renderJobs() 的 .map() 里，抽出来是因为现在
@@ -775,6 +939,7 @@ function jobCardHtml(j, opts) {
           ${currentStatus === '' ? statusBadge(j.status) : ''}
           ${interviewPrepBadgeHtml(j)}
           ${noteBadgeHtml(j)}
+          ${duplicateOfAppliedBadgeHtml(j)}
         </div>
         <div class="job-meta">
           <span>${escapeHtml(j.company)}</span>
@@ -790,11 +955,13 @@ function jobCardHtml(j, opts) {
         ${j.status === 'reviewed' ? '' : analysisStateButtonHtml(j)}
         ${j.status === 'reviewed' ? easyApplyButtonHtml(j) : ''}
         ${j.status === 'reviewed' ? materialsButtonHtml(j) : ''}
+        ${j.status === 'reviewed' ? appliedButtonHtml(j) : ''}
         <button class="icon-btn" title="编辑标签" onclick="event.stopPropagation(); editCardTags(${j.id})">${TAG_ICON}</button>
         `}
         ${starButtonHtml(j)}
         ${j.status === 'reviewed' ? '' : `<button class="icon-btn" title="标记已收藏" onclick="event.stopPropagation(); setJobStatus(${j.id}, 'reviewed', '${j.status}')">${CHECK_ICON}</button>`}
         ${j.status === 'dismissed' ? '' : `<button class="icon-btn" title="忽略" onclick="event.stopPropagation(); setJobStatus(${j.id}, 'dismissed', '${j.status}')">${X_ICON}</button>`}
+        ${dismissReasonButtonHtml(j)}
       </div>
     </div>
   `;
@@ -910,6 +1077,9 @@ async function setJobStatus(id, status, previousStatus = null) {
       `已标记为「${label}」`, 'success', undoable ? 6000 : 2000,
       undoable ? { label: '撤销', onClick: () => setJobStatus(id, previousStatus) } : null,
     );
+    // 忽略已经生效之后再问原因（可选、可跳过）——不能反过来，问原因不该拖慢"忽略"
+    // 这个刻意做成零摩擦的高频动作（见上面的注释）。
+    if (status === 'dismissed') openDismissReasonPrompt(id, loadJobs);
   } catch (e) {
     showToast(`操作失败：${e.message}`, 'error');
   } finally {
@@ -951,6 +1121,155 @@ async function setApplicationStatus(id, applicationStatus) {
   }
 }
 
+// ---------- 每日任务清单 ----------
+// 待审核/待生成材料/待投递三项直接用现成的 allJobs 现算（renderChecklist 每次 loadJobs()
+// 之后都会重跑一遍，天然保持新鲜）；后端算不出来的部分（超7天没跟进的投递、用户自建的
+// 待办、简历有没有体检过）拉一次 /api/checklist 缓存下来，不用每次都发请求。
+let checklistExtra = { followups: [], custom_items: [], resume_review_done: true, resume_review_ready: false, resume_review_id: null };
+
+async function loadChecklist() {
+  try {
+    const res = await fetch('/api/checklist');
+    if (res.ok) checklistExtra = await res.json();
+  } catch (e) {
+    // 拉不到就用上一次的缓存值，不弹错误 toast——这块是锦上添花的提醒，不该给日常操作添堵。
+  }
+  renderChecklist();
+}
+
+// 自动生成的几项勾掉只是"今天已经看过、先别提醒了"，真实来源永远是当前数据库状态，
+// 所以不落库，存 localStorage、按日期分 key，换一天自动失效，不需要写清理逻辑。
+function checklistDismissedToday() {
+  const key = `checklist_dismissed_${new Date().toISOString().slice(0, 10)}`;
+  return { key, set: new Set(JSON.parse(localStorage.getItem(key) || '[]')) };
+}
+
+function dismissChecklistItemToday(itemKey) {
+  const { key, set } = checklistDismissedToday();
+  set.add(itemKey);
+  localStorage.setItem(key, JSON.stringify([...set]));
+  renderChecklist();
+}
+
+// "体检已给出建议，去优化简历"这条不跟着日期重置（见 renderChecklist 里的说明），
+// 记的是"哪一次体检已经被处理/忽略过"，只要 resume_review_id 没变就一直生效。
+function ignoreResumeReviewReady(reviewId) {
+  localStorage.setItem('resume_review_ready_ignored_id', String(reviewId));
+  renderChecklist();
+}
+
+// 跳转前先清空其它筛选——不然筛选栏里残留的"外企"之类条件会把清单指向的那批职位
+// 挡住，用户点了条目却在列表里什么都看不到。
+function focusChecklistStatus(status, appStatus) {
+  clearAllFilters();
+  currentStatus = status;
+  if (appStatus) currentAppStatus = appStatus;
+  syncFilterControls();
+  renderJobs();
+  document.getElementById('panel-jobs').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function checklistRowHtml(key, text, onClickExpr) {
+  // event.preventDefault() 是关键：<span> 套在关联着 checkbox 的 <label> 里，点它文字部分
+  // 浏览器会顺带把这个 label 的默认动作也执行一遍——也就是连带勾选那个 checkbox，等价于
+  // 用户自己顺手点掉了这条待办。不 preventDefault 的话，点文字跳转的同时这条就没了，
+  // 用户看起来像是"点一下就被自动勾掉"，而不是真的点了勾选框。
+  return `
+    <label class="checklist-row">
+      <input type="checkbox" onchange="dismissChecklistItemToday('${key}')">
+      <span class="checklist-text" onclick="event.preventDefault(); ${onClickExpr}">${escapeHtml(text)}</span>
+    </label>`;
+}
+
+function renderChecklist() {
+  const el = document.getElementById('checklistItems');
+  if (!el) return;
+  const { set: dismissedToday } = checklistDismissedToday();
+  const rows = [];
+
+  const pendingReview = allJobs.filter((j) => j.status === 'new').length;
+  if (pendingReview && !dismissedToday.has('review')) {
+    rows.push(checklistRowHtml('review', `${pendingReview} 条职位待审核`, `focusChecklistStatus('new')`));
+  }
+  const pendingApply = allJobs.filter((j) => j.status === 'reviewed' && (j.application_status || 'not_applied') === 'not_applied').length;
+  if (pendingApply && !dismissedToday.has('apply')) {
+    rows.push(checklistRowHtml('apply', `${pendingApply} 条已收藏、还没投递`, `focusChecklistStatus('reviewed', 'not_applied')`));
+  }
+  (checklistExtra.followups || []).forEach((f) => {
+    const key = `followup-${f.job_id}`;
+    if (dismissedToday.has(key)) return;
+    rows.push(checklistRowHtml(key, `《${f.title}》@ ${f.company} 投递超过7天了，该跟进一下`, `window.open('/jobs/${f.job_id}', '_blank')`));
+  });
+  if (!checklistExtra.resume_review_done && !dismissedToday.has('resume_review')) {
+    rows.push(checklistRowHtml('resume_review', '还没做过简历体检，AI 能帮你挑出结构/成果/关键词/表达上的问题', `window.open('/resume', '_blank')`));
+  }
+  // 体检改成后台跑之后（见 static/resume.js），人可能已经离开「我的简历」页了，光靠那一页
+  // 的完成 toast 会错过。这条刻意不用上面那套"按天重置"的 dismissedToday——用户明确要求
+  // 它要一直留到真的处理完（生成过优化版，见 app.py get_checklist 的 resume_review_ready
+  // 判断）或者自己主动点掉，不该因为跨了一天就凭空消失，也不该因为点文字跳转就顺手被
+  // 点掉（checklistRowHtml 已经堵住"点文字连带勾选框"这个问题，这里额外用按 review id
+  // 持久化的 localStorage 键，标记的是"这一次体检的提醒"而不是"今天的提醒"，跟着体检
+  // 这个具体对象走，而不是跟着日期走。跟上面那条"还没体检过"互斥：这条出现时上面那条
+  // 一定是 false（resume_review_done 已经是 true 了），不会同时显示两条。
+  if (checklistExtra.resume_review_ready
+    && String(checklistExtra.resume_review_id) !== localStorage.getItem('resume_review_ready_ignored_id')) {
+    rows.push(`
+      <label class="checklist-row">
+        <input type="checkbox" onchange="ignoreResumeReviewReady(${checklistExtra.resume_review_id})">
+        <span class="checklist-text" onclick="event.preventDefault(); window.open('/resume', '_blank')">体检已给出建议，去优化简历</span>
+      </label>`);
+  }
+  (checklistExtra.custom_items || []).forEach((item) => {
+    rows.push(`
+      <label class="checklist-row">
+        <input type="checkbox" onchange="deleteChecklistItem(${item.id})">
+        <span class="checklist-text">${escapeHtml(item.content)}</span>
+      </label>`);
+  });
+
+  el.innerHTML = rows.length ? rows.join('') : '<div class="checklist-empty">今天没有待办，干得不错。</div>';
+
+  const countEl = document.getElementById('checklistCount');
+  if (countEl) {
+    countEl.textContent = rows.length;
+    countEl.style.display = rows.length ? '' : 'none';
+  }
+}
+
+// 折叠状态不持久化：每次刷新都想让用户先看一眼今天有什么事，看完自己收起就行，
+// 不用记住上次开关状态（见 index.html 里 checklist-card 默认带的 open class）。
+function toggleChecklist() {
+  document.getElementById('checklistCard').classList.toggle('open');
+}
+
+async function addChecklistItem() {
+  const input = document.getElementById('checklistInput');
+  const content = input.value.trim();
+  if (!content) return;
+  try {
+    const res = await fetch('/api/checklist', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || '未知错误');
+    input.value = '';
+    await loadChecklist();
+  } catch (e) {
+    showToast(`添加失败：${e.message}`, 'error');
+  }
+}
+
+async function deleteChecklistItem(id) {
+  try {
+    const res = await fetch(`/api/checklist/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
+  } catch (e) {
+    showToast(`操作失败：${e.message}`, 'error');
+  } finally {
+    await loadChecklist();
+  }
+}
+
 // ---------- runs ----------
 async function loadRuns() {
   const tbody = document.querySelector('#runsTable tbody');
@@ -971,7 +1290,7 @@ async function loadRuns() {
 
   if (!runs.length) {
     // 空 tbody 只会剩一行光秃秃的表头，不写点什么用户不知道是没跑过还是没加载出来
-    tbody.innerHTML = '<tr><td colspan="7" class="run-ok">还没有运行记录，点右上角"智能搜索"跑一次。</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="run-ok">还没有运行记录，点右上角"智能抓取"跑一次。</td></tr>';
     return;
   }
 
@@ -1049,6 +1368,17 @@ function noteBadgeHtml(job) {
     title="有 ${job.note_count} 条备注" onclick="event.stopPropagation()">${NOTE_ICON}${job.note_count}</a>`;
 }
 
+// 「疑似重复」提示角标：annotate_similar_groups() 发现同公司下有一条近似标题的职位
+// 已经投递/面试中（很可能是同一个岗位被换了标题重新挂出来），哪怕这条自己标了星也提醒
+// ——标星故意不参与首页的折叠展示（避免削弱"我特意标星"这个动作），但这个提示不折叠。
+function duplicateOfAppliedBadgeHtml(job) {
+  const dup = job.duplicate_of_applied;
+  if (!dup) return '';
+  const label = dup.application_status === 'interviewing' ? '面试中' : '已投递';
+  return `<a class="match-pill dup-pill" href="/jobs/${dup.id}"
+    title="疑似同一岗位换标题重新挂出：${escapeHtml(dup.title)}（${label}）" onclick="event.stopPropagation()">⚠ 疑似重复 · 近似岗位${label}</a>`;
+}
+
 // 职位卡片上的标签行：展示已有标签 + 一个编辑入口。「分析详情」弹窗拆成独立页面
 // （/jobs/<id>）之后，这是列表页唯一直接操作标签的地方。
 function jobTagsRowHtml(job) {
@@ -1098,9 +1428,16 @@ async function generateMaterialsFromCard(id, btn) {
   }
 }
 
-async function batchGenerateMaterials(btn) {
-  const jobs = allJobs.filter((j) => j.overall_match != null && !j.resume_path && !j.cover_letter
+// 已分析出匹配度、但还没生成过定制简历/Cover Letter 的职位（排除已经在排队/生成中的，
+// 避免重复触发）。抽出来是因为"每日任务清单"的"待生成材料"计数要用同一套判断，
+// 不能让两处标准各写一份、慢慢飘出不一致。
+function jobsNeedingMaterials(jobs) {
+  return jobs.filter((j) => j.overall_match != null && !j.resume_path && !j.cover_letter
     && j.materials_state !== 'queued' && j.materials_state !== 'generating');
+}
+
+async function batchGenerateMaterials(btn) {
+  const jobs = jobsNeedingMaterials(allJobs);
   // 对"当前筛选出来的职位"生效，跟眼睛看到的一致；已经生成过/正在生成的不重复算进去
   const q = document.getElementById('jobSearch').value.trim().toLowerCase();
   let candidates = jobs;
@@ -1145,3 +1482,4 @@ syncFilterControls();
 loadConfig();
 loadJobs(true);
 loadRuns();
+loadChecklist();

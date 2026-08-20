@@ -16,6 +16,12 @@ DEFAULT_CONFIG = {
     # 没有代理的情况下量一大很容易被限流/拦截导致 JD 全部拿不到，所以单独给它设一个更小的条数上限。
     "linkedin_results_wanted": 8,
     "linkedin_request_delay": 4,  # 每个 关键词×城市 组合抓完 LinkedIn 详情页后，停顿几秒再抓下一组，降低触发限流概率
+    # 重点关注公司（2026-08-18）：普通关键词搜索受排名/结果条数上限影响，不保证这些公司的
+    # 新职位每次都能被搜到；这里额外对每家公司跑一次 linkedin_company_ids 定向搜索（LinkedIn
+    # 官方过滤器，不是自建爬虫逻辑），不受排名影响。列表项：{"name", "company_id", "status"}，
+    # company_id 由 linkedin_company.resolve_company_ids() 在保存设置时解析并缓存，避免每天
+    # 重新解析；status 是 "resolved" / "failed"（解析失败会在设置页提示，不静默丢弃）。
+    "linkedin_target_companies": [],
     "schedule_enabled": True,  # 关闭后每天定时任务不会自动运行，需要手动点"立即搜索"
     "schedule_hour": 8,
     "schedule_minute": 0,
