@@ -27,33 +27,81 @@ async function loadJobHeader() {
   else link.style.display = 'none';
   document.getElementById('detailPrepLink').href = `/jobs/${DETAIL_JOB_ID}/interview`;
   updateDismissBtnVisibility();
+  updateReviewBtnVisibility();
+  renderStarBtn();
 }
+
+function renderStarBtn() {
+  const starred = !!(currentJob && currentJob.starred);
+  document.getElementById('detailStarIcon').innerHTML = starred ? STAR_ICON_FILLED : STAR_ICON;
+  document.getElementById('detailStarLabel').textContent = starred ? '已关注' : '重点关注';
+  document.getElementById('detailStarBtn').title = starred ? '取消重点关注' : '标记为重点关注';
+}
+
+async function toggleDetailStarred() {
+  const next = !(currentJob && currentJob.starred);
+  try {
+    await postJobStarred(DETAIL_JOB_ID, next);
+    currentJob.starred = next;
+    renderStarBtn();
+    showToast(next ? '已标记为「重点关注」' : '已取消「重点关注」', 'success', 2000);
+  } catch (e) {
+    showToast(`操作失败：${e.message}`, 'error');
+  }
+}
+
+// 「已收藏」「已忽略」都是同一个 status 字段的取值，跟列表卡片的两个按钮
+// （标记已收藏 / 忽略）对齐：已经是那个状态了就不再显示对应按钮，按了也没意义。
+const STATUS_TOAST_LABELS = { reviewed: '已收藏', dismissed: '已忽略' };
 
 function updateDismissBtnVisibility() {
   const btn = document.getElementById('detailDismissBtn');
-  // 已经忽略过的就别再显示"忽略"了——按了也没有任何变化，只会让人以为没生效
   if (btn) btn.style.display = currentJob && currentJob.status === 'dismissed' ? 'none' : '';
 }
 
-async function dismissFromDetailPage() {
+function updateReviewBtnVisibility() {
+  const btn = document.getElementById('detailReviewBtn');
+  if (btn) btn.style.display = currentJob && currentJob.status === 'reviewed' ? 'none' : '';
+}
+
+function dismissFromDetailPage() {
+  return setStatusFromDetailPage('dismissed');
+}
+
+function reviewFromDetailPage() {
+  return setStatusFromDetailPage('reviewed');
+}
+
+async function setStatusFromDetailPage(status) {
   const previousStatus = currentJob ? currentJob.status : 'new';
   try {
     const res = await fetch(`/api/jobs/${DETAIL_JOB_ID}/status`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'dismissed' }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
-    currentJob.status = 'dismissed';
+    currentJob.status = status;
     updateDismissBtnVisibility();
-    showToast('已标记为「已忽略」', 'success', 6000, {
+    updateReviewBtnVisibility();
+
+    // 处理完直接跳到列表原来顺序里的下一条（跟列表页逐条处理的体验对齐，不管是收藏
+    // 还是忽略）——跳过去之前把撤销信息存一下，下一页加载时接着弹"已处理/撤销"提示。
+    const nextId = getNextJobId();
+    if (nextId != null) {
+      savePendingUndo(DETAIL_JOB_ID, previousStatus, status);
+      location.href = `/jobs/${nextId}`;
+      return;
+    }
+
+    showToast(`已标记为「${STATUS_TOAST_LABELS[status]}」`, 'success', 6000, {
       label: '撤销',
-      onClick: () => undoDismissFromDetailPage(previousStatus),
+      onClick: () => undoStatusFromDetailPage(previousStatus),
     });
   } catch (e) {
     showToast(`操作失败：${e.message}`, 'error');
   }
 }
 
-async function undoDismissFromDetailPage(previousStatus) {
+async function undoStatusFromDetailPage(previousStatus) {
   try {
     const res = await fetch(`/api/jobs/${DETAIL_JOB_ID}/status`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: previousStatus }),
@@ -61,6 +109,45 @@ async function undoDismissFromDetailPage(previousStatus) {
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
     currentJob.status = previousStatus;
     updateDismissBtnVisibility();
+    updateReviewBtnVisibility();
+  } catch (e) {
+    showToast(`撤销失败：${e.message}`, 'error');
+  }
+}
+
+// ---------- 列表顺序 / 跨页撤销（sessionStorage，见 app.js 的 saveJobListOrder） ----------
+
+function getNextJobId() {
+  let order;
+  try { order = JSON.parse(sessionStorage.getItem('jobListOrder') || '[]'); } catch (e) { order = []; }
+  const idx = order.indexOf(DETAIL_JOB_ID);
+  if (idx === -1 || idx === order.length - 1) return null;
+  return order[idx + 1];
+}
+
+function savePendingUndo(jobId, previousStatus, newStatus) {
+  try { sessionStorage.setItem('pendingUndo', JSON.stringify({ jobId, previousStatus, newStatus })); } catch (e) { /* 存不了就不撤销了 */ }
+}
+
+// 上一条职位跳转过来时留下的"已处理/撤销"提示，在这一页接着弹出来
+function showPendingUndoToast() {
+  let pending;
+  try { pending = JSON.parse(sessionStorage.getItem('pendingUndo') || 'null'); } catch (e) { pending = null; }
+  if (!pending) return;
+  sessionStorage.removeItem('pendingUndo');
+  showToast(`已标记为「${STATUS_TOAST_LABELS[pending.newStatus] || '已忽略'}」`, 'success', 6000, {
+    label: '撤销',
+    onClick: () => undoStatusForJob(pending.jobId, pending.previousStatus),
+  });
+}
+
+async function undoStatusForJob(jobId, previousStatus) {
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/status`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: previousStatus }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
+    showToast('已撤销', 'success', 2000);
   } catch (e) {
     showToast(`撤销失败：${e.message}`, 'error');
   }
@@ -405,6 +492,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initTheme();
   initModelSelect('detailChatModelSelect', 'job_chat');
   renderChat();
+  showPendingUndoToast();
   await loadJobHeader();
   await loadAnalysis();
   await loadNotes();

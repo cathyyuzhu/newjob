@@ -16,6 +16,11 @@ import config
 
 config.DB_PATH = os.path.join(tmpdir, "test.db")
 config.CONFIG_PATH = os.path.join(tmpdir, "config.json")
+# tracker_xlsx_path 必须显式指到隔离的临时文件，不能靠 load_config() 的默认值（空字符串）
+# ——留空会被 pipeline.py 解析成真实的 ~/Downloads/JD匹配追踪表.xlsx，这个测试会走
+# generate_materials_for_job()（真的往追踪表写一行），留空撞上正在运行的真实 app.py
+# 就会两边同时写同一个文件，把它写坏（见 test_add_by_url.py 同一处注释里的线上事故说明）。
+config.save_config({**config.DEFAULT_CONFIG, "tracker_xlsx_path": os.path.join(tmpdir, "tracker.xlsx")})
 
 import models
 

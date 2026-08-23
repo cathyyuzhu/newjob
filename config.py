@@ -22,6 +22,32 @@ DEFAULT_CONFIG = {
     # company_id 由 linkedin_company.resolve_company_ids() 在保存设置时解析并缓存，避免每天
     # 重新解析；status 是 "resolved" / "failed"（解析失败会在设置页提示，不静默丢弃）。
     "linkedin_target_companies": [],
+    # LinkedIn "How You Fit"（个人档案匹配）搜索同步（2026-08-23）。跟 2026-08-18 记录
+    # 在案的"不做个性化推荐流自动化抓取"决策不一致——这是用户知情后主动要求覆盖的例外，
+    # 不是遗忘；取舍过程见 spec/roadmap.md 对应条目。默认空列表 = 功能天然不生效（没有
+    # 搜索条目就没有任何浏览器会话），用户必须主动贴至少一条 URL 才会被每日任务触碰。
+    # 每条：{"id", "name", "url", "enabled"}。
+    #   id：保存设置时对没带 id 的新增项由后端生成一个 uuid4().hex[:12]，之后终身不变
+    #       ——job_state 按这个 id 存同步中/结果/报错状态，改名字/改url不会让状态跟丢。
+    #   name：用户自己起的名字，只用于前端展示和日志，不参与任何匹配逻辑。
+    #   url：完整的 How You Fit 搜索结果页链接（含 keywords=/geoId= 等参数），用户从
+    #       LinkedIn 直接复制粘贴；保存时只校验开头是
+    #       https://www.linkedin.com/jobs/search-results，不强校验 showHowYouFit 这个
+    #       具体参数名（LinkedIn 前端实现细节，太严的校验容易被将来的改版打破）。
+    #   enabled：关闭后每日定时任务跳过这一条，但配置本身保留，不用重新贴URL。
+    # 最多 8 条（见 linkedin_how_you_fit.MAX_HOW_YOU_FIT_SEARCHES），保存设置时超过会
+    # 报错拒绝——这是控制"每日定时任务背靠背开几个登录态浏览器会话"这个具体风险的
+    # 硬上限，不只是软性建议。
+    #
+    # 扫描这个页面时优先走确定性逻辑（跟同步已收藏/已投递一样的选择器），只有识别失败
+    # 才会升级成 LLM agent 接管导航——这是项目第一个真正的"观察页面→自主决定下一步
+    # 动作"的工具调用循环，只在确定性路径失败时触发，日常运行大概率用不到，控制成本；
+    # 需要 ANTHROPIC_API_KEY，详见 linkedin_how_you_fit.py。
+    "linkedin_how_you_fit_searches": [],
+    # 每条 How You Fit 搜索同步之间的节流间隔（秒）。跟 linkedin_request_delay（访客身份
+    # 抓详情页之间的停顿，默认4秒）不是一回事——这个管完整开/关一次登录态浏览器会话之间
+    # 的停顿，登录态行为暴露度更高，给得更宽松。
+    "linkedin_how_you_fit_delay": 30,
     "schedule_enabled": True,  # 关闭后每天定时任务不会自动运行，需要手动点"立即搜索"
     "schedule_hour": 8,
     "schedule_minute": 0,

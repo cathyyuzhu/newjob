@@ -27,6 +27,20 @@ const GLOBE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 const BUILDING_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 21v-4h6v4M9 8h.01M9 12h.01M15 8h.01M15 12h.01"/></svg>';
 const INBOX_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/></svg>';
 const CHAT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+const STAR_PATH = '<path d="m12 3.2 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6-4.4-4.3 6.1-.9L12 3.2z"/>';
+const STAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAR_PATH}</svg>`;
+const STAR_ICON_FILLED = `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAR_PATH}</svg>`;
+
+// 收藏（重点关注）：职位列表卡片和职位详情页头部共用同一个接口，见 app.py 的
+// update_job_starred。放共用文件是因为不止列表页要用（详情页头部也有收藏按钮）——
+// 两边刷新方式不一样（列表页整页重拉，详情页只更新本地状态），所以这里只管请求
+// 本身，成功/失败各自处理。
+async function postJobStarred(id, starred) {
+  const res = await fetch(`/api/jobs/${id}/starred`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ starred }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
+}
 
 function effectiveIsDark() {
   const forced = document.documentElement.getAttribute('data-theme');

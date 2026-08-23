@@ -52,13 +52,19 @@ resume_docx.read_resume_text = lambda path: "[0] Cathy Yang\n[1] 产品经理"
 fake_resume = os.path.join(tmpdir, "base.docx")
 open(fake_resume, "wb").close()
 # 关键词/城市故意跟下面要贴的职位完全不沾边：手动贴进来的职位不该被这套粗筛挡掉
+#
+# tracker_xlsx_path 必须显式指到隔离的临时文件，不能留空——留空会被 pipeline.py 解析成
+# 真实的 ~/Downloads/JD匹配追踪表.xlsx，这条职位入库后会触发自动分析写这个文件，如果
+# 恰好这台机器上真的在跑 app.py（后台也在写同一个文件），两边非原子的整文件覆盖写
+# 会把真实数据文件写坏（2026-08-22 线上事故：就是这个坑，测试把用户真实的追踪表覆盖
+# 成了损坏的 zip）。
 config.save_config({
     **config.DEFAULT_CONFIG,
     "base_resume_path": fake_resume,
     "keywords": ["Senior Product Manager"],
     "locations": ["Beijing"],
     "linkedin_request_delay": 0,
-    "tracker_xlsx_path": "",
+    "tracker_xlsx_path": os.path.join(tmpdir, "tracker.xlsx"),
 })
 
 import job_link
@@ -203,10 +209,13 @@ print("manually added job gets analyzed despite irrelevant title/location ok")
 
 
 # ---- 5. 重复：同一条链接再贴一次不该再插一行
+# 这条职位在上一步已经分析完成、写进追踪表了，所以这次命中的是 add_jobs_from_urls()
+# 里"追踪表已有这家公司这个职位"那条更早的判重分支（不是"库里已有"那条），不带 job_id
+# ——两条判重分支都合法，这里只关心真的判成了重复、没有再插入新行。
 r = c.post("/api/jobs/add_by_url", json={"urls": "https://www.linkedin.com/jobs/view/4123456789/"})
 assert r.status_code == 200
 dup = r.get_json()["results"][0]
-assert dup["status"] == "duplicate" and dup["job_id"] == guest_job["id"], dup
+assert dup["status"] == "duplicate", dup
 assert len(models.list_jobs()) == 2, "重复的链接不该再入库一行"
 print("duplicate link skipped ok")
 

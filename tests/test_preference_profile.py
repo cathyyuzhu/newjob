@@ -176,7 +176,14 @@ print("analyzer prompt injection ok")
 # ---- 10. pipeline.analyze_and_record() 真的会把最新档案喂进去
 fake_resume = os.path.join(tmpdir, "base.docx")
 open(fake_resume, "wb").close()
-config.save_config({**config.DEFAULT_CONFIG, "base_resume_path": fake_resume})
+# tracker_xlsx_path 必须指到隔离的临时文件，不能留空——留空会解析成真实的
+# ~/Downloads/JD匹配追踪表.xlsx，见 test_add_by_url.py 同一处注释里的线上事故说明：
+# 下面这行直接调用 analyze_and_record()，会真的往追踪表写一行。
+config.save_config({
+    **config.DEFAULT_CONFIG,
+    "base_resume_path": fake_resume,
+    "tracker_xlsx_path": os.path.join(tmpdir, "tracker.xlsx"),
+})
 
 pipeline.analyze_and_record(job_ids[5])
 assert "## 用户偏好档案" in captured["prompt"] and FAKE_SUMMARY in captured["prompt"], \

@@ -230,6 +230,10 @@ import config
 tmp = tempfile.mkdtemp()
 config.DB_PATH = os.path.join(tmp, "t.db")
 config.CONFIG_PATH = os.path.join(tmp, "c.json")
+# tracker_xlsx_path 显式指到隔离的临时文件，不依赖 load_config() 的默认值（空字符串会
+# 被解析成真实的 ~/Downloads/JD匹配追踪表.xlsx），见 test_add_by_url.py 同一处注释里的
+# 线上事故说明。
+config.save_config({**config.DEFAULT_CONFIG, "tracker_xlsx_path": os.path.join(tmp, "tracker.xlsx")})
 import models
 
 models.DB_PATH = config.DB_PATH

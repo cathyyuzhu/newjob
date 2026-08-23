@@ -139,7 +139,9 @@ config.save_config({
         {"name": "Amazon", "company_id": "1586", "status": "resolved"},
         {"name": "Unresolved Co", "company_id": None, "status": "failed"},
     ],
-    "tracker_xlsx_path": "",
+    # 必须指到隔离的临时文件，不能留空——留空会解析成真实的
+    # ~/Downloads/JD匹配追踪表.xlsx，见 test_add_by_url.py 同一处注释里的线上事故说明。
+    "tracker_xlsx_path": os.path.join(tmpdir, "tracker.xlsx"),
 })
 
 import pandas as pd

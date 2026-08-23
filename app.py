@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import threading
+import uuid
 from datetime import datetime
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
@@ -16,16 +17,26 @@ from job_state import (
     bank_error,
     bank_generating,
     clear_discard,
+    discard_how_you_fit_state,
     discard_job,
     easy_apply_opening,
     finish_bank_generation,
     finish_easy_apply,
+    finish_how_you_fit_batch,
+    finish_how_you_fit_sync,
     finish_resume_review,
+    finish_tracker_sync,
     get_easy_apply_error,
     get_easy_apply_states,
     get_interview_prep_states,
     get_materials_states,
     get_states,
+    how_you_fit_batch_error,
+    how_you_fit_batch_result,
+    how_you_fit_batch_syncing,
+    how_you_fit_sync_error,
+    how_you_fit_sync_result,
+    how_you_fit_syncing,
     interview_prep_in_progress,
     materials_in_progress,
     request_materials_stop,
@@ -34,7 +45,13 @@ from job_state import (
     resume_review_generating,
     start_bank_generation,
     start_easy_apply,
+    start_how_you_fit_batch,
+    start_how_you_fit_sync,
     start_resume_review,
+    start_tracker_sync,
+    tracker_sync_error,
+    tracker_sync_result,
+    tracker_syncing,
 )
 from models import (
     BANK_CATEGORIES,
@@ -234,6 +251,42 @@ def update_config():
             else:
                 target_list.append({"name": n, "company_id": None, "status": "failed"})
         cfg["linkedin_target_companies"] = target_list
+    if "linkedin_how_you_fit_searches" in data:
+        from linkedin_how_you_fit import MAX_HOW_YOU_FIT_SEARCHES, HowYouFitSyncError, _validate_search_url
+
+        items = data["linkedin_how_you_fit_searches"] or []
+        if len(items) > MAX_HOW_YOU_FIT_SEARCHES:
+            return jsonify({"error": f"最多配置 {MAX_HOW_YOU_FIT_SEARCHES} 条 How You Fit 搜索"}), 400
+        existing = {s["id"]: s for s in (cfg.get("linkedin_how_you_fit_searches") or []) if s.get("id")}
+        new_list = []
+        for item in items:
+            name = (item.get("name") or "").strip()
+            url = (item.get("url") or "").strip()
+            if not name or not url:
+                continue
+            try:
+                _validate_search_url(url)
+            except HowYouFitSyncError as e:
+                return jsonify({"error": f"「{name}」：{e}"}), 400
+            item_id = item.get("id") or ""
+            enabled = bool(item.get("enabled", True))
+            if item_id in existing:
+                new_list.append({"id": item_id, "name": name, "url": url, "enabled": enabled})
+            else:
+                new_list.append({"id": uuid.uuid4().hex[:12], "name": name, "url": url, "enabled": enabled})
+        removed_ids = set(existing) - {s["id"] for s in new_list}
+        for search_id in removed_ids:
+            discard_how_you_fit_state(search_id)
+        cfg["linkedin_how_you_fit_searches"] = new_list
+    if "linkedin_how_you_fit_delay" in data:
+        raw = data["linkedin_how_you_fit_delay"]
+        if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+            cfg["linkedin_how_you_fit_delay"] = 0
+        else:
+            try:
+                cfg["linkedin_how_you_fit_delay"] = int(raw)
+            except (TypeError, ValueError):
+                return jsonify({"error": "linkedin_how_you_fit_delay 必须是数字"}), 400
     if "easy_apply_profile" in data:
         # 前端一次性提交整份 profile（三个固定字段 + extra_answers 列表），直接整体替换，
         # 不做逐字段合并——设置页每次保存都是带着当前完整表单内容提交的，不存在"只改一个
@@ -358,6 +411,188 @@ def add_jobs_by_url_route():
         result["need_resume"] = True
         result["need_resume_message"] = "职位已入库，但还没上传简历，暂时无法自动分析匹配度。"
     return jsonify(result)
+
+
+@app.route("/api/jobs/sync_tracker/<stage>", methods=["GET"])
+def get_tracker_sync_status_route(stage):
+    """轮询这次同步的状态。跟"添加链接"不一样，这个操作没法在一次 HTTP 请求里同步等完
+    （要开一次真实浏览器扫列表，慢且不确定要多久），所以拆成"POST 启动 + GET 查状态"
+    两个接口，跟体检（resume_review）、题库起草（bank）同一个模式。
+
+    stage 是"saved"（已收藏）还是"applied"（已投递）：两个列表结构一样，状态和路由
+    合并成一组按 stage 参数区分，不为每个 stage 各写一套几乎相同的路由/状态代码。"""
+    from linkedin_tracker import SUPPORTED_STAGES
+
+    if stage not in SUPPORTED_STAGES:
+        return jsonify({"error": f"暂不支持同步这个列表：{stage}"}), 404
+    return jsonify({
+        "syncing": tracker_syncing(stage),
+        "result": tracker_sync_result(stage),
+        "error": tracker_sync_error(stage),
+    })
+
+
+def _sync_tracker_background(stage):
+    from linkedin_tracker import sync_tracker_stage
+
+    error = None
+    result = None
+    try:
+        result = sync_tracker_stage(stage)
+    except Exception as e:
+        logging.exception("sync linkedin tracker (%s) failed", stage)
+        error = str(e) or e.__class__.__name__
+    finally:
+        added_ids = (result or {}).get("added_ids") or []
+        # "已投递"列表同步进来的职位，LinkedIn 上已经是投过的了，职达这边也该同步反映成
+        # 「已投递」，不然会一直显示"待投"——跟职位卡片上手动点"我投了"走的是同一个函数
+        # （models.set_application_status），会顺带记 applied_at；这个时间戳只能是"同步
+        # 这一刻"，不是真实投递日期（LinkedIn 页面上没有稳定可解析的投递日期字段），
+        # 「超7天该跟进」提醒的判断基准会因此从这一刻开始算，不是真实投递时间，
+        # 这点在 README 里向用户说明。"已收藏"列表不做这个处理，沿用原来入库即"新"的状态。
+        if stage == "applied" and added_ids:
+            for job_id in added_ids:
+                set_application_status(job_id, "applied")
+        if added_ids and not resume_store.has_base_resume():
+            # 跟 add_jobs_by_url_route 同样的取舍：职位已经入库了，只是没法自动算匹配度，
+            # 用一个字段告诉前端，不要因为这个下游前置条件把入库结果本身也当成失败。
+            result["need_resume"] = True
+            result["need_resume_message"] = "已同步入库，但还没上传简历，暂时无法自动分析匹配度。"
+        finish_tracker_sync(stage, result=result, error=error)
+        if added_ids and resume_store.has_base_resume():
+            to_analyze = queue_pending_jobs(job_ids=added_ids, enforce_relevance=False)
+            threading.Thread(
+                target=_analyze_pending_jobs_background, kwargs={"jobs": to_analyze}, daemon=True
+            ).start()
+            threading.Thread(
+                target=_classify_company_origins_background, kwargs={"job_ids": added_ids}, daemon=True
+            ).start()
+
+
+@app.route("/api/jobs/sync_tracker/<stage>", methods=["POST"])
+def sync_tracker_route(stage):
+    """同步 LinkedIn jobs-tracker 列表（stage="saved" 已收藏 / "applied" 已投递）到职达。
+
+    整个流程（开浏览器扫列表 + 逐条抓详情入库）放后台线程跑，请求立刻返回——跟
+    "添加链接"（同步等待、逐条报告结果）不同，这里没法给用户一个"贴完立刻看到结果"的
+    体验：列表可能有几十上百条，光是扫这个列表滚动加载就可能要一两分钟，再加上逐条抓
+    详情，同步等待会让请求挂太久。前端改用轮询 GET 同一路径查进度，参照体检
+    （resume_review）的既有模式。
+    """
+    from linkedin_tracker import SUPPORTED_STAGES
+
+    if stage not in SUPPORTED_STAGES:
+        return jsonify({"error": f"暂不支持同步这个列表：{stage}"}), 404
+    if not start_tracker_sync(stage):
+        return jsonify({"error": "上一次同步还在进行中，请稍等它完成"}), 409
+    threading.Thread(target=_sync_tracker_background, kwargs={"stage": stage}, daemon=True).start()
+    return jsonify({"started": True})
+
+
+def _how_you_fit_search_exists(search_id):
+    cfg = load_config()
+    return any(s.get("id") == search_id for s in (cfg.get("linkedin_how_you_fit_searches") or []))
+
+
+@app.route("/api/jobs/sync_how_you_fit/<search_id>", methods=["GET"])
+def get_how_you_fit_sync_status_route(search_id):
+    """轮询单条 How You Fit 搜索的同步状态，跟 get_tracker_sync_status_route 同一个模式。
+    search_id 不在当前配置里返回404（比如另一个标签页早已把它删了）。"""
+    if not _how_you_fit_search_exists(search_id):
+        return jsonify({"error": "这条 How You Fit 搜索不存在（可能已被删除）"}), 404
+    return jsonify({
+        "syncing": how_you_fit_syncing(search_id),
+        "result": how_you_fit_sync_result(search_id),
+        "error": how_you_fit_sync_error(search_id),
+    })
+
+
+def _finish_how_you_fit_added(added_ids, result):
+    """单条/批量同步共用的收尾：入库后排队分析+公司分类，跟 _sync_tracker_background
+    一样，但没有"已投递"那种业务分支——How You Fit 结果就是普通候选职位，入库后状态
+    照常是"新/待审核"。"""
+    if added_ids and not resume_store.has_base_resume():
+        result["need_resume"] = True
+        result["need_resume_message"] = "已同步入库，但还没上传简历，暂时无法自动分析匹配度。"
+    if added_ids and resume_store.has_base_resume():
+        to_analyze = queue_pending_jobs(job_ids=added_ids, enforce_relevance=False)
+        threading.Thread(
+            target=_analyze_pending_jobs_background, kwargs={"jobs": to_analyze}, daemon=True
+        ).start()
+        threading.Thread(
+            target=_classify_company_origins_background, kwargs={"job_ids": added_ids}, daemon=True
+        ).start()
+
+
+def _sync_how_you_fit_background(search_id):
+    from linkedin_how_you_fit import sync_search
+
+    error = None
+    result = None
+    try:
+        result = sync_search(search_id)
+    except Exception as e:
+        logging.exception("sync linkedin how-you-fit search (%s) failed", search_id)
+        error = str(e) or e.__class__.__name__
+    finally:
+        added_ids = (result or {}).get("added_ids") or []
+        if result is not None:
+            _finish_how_you_fit_added(added_ids, result)
+        finish_how_you_fit_sync(search_id, result=result, error=error)
+
+
+@app.route("/api/jobs/sync_how_you_fit/<search_id>", methods=["POST"])
+def sync_how_you_fit_route(search_id):
+    """同步单条 LinkedIn How You Fit 搜索到职达，结构跟 sync_tracker_route 一致
+    （后台线程跑 + 轮询查进度）。"""
+    if not _how_you_fit_search_exists(search_id):
+        return jsonify({"error": "这条 How You Fit 搜索不存在（可能已被删除）"}), 404
+    if not start_how_you_fit_sync(search_id):
+        return jsonify({"error": "上一次同步还在进行中，请稍等它完成"}), 409
+    threading.Thread(target=_sync_how_you_fit_background, kwargs={"search_id": search_id}, daemon=True).start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/jobs/sync_how_you_fit_all", methods=["GET"])
+def get_how_you_fit_batch_status_route():
+    return jsonify({
+        "syncing": how_you_fit_batch_syncing(),
+        "result": how_you_fit_batch_result(),
+        "error": how_you_fit_batch_error(),
+    })
+
+
+def _sync_how_you_fit_all_background():
+    from linkedin_how_you_fit import sync_all_enabled_searches
+
+    error = None
+    summary = None
+    try:
+        summary = sync_all_enabled_searches()
+    except Exception as e:
+        logging.exception("sync all linkedin how-you-fit searches failed")
+        error = str(e) or e.__class__.__name__
+    finally:
+        all_added_ids = []
+        for entry in (summary or {}).values():
+            all_added_ids += (entry.get("result") or {}).get("added_ids") or []
+        placeholder_result = {"added_ids": all_added_ids, "summary": summary}
+        if all_added_ids:
+            _finish_how_you_fit_added(all_added_ids, placeholder_result)
+        finish_how_you_fit_batch(result=placeholder_result, error=error)
+
+
+@app.route("/api/jobs/sync_how_you_fit_all", methods=["POST"])
+def sync_how_you_fit_all_route():
+    """手动"立即同步全部"入口：跟每日定时任务用的是同一个
+    linkedin_how_you_fit.sync_all_enabled_searches()，用户配好搜索不用等到第二天
+    定时任务才能验证生效。跟单条同步共用同一个并发锁的上一层（这里是批量锁，单条
+    同步有各自独立的锁），两者可能同时被触发时不强行互斥——sync_search() 内部真正
+    的并发保护来自登录 profile 目录的独占锁（EasyApplyInProgress）。"""
+    if not start_how_you_fit_batch():
+        return jsonify({"error": "上一次批量同步还在进行中，请稍等它完成"}), 409
+    threading.Thread(target=_sync_how_you_fit_all_background, daemon=True).start()
+    return jsonify({"started": True})
 
 
 @app.route("/api/jobs/analyze_all", methods=["POST"])

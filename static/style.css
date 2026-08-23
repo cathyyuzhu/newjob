@@ -305,6 +305,58 @@ body {
 .checklist-card.open .checklist-body { grid-template-rows: 1fr; }
 .checklist-body-inner { overflow: hidden; padding: 0 1.1rem; }
 .checklist-card.open .checklist-body-inner { padding: 0 1.1rem 0.9rem; }
+
+/* 「今日待办」跟「每周转化率」并排放一行（讨论于 2026-08-22），860px 以下退回上下堆叠 */
+.today-row { display: flex; align-items: flex-start; gap: 0.9rem; margin: 0 0 1.1rem; }
+.today-row .checklist-card { flex: 1.3 1 0; margin: 0; }
+
+/* ---------- 每周转化率／「投递分析」卡片（讨论于 2026-08-22） ----------
+   折叠机制原样照抄「今日待办」的 grid-template-rows: 0fr → 1fr 技巧（见上面
+   .checklist-body 的注释），两处独立各写一份而不是共用类名，因为字号/间距跟
+   宽度只有一半的这张卡不一样，硬共用类名反而要到处加例外。
+   数字字体：最初套用了「品牌英文小字」那类 uppercase 徽标用的 var(--font-mono)，
+   反馈字体不对——那是给短标签用的，这里是嵌在中文整句里的数字，应该跟
+   .funnel b 一样走正文字体加粗，只用 tabular-nums 保证数字对齐，不整体换等宽字体。 */
+.weekly-conv-card {
+  flex: 1 1 0; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-elevated); overflow: hidden;
+}
+.wc-head {
+  display: flex; align-items: center; justify-content: space-between; cursor: pointer;
+  padding: 0.75rem 1.1rem; user-select: none;
+}
+.wc-head-left { display: flex; align-items: center; gap: 0.55rem; }
+.wc-chevron { width: 15px; height: 15px; color: var(--text-muted); transition: transform 0.15s ease; flex-shrink: 0; }
+.weekly-conv-card.open .wc-chevron { transform: rotate(90deg); }
+.wc-card-title { font-size: 0.85rem; font-weight: 700; }
+.wc-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.2s ease; }
+.weekly-conv-card.open .wc-body { grid-template-rows: 1fr; }
+.wc-body-inner { overflow: hidden; padding: 0 1.1rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.weekly-conv-card.open .wc-body-inner { padding: 0 1.1rem 0.9rem; }
+.wc-summary { font-size: 0.85rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
+.wc-summary b { font-weight: 700; color: var(--text); }
+.wc-summary .pct { color: var(--primary); font-weight: 600; }
+.wc-summary .sep { opacity: 0.4; padding: 0 0.3rem; }
+.wc-summary .declined { color: var(--warning-strong); }
+.wc-chart { display: flex; flex-direction: column; gap: 0.4rem; }
+.wk-row { display: grid; grid-template-columns: 76px 1fr 46px; align-items: center; gap: 0.5rem; font-size: 0.78rem; font-variant-numeric: tabular-nums; }
+.wk-label { color: var(--text-muted); font-size: 0.72rem; }
+.wk-label small { display: block; font-size: 0.64rem; opacity: 0.85; color: var(--primary); }
+.wk-track { position: relative; height: 16px; background: var(--bg-subtle); border-radius: 4px; overflow: hidden; }
+.wk-fill-total { position: absolute; inset: 0; background: var(--border); border-radius: 4px; }
+.wk-fill-conv { position: absolute; inset: 0; background: var(--primary); border-radius: 4px; }
+.wk-nums { text-align: right; font-size: 0.74rem; color: var(--text-muted); }
+.wc-accumulating {
+  font-size: 0.72rem; color: var(--text-muted); background: var(--bg-subtle);
+  border: 1px dashed var(--border); border-radius: 6px; padding: 0.4rem 0.55rem;
+}
+.wc-suggestion ul { margin: 0; padding-left: 1.05rem; display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.8rem; }
+.wc-suggestion li.caution { color: var(--text-muted); }
+@media (max-width: 860px) {
+  .today-row { flex-direction: column; }
+  .today-row .checklist-card, .weekly-conv-card { width: 100%; }
+}
 .checklist-items { display: flex; flex-direction: column; gap: 0.15rem; }
 .checklist-row {
   display: flex; align-items: center; gap: 0.6rem;
@@ -398,6 +450,21 @@ textarea:focus, input:focus, select:focus {
 .switch-row { display: flex; align-items: center; gap: 0.35rem; margin-right: 0.3rem; cursor: pointer; }
 .switch-row input[type=checkbox] { width: auto; accent-color: var(--primary); }
 .switch-row span { color: var(--text-muted); font-size: 0.85rem; }
+
+/* LinkedIn How You Fit 搜索列表（设置页）：名字+URL+启用开关+两个图标按钮一行，
+   每条搜索占一行网格，小屏幕换行；下面 .hyf-status 单独占一整行展示同步结果 */
+#howYouFitList { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem; }
+.hyf-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+.hyf-row .hyf-status { grid-column: 1 / -1; margin: -0.1rem 0 0; }
+.hyf-sync-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+@media (max-width: 720px) {
+  .hyf-row { grid-template-columns: 1fr; }
+}
 
 /* 设置页里"一行文字 + 一个控件靠右"的行（外观、当前简历） */
 .appearance-row, .settings-resume-row {

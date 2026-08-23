@@ -396,3 +396,148 @@ def resume_review_generating():
 def resume_review_error():
     with _lock:
         return _resume_review_error
+
+
+# LinkedIn jobs-tracker 列表同步状态（"已收藏"/"已投递"，见 linkedin_tracker.py）——
+# 跟题库起草（_bank_generating/_bank_error）同一个模式：全局单例、同一时刻最多跑一次
+# （要开一次真实浏览器扫列表，重复跑除了浪费时间，两次浏览器还会抢同一个登录 profile
+# 的独占锁，后一次必然报错）。多存一个 result 是因为这个操作没有像题库/体检那样落库
+# 的地方，前端只能靠这里拿到"抓到几条/入库几条"的汇总数字，不像 add_by_url 那样能在
+# 同一次HTTP请求里同步拿到结果。
+#
+# 按 stage（"saved"/"applied"）分开存一份，而不是全局共用一份：这两个列表是用户会
+# 分别独立触发的两件事，共用一份状态会导致"正在同步已收藏"时误报"已投递也在同步中"、
+# 或者一个的结果覆盖另一个还没被前端看到的结果。真正的并发互斥交给 Chromium 对
+# profile 目录的独占锁（linkedin_tracker._launch_context 抛 EasyApplyInProgress）—
+# 这里的按 stage 分离只是为了让前端状态展示不串台，不是完整的并发保护。
+_tracker_sync = {
+    "saved": {"syncing": False, "result": None, "error": None},
+    "applied": {"syncing": False, "result": None, "error": None},
+}
+
+
+def start_tracker_sync(stage):
+    with _lock:
+        state = _tracker_sync[stage]
+        if state["syncing"]:
+            return False
+        state["syncing"] = True
+        state["error"] = None
+        return True
+
+
+def finish_tracker_sync(stage, result=None, error=None):
+    with _lock:
+        state = _tracker_sync[stage]
+        state["syncing"] = False
+        if error is None:
+            state["result"] = result
+        else:
+            state["error"] = error
+
+
+def tracker_syncing(stage):
+    with _lock:
+        return _tracker_sync[stage]["syncing"]
+
+
+def tracker_sync_result(stage):
+    with _lock:
+        return _tracker_sync[stage]["result"]
+
+
+def tracker_sync_error(stage):
+    with _lock:
+        return _tracker_sync[stage]["error"]
+
+
+# LinkedIn "How You Fit" 搜索同步状态——跟 _tracker_sync 同一个"syncing/result/error
+# 三件套+全局锁"模式，区别是 key（search_id）是用户自定义、数量不固定的，没法像
+# _tracker_sync 那样在模块加载时预先列出来，改成第一次访问某个 search_id 时才用
+# setdefault 现建一份默认状态。
+_how_you_fit_sync = {}
+
+
+def _how_you_fit_state(search_id):
+    return _how_you_fit_sync.setdefault(search_id, {"syncing": False, "result": None, "error": None})
+
+
+def start_how_you_fit_sync(search_id):
+    with _lock:
+        state = _how_you_fit_state(search_id)
+        if state["syncing"]:
+            return False
+        state["syncing"] = True
+        state["error"] = None
+        return True
+
+
+def finish_how_you_fit_sync(search_id, result=None, error=None):
+    with _lock:
+        state = _how_you_fit_state(search_id)
+        state["syncing"] = False
+        if error is None:
+            state["result"] = result
+        else:
+            state["error"] = error
+
+
+def how_you_fit_syncing(search_id):
+    with _lock:
+        return _how_you_fit_state(search_id)["syncing"]
+
+
+def how_you_fit_sync_result(search_id):
+    with _lock:
+        return _how_you_fit_state(search_id)["result"]
+
+
+def how_you_fit_sync_error(search_id):
+    with _lock:
+        return _how_you_fit_state(search_id)["error"]
+
+
+def discard_how_you_fit_state(search_id):
+    """设置页删掉某条搜索配置时调用，清掉对应的状态条目，避免这个内存字典随着
+    "新增又删除"的操作无限增长（实际量级不大，属于卫生性清理，不是必须）。"""
+    with _lock:
+        _how_you_fit_sync.pop(search_id, None)
+
+
+# LinkedIn "How You Fit" 批量同步（"立即同步全部"按钮 + 每日定时任务共用同一把锁）
+# ——防止跟单条同步、或另一次批量同步撞车（撞车本身不会数据错乱，但两边都要开登录态
+# 浏览器，同时跑意义不大还加重限流风险）。
+_how_you_fit_batch = {"syncing": False, "result": None, "error": None}
+
+
+def start_how_you_fit_batch():
+    with _lock:
+        if _how_you_fit_batch["syncing"]:
+            return False
+        _how_you_fit_batch["syncing"] = True
+        _how_you_fit_batch["error"] = None
+        return True
+
+
+def finish_how_you_fit_batch(result=None, error=None):
+    with _lock:
+        _how_you_fit_batch["syncing"] = False
+        if error is None:
+            _how_you_fit_batch["result"] = result
+        else:
+            _how_you_fit_batch["error"] = error
+
+
+def how_you_fit_batch_syncing():
+    with _lock:
+        return _how_you_fit_batch["syncing"]
+
+
+def how_you_fit_batch_result():
+    with _lock:
+        return _how_you_fit_batch["result"]
+
+
+def how_you_fit_batch_error():
+    with _lock:
+        return _how_you_fit_batch["error"]

@@ -70,11 +70,23 @@ python app.py
 
 ### 自动分析功能（可选，需要 API key）
 
-网页上"自动分析"按钮需要设置：
+网页上"自动分析"按钮需要设置 `ANTHROPIC_API_KEY`（或 `DEEPSEEK_API_KEY`，看 `config.json` 里 `llm_provider` 配的是哪家）。
+
+**一定要用 `setx` 持久化写入，不要用 `$env:` 临时设置**：
 ```powershell
-$env:ANTHROPIC_API_KEY = "sk-ant-xxxxx"
+setx DEEPSEEK_API_KEY "sk-xxxxx"
 ```
-不设置这个的话，定时搜索、待审核列表功能完全不受影响，只有点"自动分析"会报错提示未设置。
+`$env:DEEPSEEK_API_KEY = "sk-xxxxx"` 只在当前这一个终端窗口里有效，窗口一关就没了——之前每天定时分析报"未设置环境变量"就是这么踩的坑。`setx` 写进注册表用户环境变量，永久生效，但**只对之后新开的进程生效**。
+
+不设置这个的话，定时搜索、待审核列表功能完全不受影响，只有自动分析/手动点"AI 分析"会报错提示未设置。
+
+**关键提醒：改了环境变量之后，必须完全关掉正在跑的 `python app.py` 进程（连带关闭它所在的终端/IDE 窗口），再重新启动。** Windows 的环境变量只在进程创建那一刻继承一次快照，已经在跑的进程感知不到之后的 `setx`——哪怕 `setx` 已经把值写进注册表，旧进程每天定时分析时用的还是没有 key 的旧环境，会一直失败。判断当前跑着的进程是不是"旧的"：
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Select-Object ProcessId, CommandLine, CreationDate
+```
+对比 `CreationDate` 和你设置/修改 key 的时间，进程比 key 早创建的话就必须重启。
+
+另外发现过一次奇怪现象：`.venv\Scripts\python.exe app.py` 启动后，会立刻自己额外 spawn 出一个用系统全局 Python（`AppData\Local\Programs\Python\Python312\python.exe`）跑的子进程，两边命令行都是 `app.py`，父子关系明确（子进程的 `ParentProcessId` 就是那个 venv 进程）。代码里没找到任何主动 `subprocess`/自我重启逻辑，原因还没查清楚，目前观察下来子进程能正常继承父进程的环境变量、不影响功能，先记录一下，以后遇到端口冲突或行为诡异可以从这里查起。
 
 ## 7. 已知限制 / 边界（重要，别忘了）
 

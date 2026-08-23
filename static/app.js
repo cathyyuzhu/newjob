@@ -162,6 +162,7 @@ async function loadConfig() {
   document.getElementById('locations').value = (cfg.locations || []).join('\n');
   document.getElementById('linkedinTargetCompanies').value = (cfg.linkedin_target_companies || []).map((c) => c.name).join('\n');
   renderTargetCompanyStatus(cfg.linkedin_target_companies || []);
+  renderHowYouFitRows(cfg.linkedin_how_you_fit_searches || []);
   document.getElementById('country_indeed').value = cfg.country_indeed || '';
   document.getElementById('results_wanted').value = cfg.results_wanted;
   document.getElementById('days_old').value = cfg.days_old;
@@ -202,6 +203,170 @@ function renderTargetCompanyStatus(list) {
   el.textContent = parts.join(' · ');
 }
 
+// ---------- LinkedIn "How You Fit" 搜索列表（设置页，2026-08-23）----------
+// 跟「重点关注公司」同一类"额外抓取来源"，但每条要存名字+URL+启用开关三样东西，
+// 一行 textarea 放不下，改成逐行结构化小列表：增删改都是本地DOM操作，随「保存设置」
+// 一起提交（见 collectHowYouFitSearches()）；单条"立即同步"是独立于保存设置之外的
+// 即时操作，走跟 syncTrackerStage() 一样的"POST启动+GET轮询"模式。
+
+function howYouFitRowHtml(search) {
+  const id = search.id || '';
+  const name = escapeHtml(search.name || '');
+  const url = escapeHtml(search.url || '');
+  const checked = search.enabled !== false ? 'checked' : '';
+  return `
+    <div class="hyf-row" data-id="${escapeHtml(id)}">
+      <input class="hyf-name" type="text" placeholder="名字，比如 Director PM - 北京" value="${name}">
+      <input class="hyf-url" type="text" placeholder="https://www.linkedin.com/jobs/search-results/?showHowYouFit=HOW_YOU_FIT&..." value="${url}">
+      <label class="switch-row"><input class="hyf-enabled" type="checkbox" ${checked}> 启用</label>
+      <button type="button" class="icon-btn hyf-sync-btn" title="立即同步这一条" onclick="syncHowYouFitRow(this)" ${id ? '' : 'disabled'}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+      <button type="button" class="icon-btn hyf-remove-btn" title="删除这一条" onclick="removeHowYouFitRow(this)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+      <span class="hyf-status field-hint"></span>
+    </div>`;
+}
+
+function renderHowYouFitRows(searches) {
+  const container = document.getElementById('howYouFitList');
+  container.innerHTML = searches.map(howYouFitRowHtml).join('');
+  // 页面刷新/换标签页打开时，如果某条正在后台同步中，接着轮询而不是显示成空闲态
+  // ——跟「同步已收藏/已投递」按钮的处理是同一个理由（见下面 DOMContentLoaded 那段）。
+  const rows = container.querySelectorAll('.hyf-row');
+  searches.forEach((search, i) => {
+    if (!search.id) return;
+    fetch(`/api/jobs/sync_how_you_fit/${search.id}`).then((r) => r.json()).then((data) => {
+      if (!data.syncing) return;
+      const row = rows[i];
+      const btn = row.querySelector('.hyf-sync-btn');
+      setBtnLoading(btn, '');
+      pollHowYouFitSync(search.id, btn, row.querySelector('.hyf-status'));
+    }).catch(() => {});
+  });
+}
+
+function addHowYouFitRow() {
+  document.getElementById('howYouFitList').insertAdjacentHTML('beforeend', howYouFitRowHtml({}));
+}
+
+function removeHowYouFitRow(btn) {
+  btn.closest('.hyf-row').remove();
+}
+
+function collectHowYouFitSearches() {
+  return Array.from(document.querySelectorAll('#howYouFitList .hyf-row')).map((row) => ({
+    id: row.dataset.id || undefined,
+    name: row.querySelector('.hyf-name').value.trim(),
+    url: row.querySelector('.hyf-url').value.trim(),
+    enabled: row.querySelector('.hyf-enabled').checked,
+  })).filter((s) => s.name || s.url); // 整行留空就不提交，避免白占数量上限
+}
+
+async function syncHowYouFitRow(btn) {
+  const row = btn.closest('.hyf-row');
+  const searchId = row.dataset.id;
+  if (!searchId) {
+    showToast('请先保存设置，这条搜索有了 id 才能同步', 'error');
+    return;
+  }
+  const statusEl = row.querySelector('.hyf-status');
+  setBtnLoading(btn, '');
+  try {
+    const res = await fetch(`/api/jobs/sync_how_you_fit/${searchId}`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '未知错误');
+    statusEl.textContent = '同步中…（要开一次登录态浏览器，可能需要一两分钟）';
+    pollHowYouFitSync(searchId, btn, statusEl);
+  } catch (e) {
+    showToast(`同步失败：${e.message}`, 'error');
+    restoreBtn(btn);
+  }
+}
+
+async function pollHowYouFitSync(searchId, btn, statusEl, { intervalMs = 4000, timeoutMs = 240000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    let data;
+    try {
+      data = await (await fetch(`/api/jobs/sync_how_you_fit/${searchId}`)).json();
+    } catch (e) {
+      continue; // 单次轮询失败不放弃，下一轮再试
+    }
+    if (data.syncing) continue;
+    restoreBtn(btn);
+    if (data.error) {
+      statusEl.textContent = `同步失败：${data.error}`;
+      showToast(`同步失败：${data.error}`, 'error', 8000);
+      return;
+    }
+    const result = data.result;
+    if (!result) {
+      statusEl.textContent = '同步已结束，但没有拿到结果（程序可能刚好重启过）';
+      return;
+    }
+    const results = result.results || [];
+    const added = results.filter((r) => r.status === 'added').length;
+    const dup = results.filter((r) => r.status === 'duplicate').length;
+    const failed = results.filter((r) => r.status === 'failed').length;
+    statusEl.textContent = `共找到 ${result.total_found} 条 · 新入库 ${added} 条 · 已存在 ${dup} 条 · 失败 ${failed} 条`;
+    showToast(statusEl.textContent, failed ? 'error' : 'success', 8000);
+    if (result.need_resume) handleNeedResume({ need_resume: true, error: result.need_resume_message });
+    loadJobs();
+    return;
+  }
+  restoreBtn(btn);
+  statusEl.textContent = '仍在后台同步中，可稍后再看一眼结果';
+}
+
+async function syncHowYouFitAll() {
+  const btn = document.getElementById('syncHowYouFitAllBtn');
+  setBtnLoading(btn, '同步中…');
+  try {
+    const res = await fetch('/api/jobs/sync_how_you_fit_all', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '未知错误');
+    showToast('已在后台开始依次同步所有已启用的 How You Fit 搜索，可能需要几分钟', 'info', 6000);
+    pollHowYouFitAll(btn);
+  } catch (e) {
+    showToast(`同步失败：${e.message}`, 'error');
+    restoreBtn(btn);
+  }
+}
+
+async function pollHowYouFitAll(btn, { intervalMs = 4000, timeoutMs = 600000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    let data;
+    try {
+      data = await (await fetch('/api/jobs/sync_how_you_fit_all')).json();
+    } catch (e) {
+      continue;
+    }
+    if (data.syncing) continue;
+    restoreBtn(btn);
+    if (data.error) {
+      showToast(`批量同步失败：${data.error}`, 'error', 8000);
+      return;
+    }
+    const summary = (data.result && data.result.summary) || {};
+    const addedTotal = ((data.result && data.result.added_ids) || []).length;
+    const errorCount = Object.values(summary).filter((s) => s.error).length;
+    showToast(
+      `How You Fit 批量同步完成：新入库 ${addedTotal} 条${errorCount ? `，${errorCount} 条搜索失败` : ''}`,
+      errorCount ? 'error' : 'success', 8000,
+    );
+    if (data.result && data.result.need_resume) handleNeedResume({ need_resume: true, error: data.result.need_resume_message });
+    loadJobs();
+    return;
+  }
+  restoreBtn(btn);
+  showToast('仍在后台批量同步中，可稍后再看一眼结果', 'info', 6000);
+}
+
 function parseExtraAnswers(text) {
   // 每行"关键词=答案"，允许答案本身包含等号（只在第一个等号处切分）。之前遇到过
   // 用户习惯性用冒号（问题文字本身常带冒号，比如"...Bachelor's Degree?："）而不是
@@ -236,6 +401,7 @@ async function saveConfig() {
     keywords: document.getElementById('keywords').value.split('\n'),
     locations: document.getElementById('locations').value.split('\n'),
     linkedin_target_companies: document.getElementById('linkedinTargetCompanies').value.split('\n'),
+    linkedin_how_you_fit_searches: collectHowYouFitSearches(),
     country_indeed: document.getElementById('country_indeed').value,
     results_wanted: document.getElementById('results_wanted').value,
     days_old: document.getElementById('days_old').value,
@@ -258,6 +424,8 @@ async function saveConfig() {
     if (!res.ok) throw new Error('保存失败');
     const savedCfg = await res.json();
     renderTargetCompanyStatus(savedCfg.linkedin_target_companies || []);
+    // 重新渲染：新增的搜索这时候才有后端生成的 id（保存前"立即同步"按钮是禁用的）
+    renderHowYouFitRows(savedCfg.linkedin_how_you_fit_searches || []);
     if (invalidLines.length) {
       // 静默丢弃过一次真实数据（用户以为设置没保存），现在必须显式告诉用户哪几行
       // 没解析成功，而不是只保存"看起来对"的那部分就算完事。
@@ -387,6 +555,78 @@ async function submitJobLinks() {
   }
 }
 
+// ---------- 同步 LinkedIn 收藏 / 已投递 ----------
+// 「已收藏」「已投递」两个 LinkedIn 列表结构一样，共用同一套逻辑，按 stage 参数
+// （"saved"/"applied"）区分按钮、接口路径、提示文案里的列表名。
+//
+// 跟「添加链接」的关键区别：那边是同步等一次 HTTP 请求就有逐条结果，这边要开一次真实
+// 浏览器扫列表，慢且耗时不确定，后端拆成"POST 启动 + GET 轮询状态"（见 app.py
+// sync_tracker_route 的说明），前端因此也要走轮询，不能像 submitJobLinks() 那样
+// 直接等 fetch 返回。结果格式跟 add_by_url 完全一样，直接复用 renderLinkResults() 和
+// 「添加链接」弹窗展示，不用另外新建一套结果 UI。
+const TRACKER_STAGE_META = {
+  saved: { btnId: 'syncSavedBtn', label: '收藏列表' },
+  applied: { btnId: 'syncAppliedBtn', label: '已投递列表' },
+};
+
+async function syncTrackerStage(stage) {
+  const meta = TRACKER_STAGE_META[stage];
+  const btn = document.getElementById(meta.btnId);
+  setBtnLoading(btn, '同步中…');
+  try {
+    const res = await fetch(`/api/jobs/sync_tracker/${stage}`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '未知错误');
+    showToast(`已在后台开始同步：要打开一次真实浏览器扫描${meta.label}，可能需要一两分钟，完成后会弹出结果`, 'info', 6000);
+    pollTrackerSync(stage, btn);
+  } catch (e) {
+    showToast(`同步失败：${e.message}`, 'error');
+    restoreBtn(btn);
+  }
+}
+
+async function pollTrackerSync(stage, btn, { intervalMs = 4000, timeoutMs = 240000 } = {}) {
+  const meta = TRACKER_STAGE_META[stage];
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    let data;
+    try {
+      data = await (await fetch(`/api/jobs/sync_tracker/${stage}`)).json();
+    } catch (e) {
+      continue; // 单次轮询失败不放弃，下一轮再试，别让一次网络抖动就中断整个等待
+    }
+    if (data.syncing) continue;
+    restoreBtn(btn);
+    if (data.error) {
+      showToast(`同步失败：${data.error}`, 'error', 8000);
+      return;
+    }
+    const result = data.result;
+    if (!result) {
+      showToast('同步已结束，但没有拿到结果（程序可能刚好重启过）', 'error');
+      return;
+    }
+    const results = result.results || [];
+    const added = results.filter((r) => r.status === 'added').length;
+    const dup = results.filter((r) => r.status === 'duplicate').length;
+    const failed = results.filter((r) => r.status === 'failed').length;
+    showToast(
+      `${meta.label}共找到 ${result.total_found} 条 · 新入库 ${added} 条 · 已存在 ${dup} 条 · 失败 ${failed} 条`,
+      failed ? 'error' : 'success', 8000,
+    );
+    if (results.length) {
+      renderLinkResults(results);
+      document.getElementById('addLinkModalOverlay').classList.add('active');
+    }
+    if (data.result && data.result.need_resume) handleNeedResume({ need_resume: true, error: data.result.need_resume_message });
+    loadJobs();
+    return;
+  }
+  restoreBtn(btn);
+  showToast('仍在后台同步中，可稍后再看一眼结果（不需要重新点一次）', 'info', 6000);
+}
+
 // ---------- jobs ----------
 // 状态筛选（新/已收藏/已忽略/全部）复用顶部统计卡片当筛选按钮，不再单独放一排chip
 // （见 filterByStatus()），只有"外企/国内公司/全部"这组还是独立的chip。
@@ -428,6 +668,20 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.split-btn')) closeRunNowMenu();
   });
+  // 同步状态是进程内状态（job_state.py），刷新页面/换个标签页打开不会丢——如果恰好在
+  // 别处点了同步之后又刷新了这一页，按钮应该接着显示"同步中…"并继续轮询，而不是显示
+  // 成空闲态、让用户误以为可以再点一次（点了会被后端 409 拒绝，体验上却很奇怪）。
+  // 「收藏」「已投递」各自独立检查，两个按钮互不影响。
+  Object.keys(TRACKER_STAGE_META).forEach((stage) => {
+    const meta = TRACKER_STAGE_META[stage];
+    fetch(`/api/jobs/sync_tracker/${stage}`).then((r) => r.json()).then((data) => {
+      if (data.syncing) {
+        const btn = document.getElementById(meta.btnId);
+        setBtnLoading(btn, '同步中…');
+        pollTrackerSync(stage, btn);
+      }
+    }).catch(() => {});
+  });
 });
 
 // 工具栏"刷新"按钮。批量重新获取JD、识别公司国籍这些后台任务跑完没有任何通知，
@@ -456,6 +710,7 @@ async function loadJobs(showSkeleton) {
     renderTagChips();
     renderJobs();
     renderChecklist();
+    renderWeeklyConversion();
     updateAiAnalyzeAllBtn();
     scheduleAnalyzingPoll();
   } catch (e) {
@@ -704,9 +959,6 @@ const CHECK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 const X_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
 const SEARCH_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>';
 // SPARK_ICON 挪到 common.js 了（题库/简历/职位详情页也要用，不止这一页）
-const STAR_PATH = '<path d="m12 3.2 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6-4.4-4.3 6.1-.9L12 3.2z"/>';
-const STAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAR_PATH}</svg>`;
-const STAR_ICON_FILLED = `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAR_PATH}</svg>`;
 const REFETCH_ICON ='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/></svg>';
 
 // 星标按钮对所有状态的卡片都渲染（"已忽略"卡片虽然会隐藏其它操作按钮，这个也保留）——
@@ -863,22 +1115,36 @@ function renderJobs() {
   const starredJobs = rest.filter((j) => j.starred).sort(byScoreDesc);
   const otherJobs = rest.filter((j) => !j.starred).sort(byScoreDesc);
 
+  // 详情页「忽略」后要跳到列表里的下一条（见 job_detail.js 的 getNextJobId），
+  // 这里把当前渲染顺序（只算可点进详情的）存下来，跨页面导航靠 sessionStorage 传。
   let html = '';
-  if (heroJob) html += jobCardHtml(heroJob, { hero: true });
+  const order = [];
+  if (heroJob) { html += jobCardHtml(heroJob, { hero: true }); order.push(heroJob.id); }
   if (starredJobs.length) {
     html += `<div class="job-group-head">${STAR_ICON_FILLED}重点关注 <span class="n">${starredJobs.length}</span></div>`;
     html += starredJobs.map((j) => jobCardHtml(j)).join('');
+    starredJobs.forEach((j) => { if (j.overall_match != null) order.push(j.id); });
   }
   if (otherJobs.length) {
     if (heroJob || starredJobs.length) html += `<div class="job-group-head plain">其余职位</div>`;
     // 只在"其余职位"里做相似分组折叠（2026-08-18）：重点关注是已经逐条决定过要盯的，
     // 折叠起来会违背标星的本意；hero 是全场最高分单条拎出来，同理不折叠。真正需要
     // 折叠的场景是"同公司一次开了一堆相近岗位"，恰好都还没决定，落在这个分组里。
-    html += groupJobsForRender(otherJobs)
+    const grouped = groupJobsForRender(otherJobs);
+    html += grouped
       .map((entry) => (entry.type === 'group' ? similarGroupHtml(entry.jobs) : jobCardHtml(entry.job)))
       .join('');
+    grouped.forEach((entry) => {
+      const jobs = entry.type === 'group' ? entry.jobs : [entry.job];
+      jobs.forEach((j) => { if (j.overall_match != null) order.push(j.id); });
+    });
   }
   list.innerHTML = html;
+  saveJobListOrder(order);
+}
+
+function saveJobListOrder(order) {
+  try { sessionStorage.setItem('jobListOrder', JSON.stringify(order)); } catch (e) { /* 存储不可用就算了，详情页会退回原来的行为 */ }
 }
 
 // 按后端算好的 similar_group_id 把职位聚成 [{type:'single',job} | {type:'group',jobs}]，
@@ -893,7 +1159,11 @@ function groupJobsForRender(jobs) {
     }
     if (seen.has(j.similar_group_id)) continue;
     seen.add(j.similar_group_id);
-    out.push({ type: 'group', jobs: jobs.filter((x) => x.similar_group_id === j.similar_group_id) });
+    const members = jobs.filter((x) => x.similar_group_id === j.similar_group_id);
+    // 分组伙伴可能被当前筛选（比如"已收藏"联动的待投状态）过滤掉了，这时候不该把剩下
+    // 这一条渲染成一个折叠的"1 个相似职位"——那样看起来像个空壳分组，职位本身反而被
+    // 藏进了需要点开才能看到的 <details> 里，等于筛选结果里"看不见"这条职位。
+    out.push(members.length >= 2 ? { type: 'group', jobs: members } : { type: 'single', job: j });
   }
   return out;
 }
@@ -1089,10 +1359,7 @@ async function setJobStatus(id, status, previousStatus = null) {
 
 async function setJobStarred(id, starred) {
   try {
-    const res = await fetch(`/api/jobs/${id}/starred`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ starred }),
-    });
-    if (!res.ok) throw new Error((await res.json()).error || '未知错误');
+    await postJobStarred(id, starred);
     showToast(starred ? '已标记为「重点关注」' : '已取消「重点关注」', 'success', 2000);
   } catch (e) {
     showToast(`操作失败：${e.message}`, 'error');
@@ -1195,6 +1462,15 @@ function renderChecklist() {
   if (pendingApply && !dismissedToday.has('apply')) {
     rows.push(checklistRowHtml('apply', `${pendingApply} 条已收藏、还没投递`, `focusChecklistStatus('reviewed', 'not_applied')`));
   }
+  // 面试中的职位：跟 pendingReview/pendingApply 一样直接用 allJobs 现算。勾选框只是
+  // "今天先别提醒"（dismissChecklistItemToday 按日期分 key），面试状态没变的话明天还会
+  // 再出现，直到投递状态改掉；点文字是跳转去面试准备页，不会连带勾掉（checklistRowHtml
+  // 已经处理了这个）。
+  allJobs.filter((j) => j.application_status === 'interviewing').forEach((j) => {
+    const key = `interview-${j.id}`;
+    if (dismissedToday.has(key)) return;
+    rows.push(checklistRowHtml(key, `准备《${j.title}》@ ${j.company} 的面试`, `window.open('/jobs/${j.id}/interview', '_blank')`));
+  });
   (checklistExtra.followups || []).forEach((f) => {
     const key = `followup-${f.job_id}`;
     if (dismissedToday.has(key)) return;
@@ -1223,7 +1499,7 @@ function renderChecklist() {
     rows.push(`
       <label class="checklist-row">
         <input type="checkbox" onchange="deleteChecklistItem(${item.id})">
-        <span class="checklist-text">${escapeHtml(item.content)}</span>
+        <span class="checklist-text" onclick="event.preventDefault();">${escapeHtml(item.content)}</span>
       </label>`);
   });
 
@@ -1240,6 +1516,10 @@ function renderChecklist() {
 // 不用记住上次开关状态（见 index.html 里 checklist-card 默认带的 open class）。
 function toggleChecklist() {
   document.getElementById('checklistCard').classList.toggle('open');
+}
+
+function toggleWeeklyConv() {
+  document.getElementById('weeklyConvCard').classList.toggle('open');
 }
 
 async function addChecklistItem() {
@@ -1329,6 +1609,141 @@ function renderFunnel(runs) {
     `<span>重复 ${duplicate}</span><i>→</i>` +
     `<b>新增 ${added}</b>`;
   el.style.display = 'flex';
+}
+
+// ---------- 每周转化率（讨论于 2026-08-22，从最初的多维度拆分版精简而来）----------
+// 用户反馈：不需要按关键词/公司类型/匹配分拆的细表，只要「最近一周投递到了哪一步」的
+// 一行汇总 + 一张自然周趋势图 + 一段规则式建议。数据直接用已经加载的 allJobs，不发新请求，
+// 也不接 LLM——这里是几条阈值判断，量级跟「偏好档案」那种真正需要语言理解的分析不一样。
+// 「最近一周」用滚动7天（贴近"现在"），趋势图用自然周分桶（周一对齐，能稳定累积成柱子）——
+// 两种口径都用是因为各自服务的目的不一样，统一成一种会顾此失彼。
+const WEEKLY_CONV_MS = 7 * 24 * 3600 * 1000;
+
+function _weekStartOf(ms) {
+  const d = new Date(ms);
+  const mondayOffset = (d.getDay() + 6) % 7; // 周一 = 0
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - mondayOffset);
+  return d.getTime();
+}
+
+// 投递时间用 applied_at；没有时间戳的旧记录（投递状态跟踪功能上线前就已标记为「已投递」）
+// 不退回 first_seen——那样会推算出一个比真实投递更早、样本量又只有一两条的虚假周份。
+// 讨论后决定：这类记录直接并入目前已知最早的真实投递周，不单独起一周。
+function computeWeeklyConversion(jobs) {
+  const applied = jobs.filter((j) => j.application_status && j.application_status !== 'not_applied');
+  const dated = applied.filter((j) => j.applied_at);
+  if (!dated.length) return { summary: null, weeks: [], starred: null };
+
+  const earliestWeekStart = Math.min(...dated.map((j) => _weekStartOf(new Date(j.applied_at).getTime())));
+  const byWeek = new Map();
+  applied.forEach((j) => {
+    const weekStart = j.applied_at ? Math.max(_weekStartOf(new Date(j.applied_at).getTime()), earliestWeekStart) : earliestWeekStart;
+    if (!byWeek.has(weekStart)) byWeek.set(weekStart, []);
+    byWeek.get(weekStart).push(j);
+  });
+  const weeks = [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(([weekStart, weekJobs]) => ({
+    weekStart,
+    total: weekJobs.length,
+    advanced: weekJobs.filter((j) => j.application_status === 'interviewing' || j.application_status === 'offer').length,
+  }));
+
+  // 「最近一周」按当前状态计数（schema 不记历史轨迹，「已拒绝/已婉拒」分不清是投完直接
+  // 被拒还是面试后被拒，跟前端其它地方一致地接受这个局限，不单独处理）。
+  const cutoff = Date.now() - WEEKLY_CONV_MS;
+  const recent = applied.filter((j) => {
+    const ms = j.applied_at ? new Date(j.applied_at).getTime() : null;
+    return ms ? ms >= cutoff : true; // 没有时间戳的旧记录一律计入，避免漏统计
+  });
+  const countBy = (status) => recent.filter((j) => j.application_status === status).length;
+  const interviewing = countBy('interviewing');
+  const summary = {
+    total: recent.length,
+    interviewing,
+    interviewingPct: recent.length ? Math.round((interviewing / recent.length) * 1000) / 10 : 0,
+    offer: countBy('offer'),
+    rejected: countBy('rejected'),
+    declined: countBy('declined'),
+  };
+
+  const rateOf = (list) => {
+    const adv = list.filter((j) => j.application_status === 'interviewing' || j.application_status === 'offer').length;
+    return { n: list.length, adv, rate: list.length ? adv / list.length : null };
+  };
+  const starred = {
+    starred: rateOf(recent.filter((j) => j.starred)),
+    unstarred: rateOf(recent.filter((j) => !j.starred)),
+  };
+
+  return { summary, weeks, starred };
+}
+
+function generateWeeklySuggestion(data) {
+  if (!data.summary) return [];
+  const notes = [];
+  let hasSignal = false;
+
+  if (data.summary.total < 20) {
+    notes.push({ cls: 'caution', text: '样本还小（累计投递不到20条），下面几条先记着，别急着据此大改策略。' });
+  }
+  const { starred, unstarred } = data.starred;
+  if (starred.n >= 3 && unstarred.n >= 3 && starred.rate !== null && unstarred.rate !== null && starred.rate - unstarred.rate >= 0.1) {
+    const sp = Math.round(starred.rate * 1000) / 10;
+    const up = Math.round(unstarred.rate * 1000) / 10;
+    notes.push({ text: `已标星职位的面试转化率明显更高（标星 ${sp}% vs 未标星 ${up}%）——优先把时间花在标星的职位上，减少"顺手投投看"的凑数投递。` });
+    hasSignal = true;
+  }
+  if (data.summary.declined > 0) {
+    notes.push({ text: `本周出现 ${data.summary.declined} 次因个人原因（如薪资不达预期）婉拒——同量级公司投递前，可以先摸一下这个职能的薪资范围，别等电话沟通才发现不匹配。` });
+    hasSignal = true;
+  }
+  if (!hasSignal) {
+    notes.push({ cls: 'caution', text: '目前数据没有明显信号，继续观察，暂不需要调整。' });
+  }
+  return notes;
+}
+
+function renderWeeklyConversion() {
+  const card = document.getElementById('weeklyConvCard');
+  if (!card) return;
+  const data = computeWeeklyConversion(allJobs);
+  if (!data.summary || !data.summary.total) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+
+  const s = data.summary;
+  document.getElementById('weeklyConvSummary').innerHTML =
+    `最近一周投递 <b>${s.total}</b> 条<span class="sep">·</span>面试中 <b>${s.interviewing}</b> <span class="pct">(${s.interviewingPct}%)</span>` +
+    `<span class="sep">·</span>offer <b>${s.offer}</b><span class="sep">·</span>已拒绝 <b>${s.rejected}</b>` +
+    (s.declined ? `<span class="sep">·</span><span class="declined">被本人婉拒 <b>${s.declined}</b></span>` : '');
+
+  const maxTotal = Math.max(...data.weeks.map((w) => w.total), 1);
+  const currentWeekStart = _weekStartOf(Date.now());
+  const rowsHtml = data.weeks.map((w) => {
+    const d = new Date(w.weekStart);
+    const label = `${d.getMonth() + 1}/${d.getDate()}`;
+    const isCurrent = w.weekStart === currentWeekStart;
+    const totalPct = Math.round((w.total / maxTotal) * 100);
+    const advPct = Math.round((w.advanced / maxTotal) * 100);
+    return `<div class="wk-row">
+      <span class="wk-label">${label} 那周${isCurrent ? '<small>进行中</small>' : ''}</span>
+      <div class="wk-track">
+        <div class="wk-fill-total" style="width:${totalPct}%;"></div>
+        <div class="wk-fill-conv" style="width:${advPct}%;"></div>
+      </div>
+      <span class="wk-nums">${w.total} 条</span>
+    </div>`;
+  }).join('');
+  const accumulatingNote = data.weeks.length < 3
+    ? `<div class="wc-accumulating">数据积累中：目前只有 ${data.weeks.length} 周记录，趋势要再攒 2-3 周才看得出来。</div>`
+    : '';
+  document.getElementById('weeklyConvChart').innerHTML = rowsHtml + accumulatingNote;
+
+  const suggestions = generateWeeklySuggestion(data);
+  document.getElementById('weeklyConvSuggestion').innerHTML =
+    `<ul>${suggestions.map((n) => `<li class="${n.cls || ''}">${n.text}</li>`).join('')}</ul>`;
 }
 
 // reqListHtml 搬进了 common.js（跟职位详情页共用）。

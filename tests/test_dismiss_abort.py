@@ -62,7 +62,15 @@ resume_docx.read_resume_text = lambda path: "[0] Cathy Yang\n[1] 产品经理"
 
 fake_resume = os.path.join(tmpdir, "base.docx")
 open(fake_resume, "wb").close()
-config.save_config({**config.DEFAULT_CONFIG, "base_resume_path": fake_resume})
+# tracker_xlsx_path 必须指到隔离的临时文件，不能留空——留空会解析成真实的
+# ~/Downloads/JD匹配追踪表.xlsx，见 test_add_by_url.py 同一处注释里的线上事故说明：
+# 这个测试会跑真实的批量分析循环、往追踪表写入，留空撞上正在运行的真实 app.py 就会
+# 两边同时写同一个文件，把它写坏。
+config.save_config({
+    **config.DEFAULT_CONFIG,
+    "base_resume_path": fake_resume,
+    "tracker_xlsx_path": os.path.join(tmpdir, "tracker.xlsx"),
+})
 
 import job_state
 import pipeline

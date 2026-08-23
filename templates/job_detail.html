@@ -21,6 +21,22 @@
     </div>
     <div class="topbar-actions">
       <a class="btn btn-secondary btn-sm" href="/">← 返回职位列表</a>
+      <!-- 跟列表页卡片上的星标按钮是同一个开关（见 static/app.js 的 starButtonHtml），
+           只是详情页停留时间更长，标不标经常是看完详情才决定的，所以头部单独放一个。
+           标签用「重点关注」而不是「收藏」，跟列表页 statCardReviewed 的「已收藏」（那是
+           application_status=reviewed，另一个维度）区分开，避免同名不同义。 -->
+      <button class="btn btn-secondary btn-sm" id="detailStarBtn" onclick="toggleDetailStarred()" title="标记为重点关注">
+        <span id="detailStarIcon"></span>
+        <span id="detailStarLabel">重点关注</span>
+      </button>
+      <!-- 从"待审核"列表点进详情页的场景本来就没有"标记已收藏"的入口（列表卡片上有，
+           详情页原来没有），得先返回列表才能点。跟"忽略"共用同一套"先执行、给撤销、
+           自动跳到列表原顺序下一条"的逻辑（见 setStatusFromDetailPage()），已收藏之后
+           不再显示这个按钮（跟列表卡片一致，按了也没有意义）。 -->
+      <button class="btn btn-secondary btn-sm" id="detailReviewBtn" onclick="reviewFromDetailPage()" title="标记为已收藏（可在提示条上撤销）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+        已收藏
+      </button>
       <!-- 看完详情决定"不投"是这个页面最常见的出口之一，不用先返回列表再去找那张卡片点忽略。
            走跟列表一样的"先执行、给撤销"，不弹二次确认（见 dismissFromDetailPage()）。 -->
       <button class="btn btn-secondary btn-sm" id="detailDismissBtn" onclick="dismissFromDetailPage()" title="标记为已忽略（可在提示条上撤销）">

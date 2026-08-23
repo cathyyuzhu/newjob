@@ -47,7 +47,13 @@ import config as _cfg
 
 _fake_resume = os.path.join(tmpdir, "base.docx")
 open(_fake_resume, "wb").close()
-_cfg.save_config({**_cfg.DEFAULT_CONFIG, "base_resume_path": _fake_resume})
+# tracker_xlsx_path 必须指到隔离的临时文件，不能留空——留空会解析成真实的
+# ~/Downloads/JD匹配追踪表.xlsx，见 tests/test_add_by_url.py 同一处注释里的线上事故说明。
+_cfg.save_config({
+    **_cfg.DEFAULT_CONFIG,
+    "base_resume_path": _fake_resume,
+    "tracker_xlsx_path": os.path.join(tmpdir, "tracker.xlsx"),
+})
 
 import interview
 import pipeline  # noqa: F401  （让 app.py 里的 pipeline 引用拿到同一个已 patch 的 llm）

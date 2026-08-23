@@ -356,8 +356,13 @@ _TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+|[一-鿿]")
 _TITLE_STOPWORDS = {
     "senior", "sr", "junior", "jr", "manager", "product", "the", "and", "of",
     "for", "a", "an", "to", "in", "on", "at", "with", "tech", "ai", "team",
-    "lead", "staff", "principal",
+    "lead", "staff", "principal", "cn",
 }
+# "cn" 加入于 2026-08-22：AlphaLife Sciences 的「Technical Product Manager (CN)」
+# 和「Sr. Product Manager (CN)」被误判成相似职位——"sr"/"product"/"manager" 都是
+# 已有的停用词，"Sr..." 那条去掉这些之后就只剩下 "cn"，跟另一条唯一的共同词，
+# Jaccard 相似度算出 1/2=0.5 刚好压线。"(CN)" 只是地区标记，不代表岗位方向，
+# 不该被当成有区分度的词。
 # 2026-08-18 用真实数据验证的阈值：能分开 Amazon 一批近似 AI PM 岗位（相似度 0.5~1.0），
 # 同时不会误合并产品线完全不同的职位（如 Blizzard 的 Hearthstone/WoW 两个团队经理，
 # 相似度 0.33，正确地没被合并）。

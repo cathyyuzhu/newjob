@@ -13,21 +13,36 @@ _job_id = "daily_job_search"
 
 
 def _run_job():
+    # jobspy 搜索（访客身份 HTTP 请求）和 How You Fit 同步（登录态浏览器会话）是两个
+    # 独立的风险源，互相没有因果关系——前者失败不该连累后者，所以这里不再像原来那样
+    # jobspy 一失败就直接 return 跳过后面所有步骤，而是各自 try/except、用
+    # new_job_ids 累积两边找到的新职位，一起喂给后面的分析/公司分类。
+    new_job_ids = []
     try:
         result = run_search_once()
+        new_job_ids += result.get("new_job_ids") or []
         logger.info("daily search done: %s", result)
     except Exception:
         logger.exception("daily search failed")
-        return
 
     try:
-        analyzed_count = analyze_pending_jobs(job_ids=result.get("new_job_ids"))
+        from linkedin_how_you_fit import sync_all_enabled_searches
+
+        hyf_summary = sync_all_enabled_searches()
+        for entry in hyf_summary.values():
+            new_job_ids += (entry.get("result") or {}).get("added_ids") or []
+        logger.info("how-you-fit sync after daily search: %s", hyf_summary)
+    except Exception:
+        logger.exception("how-you-fit sync after daily search failed")
+
+    try:
+        analyzed_count = analyze_pending_jobs(job_ids=new_job_ids)
         logger.info("auto-analyzed %s pending job(s)", analyzed_count)
     except Exception:
         logger.exception("auto-analyze after daily search failed")
 
     try:
-        classify_result = classify_company_origins(job_ids=result.get("new_job_ids"))
+        classify_result = classify_company_origins(job_ids=new_job_ids)
         logger.info("company origin classify after daily search: %s", classify_result)
     except Exception:
         logger.exception("company origin classify after daily search failed")

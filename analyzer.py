@@ -10,6 +10,12 @@ the xlsx tracker.
 """
 import llm
 
+REQUIRED_ANALYZE_KEYS = (
+    "company_overview", "job_content_bullets", "requirement_items", "skill_matched_bullets",
+    "skill_gap_bullets", "experience_years", "industry_bullets", "salary", "team_bullets",
+    "location", "company_origin", "cognitive_match", "content_match",
+)
+
 PROMPT_TEMPLATE = """你是一个JD-简历匹配分析助手，严格按以下规则分析。
 
 ## 简历原文（每行前面的 [数字] 是该段落在原始docx文件中的索引，仅供你在需要修改该段落时引用，不要在输出的文本里保留这个索引标记）：
@@ -97,6 +103,33 @@ COMPANY_ORIGIN_PROMPT = """判断下面这些公司分别属于："foreign"（�
 """
 
 
+def validate_analysis_result(result):
+    """结构校验：保证 analyze_job() 从 LLM 拿到的 JSON 长得跟 PROMPT_TEMPLATE 要求的一样
+    （字段齐全、分数在 [0,1] 范围内、requirement_items 里每条都有 is_gap 布尔值），不满足
+    就抛错——不能让缺字段或越界分数悄悄写进追踪表/数据库。以前这份校验只存在于
+    evals/run_analyzer_eval.py 的离线评测里，没接入这里的生产调用路径。"""
+    problems = []
+    for key in REQUIRED_ANALYZE_KEYS:
+        if key not in result:
+            problems.append(f"缺字段 {key}")
+    if problems:
+        raise RuntimeError(f"AI 返回的分析结果结构不完整：{'; '.join(problems)}")
+
+    for score_key in ("cognitive_match", "content_match"):
+        v = result[score_key]
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0 <= v <= 1):
+            problems.append(f"{score_key}={v!r} 不是 [0,1] 范围内的数")
+    if not isinstance(result["requirement_items"], list):
+        problems.append("requirement_items 不是数组")
+    else:
+        for item in result["requirement_items"]:
+            if not isinstance(item, dict) or not isinstance(item.get("is_gap"), bool):
+                problems.append(f"requirement_items 里有条目缺 is_gap 或不是 bool：{item!r}")
+                break
+    if problems:
+        raise RuntimeError(f"AI 返回的分析结果不符合规范：{'; '.join(problems)}")
+
+
 def classify_companies(companies, model=None, provider="anthropic"):
     """轻量批量判断一批公司名的国籍归属，只需要公司名（不需要JD/简历），比完整的
     analyze_job() 匹配分析快得多、几乎不花钱——用于在职位还没跑完整AI匹配分析之前，
@@ -123,6 +156,7 @@ def analyze_job(company, title, jd_text, resume_text, model=None, provider="anth
         preference_profile_block=preference_profile_block,
     )
     result = llm.ask_json(prompt, provider=provider, model=model)
+    validate_analysis_result(result)
 
     cognitive = float(result.get("cognitive_match", 0))
     content = float(result.get("content_match", 0))

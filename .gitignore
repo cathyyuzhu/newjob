@@ -9,3 +9,4 @@ resumes/
 .playwright_profile/
 *.log
 .claude/settings.local.json
+evals/reports/

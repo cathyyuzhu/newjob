@@ -68,6 +68,29 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
             添加链接
           </button>
+          <!-- 同步 LinkedIn 收藏/已投递：跟「添加链接」同一类"补自动搜索漏掉的职位"入口，
+               区别是这个不用手动挨条复制链接——开一次登录态的浏览器把对应列表扫一遍，
+               找到的链接走跟「添加链接」完全相同的入库流程。要求本机之前手动登录过
+               LinkedIn（见 README「同步 LinkedIn 收藏/已投递怎么用」），没登录过会在
+               结果里报错提示。两个按钮共用 syncTrackerStage()，只是传的 stage 不同。 -->
+          <button type="button" id="syncSavedBtn" onclick="closeRunNowMenu(); syncTrackerStage('saved');"
+            title="打开一次登录态的浏览器，扫一遍你在 LinkedIn 上「已收藏」的职位列表，把里面的职位链接同步进待审核。首次使用前需要先手动登录过 LinkedIn，见 README">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            同步 LinkedIn 收藏
+          </button>
+          <button type="button" id="syncAppliedBtn" onclick="closeRunNowMenu(); syncTrackerStage('applied');"
+            title="打开一次登录态的浏览器，扫一遍你在 LinkedIn 上「已投递」的职位列表，同步进职达并自动标记投递状态为「已投递」。投递时间只能记成同步这一刻，不是你在 LinkedIn 上实际投递的日期。首次使用前需要先手动登录过 LinkedIn，见 README">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            同步 LinkedIn 已投递
+          </button>
+          <!-- How You Fit 全部搜索：跟每日定时任务用的是同一个后端函数
+               （linkedin_how_you_fit.sync_all_enabled_searches()），让用户配好搜索
+               条目后不用等到第二天定时任务才能验证生效（2026-08-23）。 -->
+          <button type="button" id="syncHowYouFitAllBtn" onclick="closeRunNowMenu(); syncHowYouFitAll();"
+            title="依次同步「设置」里配置的所有已启用的 How You Fit 搜索。要开登录态浏览器逐条扫描，条与条之间会节流等待，可能需要几分钟。首次使用前需要先手动登录过 LinkedIn，见 README">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            同步 How You Fit 全部搜索
+          </button>
         </div>
       </div>
       <button class="btn btn-primary btn-sm" id="aiAnalyzeAllBtn" onclick="toggleAnalyzeAll()"
@@ -133,21 +156,43 @@
        （followups/自定义待办/简历体检状态由 loadChecklist() 拉一次 /api/checklist 缓存）。
        默认展开（class="open" 写死在标签上，不读 localStorage）——每次刷新都想让用户先
        看一眼今天有什么事，看完自己收起，不用记住上次的开关状态。 -->
-  <div class="checklist-card open" id="checklistCard">
-    <div class="checklist-head" onclick="toggleChecklist()">
-      <div class="checklist-head-left">
-        <svg class="checklist-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
-        <span class="checklist-title">今日待办</span>
-        <span class="checklist-count" id="checklistCount" style="display:none;">0</span>
+  <div class="today-row">
+    <div class="checklist-card open" id="checklistCard">
+      <div class="checklist-head" onclick="toggleChecklist()">
+        <div class="checklist-head-left">
+          <svg class="checklist-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+          <span class="checklist-title">今日待办</span>
+          <span class="checklist-count" id="checklistCount" style="display:none;">0</span>
+        </div>
+      </div>
+      <div class="checklist-body">
+        <div class="checklist-body-inner">
+          <div class="checklist-items" id="checklistItems"></div>
+          <div class="checklist-add-row">
+            <input type="text" id="checklistInput" placeholder="+ 添加一条待办" maxlength="200"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();addChecklistItem();}">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="addChecklistItem()">添加</button>
+          </div>
+        </div>
       </div>
     </div>
-    <div class="checklist-body">
-      <div class="checklist-body-inner">
-        <div class="checklist-items" id="checklistItems"></div>
-        <div class="checklist-add-row">
-          <input type="text" id="checklistInput" placeholder="+ 添加一条待办" maxlength="200"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();addChecklistItem();}">
-          <button type="button" class="btn btn-secondary btn-sm" onclick="addChecklistItem()">添加</button>
+
+    <!-- 每周转化率（讨论于 2026-08-22）：跟「今日待办」并排放右侧，同样是扫一眼就有数
+         的信息。renderWeeklyConversion() 在 loadJobs() 拿到 allJobs 后调用，纯前端算，
+         不额外发请求。「最近一周」用滚动7天，下面周趋势图用自然周分桶——两种口径都用
+         是因为一个要贴近"现在"，一个要能稳定累积成柱子，统一成一种会顾此失彼。 -->
+    <div class="weekly-conv-card open" id="weeklyConvCard" style="display:none;">
+      <div class="wc-head" onclick="toggleWeeklyConv()">
+        <div class="wc-head-left">
+          <svg class="wc-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+          <span class="wc-card-title">投递分析</span>
+        </div>
+      </div>
+      <div class="wc-body">
+        <div class="wc-body-inner">
+          <div class="wc-summary" id="weeklyConvSummary"></div>
+          <div class="wc-chart" id="weeklyConvChart"></div>
+          <div class="wc-suggestion" id="weeklyConvSuggestion"></div>
         </div>
       </div>
     </div>
@@ -308,6 +353,24 @@
               <textarea id="linkedinTargetCompanies" rows="3" placeholder="Amazon&#10;HSBC&#10;Riot Games"></textarea>
               <p class="field-hint">额外对这些公司单独跑一次 LinkedIn 定向搜索，不受关键词搜索的排名/条数上限影响——沿用上面的关键词，不用重复填。保存时会解析成 LinkedIn 内部 ID，公司别配太多（5~8 家为宜），解析结果见下方。</p>
               <p class="field-hint" id="targetCompanyStatus"></p>
+            </div>
+            <!-- LinkedIn "How You Fit"（个人档案匹配）搜索同步（2026-08-23）：登录态下
+                 LinkedIn 基于你的档案算出的"你可能符合条件"搜索结果页，跟「重点关注公司」
+                 一样是额外抓取来源，但每条要存名字+URL+启用开关三样东西，textarea 放不下，
+                 改成逐行结构化的小列表，增删改都在本地DOM操作，随「保存设置」一起提交
+                 （见 collectHowYouFitSearches()）。扫描失败时后端会自动升级给一个AI导航
+                 兜底重新判断页面，这是项目里第一次真正的LLM自主决策循环，见
+                 spec/tech-solution.md「关键决策」一节。 -->
+            <div class="field span-2">
+              <label>LinkedIn 个人匹配搜索（How You Fit）</label>
+              <p class="field-hint">
+                登录态下 LinkedIn 基于你的档案判断"你可能符合条件"的搜索结果页——在 LinkedIn
+                上打开该视图后复制地址栏完整链接贴到下面。<strong>这是登录态自动化操作</strong>
+                ，已加同步间隔节流和数量上限（最多 8 条），但仍有账号风险，不要配太多条。
+                首次使用前需要先手动登录过 LinkedIn，见 README。
+              </p>
+              <div id="howYouFitList"></div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="addHowYouFitRow()">+ 添加一条</button>
             </div>
             <div class="field">
               <label>Indeed 国家代码</label>

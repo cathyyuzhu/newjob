@@ -211,6 +211,63 @@ def _call_deepseek(messages, model, system=None, max_tokens=None):
     return choice["message"]["content"]
 
 
+def _call_anthropic_tools(messages, tools, model, system=None, max_tokens=None):
+    from anthropic import Anthropic
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "未设置 ANTHROPIC_API_KEY 环境变量，无法调用Claude API做自动匹配分析。"
+        )
+    client = Anthropic(api_key=api_key)
+    model_id = model or DEFAULT_ANTHROPIC_MODEL
+    spec = MODELS_BY_ID.get(model_id, {})
+    kwargs = {
+        "model": model_id,
+        "max_tokens": max_tokens or spec.get("max_tokens") or DEFAULT_ANTHROPIC_MAX_TOKENS,
+        "messages": messages,
+        "tools": tools,
+        # 强制模型每轮必须选一个工具，不允许只回文字不调用——这个循环里"什么都不做
+        # 只说话"不是一个有意义的状态，agent 存在的意义就是每轮都要给出下一步动作。
+        "tool_choice": {"type": "any"},
+    }
+    if spec.get("no_thinking"):
+        kwargs["thinking"] = {"type": "disabled"}
+    if system:
+        kwargs["system"] = system
+    resp = client.messages.create(**kwargs)
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise RuntimeError(TRUNCATED_HINT + f"（本次 max_tokens={kwargs['max_tokens']}）")
+    return resp
+
+
+def chat_tool_step(messages, tools, model=None, system=None, max_tokens=None):
+    """单轮 Anthropic tool-use 调用（只支持 anthropic——DeepSeek 的工具调用协议不同，
+    目前唯一消费者 linkedin_how_you_fit.py 只需要一个 provider 能跑起来，provider
+    不可配置是刻意的范围收缩，不是遗漏）。
+
+    messages 是完整对话历史（含之前轮次的 assistant tool_use / user tool_result），
+    tools 是 Anthropic tools schema。返回：
+    {"stop_reason": str, "content_blocks": [...], "tool_use": {"id","name","input"} | None}
+    - content_blocks 是原始 assistant content（原始 SDK content block 对象列表），
+      调用方要原样存回 messages 才能续接下一轮对话，否则模型不知道自己刚才说过什么。
+    - tool_use 是本轮模型选中的工具调用；因为传了 tool_choice={"type": "any"}
+      强制模型每轮必须选一个工具，正常情况下不会是 None——为 None 说明模型没有
+      按预期调用工具，调用方应该当成异常处理，不能假设一定有。
+    """
+    resp = _call_anthropic_tools(messages, tools, model, system=system, max_tokens=max_tokens)
+    tool_use = None
+    for block in resp.content:
+        if getattr(block, "type", None) == "tool_use":
+            tool_use = {"id": block.id, "name": block.name, "input": block.input}
+            break
+    return {
+        "stop_reason": resp.stop_reason,
+        "content_blocks": resp.content,
+        "tool_use": tool_use,
+    }
+
+
 def chat(messages, provider="anthropic", model=None, system=None, max_tokens=None):
     """messages: [{"role": "user"|"assistant", "content": str}]，返回模型回复的纯文本。
 
