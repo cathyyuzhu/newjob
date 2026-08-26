@@ -105,21 +105,23 @@ function toggleTagFilter(tag) {
   renderJobs();
 }
 
-// ---------- more modal (settings / runs) ----------
-function openMoreModal(subtab = 'settings') {
+// ---------- more modal (settings: left-nav sections + runs log) ----------
+function openMoreModal(section = 'search') {
   document.getElementById('moreModalOverlay').classList.add('active');
-  switchMoreTab(subtab);
+  switchSettingsSection(section);
+  loadPreferenceProfile();
 }
 
 function closeMoreModal() {
   document.getElementById('moreModalOverlay').classList.remove('active');
 }
 
-function switchMoreTab(subtab) {
-  document.querySelectorAll('.modal-tabs .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.moretab === subtab));
-  document.querySelectorAll('#moreModalOverlay .tab-panel').forEach((p) => p.classList.toggle('active', p.id === `moreSubpanel-${subtab}`));
-  if (subtab === 'runs') loadRuns();
-  if (subtab === 'settings') loadPreferenceProfile();
+function switchSettingsSection(section) {
+  document.querySelectorAll('.settings-nav .nav-item').forEach((b) => b.classList.toggle('active', b.dataset.section === section));
+  document.querySelectorAll('.settings-content .settings-panel').forEach((p) => p.classList.toggle('active', p.dataset.panel === section));
+  // 运行记录是只读日志，不走「保存设置」，切过去时把保存按钮连同它的行一起藏起来
+  document.getElementById('settingsFooter').style.display = section === 'runs' ? 'none' : 'flex';
+  if (section === 'runs') loadRuns();
 }
 
 // ---------- 偏好档案 ----------
@@ -166,6 +168,7 @@ async function loadConfig() {
   document.getElementById('country_indeed').value = cfg.country_indeed || '';
   document.getElementById('results_wanted').value = cfg.results_wanted;
   document.getElementById('days_old').value = cfg.days_old;
+  document.getElementById('email_scan_interval_days').value = cfg.email_scan_interval_days;
   document.getElementById('schedule_enabled').checked = cfg.schedule_enabled !== false;
   document.getElementById('schedule_hour').value = cfg.schedule_hour;
   document.getElementById('schedule_minute').value = cfg.schedule_minute;
@@ -394,6 +397,13 @@ function parseExtraAnswers(text) {
 }
 
 async function saveConfig() {
+  if (!document.getElementById('country_indeed').value.trim()) {
+    // 清空这个字段保存会让 jobspy 对每个关键词×城市组合都直接报错，整次抓取found=0
+    // 却不容易被发现（2026-08-24 实测踩过）——本地就近拦掉，不必等一次网络往返。
+    showToast('"Indeed 国家代码"不能留空，否则会导致抓取整体失败', 'error');
+    openMoreModal('search');
+    return;
+  }
   const btn = document.getElementById('saveConfigBtn');
   setBtnLoading(btn, '保存中…');
   const { parsed: extraAnswers, invalidLines } = parseExtraAnswers(document.getElementById('ea_extra_answers').value);
@@ -405,6 +415,7 @@ async function saveConfig() {
     country_indeed: document.getElementById('country_indeed').value,
     results_wanted: document.getElementById('results_wanted').value,
     days_old: document.getElementById('days_old').value,
+    email_scan_interval_days: document.getElementById('email_scan_interval_days').value,
     schedule_enabled: document.getElementById('schedule_enabled').checked,
     schedule_hour: document.getElementById('schedule_hour').value,
     schedule_minute: document.getElementById('schedule_minute').value,
@@ -421,8 +432,8 @@ async function saveConfig() {
   };
   try {
     const res = await fetch('/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!res.ok) throw new Error('保存失败');
     const savedCfg = await res.json();
+    if (!res.ok) throw new Error(savedCfg.error || '保存失败');
     renderTargetCompanyStatus(savedCfg.linkedin_target_companies || []);
     // 重新渲染：新增的搜索这时候才有后端生成的 id（保存前"立即同步"按钮是禁用的）
     renderHowYouFitRows(savedCfg.linkedin_how_you_fit_searches || []);
@@ -451,7 +462,7 @@ async function runNow() {
   const keywords = document.getElementById('keywords').value.split('\n').map((s) => s.trim()).filter(Boolean);
   if (keywords.length === 0) {
     showToast('请先填写搜索设置里的关键词', 'error');
-    openMoreModal('settings');
+    openMoreModal('search');
     return;
   }
   const btn = document.getElementById('runNowBtn');
@@ -464,6 +475,16 @@ async function runNow() {
     // 搜索本身不需要简历，所以这里是 200 而不是 409——职位已经抓到了，只是没法自动
     // 算匹配度。额外提示一条，不掩盖上面那条"搜索完成"。
     if (res.need_resume) handleNeedResume({ need_resume: true, error: res.need_resume_message });
+    // 「智能抓取」顺带触发的 How You Fit 批量同步（2026-08-23，见 app.py trigger_search）：
+    // 跟专门的「同步 How You Fit 全部搜索」按钮共用同一套后端状态和轮询逻辑，这里只是
+    // 换一个触发入口，UI 上复用那颗按钮的 loading 态，让用户能在下拉菜单里看到进度，
+    // 而不是抓取完就悄悄在后台跑、用户完全无感知。
+    if (res.how_you_fit_started) {
+      showToast('已顺带在后台开始同步已启用的 How You Fit 搜索，进度看「智能抓取」下拉菜单里的按钮', 'info', 6000);
+      const hyfBtn = document.getElementById('syncHowYouFitAllBtn');
+      setBtnLoading(hyfBtn, '同步中…');
+      pollHowYouFitAll(hyfBtn);
+    }
   } catch (e) {
     showToast(`搜索失败：${e.message}`, 'error');
   } finally {
@@ -682,6 +703,16 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }).catch(() => {});
   });
+  // How You Fit 批量同步现在除了自己的按钮，也会被「智能抓取」顺带触发（见 runNow()），
+  // 所以恢复态检查更有必要了：换个标签页打开、或者点完智能抓取后刷新页面，都不该让
+  // 下拉菜单里的按钮显示成空闲态、误导用户以为同步已经结束或可以再点一次。
+  fetch('/api/jobs/sync_how_you_fit_all').then((r) => r.json()).then((data) => {
+    if (data.syncing) {
+      const btn = document.getElementById('syncHowYouFitAllBtn');
+      setBtnLoading(btn, '同步中…');
+      pollHowYouFitAll(btn);
+    }
+  }).catch(() => {});
 });
 
 // 工具栏"刷新"按钮。批量重新获取JD、识别公司国籍这些后台任务跑完没有任何通知，
@@ -1392,7 +1423,7 @@ async function setApplicationStatus(id, applicationStatus) {
 // 待审核/待生成材料/待投递三项直接用现成的 allJobs 现算（renderChecklist 每次 loadJobs()
 // 之后都会重跑一遍，天然保持新鲜）；后端算不出来的部分（超7天没跟进的投递、用户自建的
 // 待办、简历有没有体检过）拉一次 /api/checklist 缓存下来，不用每次都发请求。
-let checklistExtra = { followups: [], custom_items: [], resume_review_done: true, resume_review_ready: false, resume_review_id: null };
+let checklistExtra = { followups: [], custom_items: [], resume_review_done: true, resume_review_ready: false, resume_review_id: null, email_scan_due: false, email_scan_days_since: null, pending_rejections: [] };
 
 async function loadChecklist() {
   try {
@@ -1476,6 +1507,31 @@ function renderChecklist() {
     if (dismissedToday.has(key)) return;
     rows.push(checklistRowHtml(key, `《${f.title}》@ ${f.company} 投递超过7天了，该跟进一下`, `window.open('/jobs/${f.job_id}', '_blank')`));
   });
+  // 邮件拒信扫描提醒：这条没有站内页面可跳（扫描动作在 Claude Code 对话里做，不在网页里），
+  // 所以不走 checklistRowHtml 那套"点文字跳转"逻辑，纯文字 + 勾掉忽略今天。
+  if (checklistExtra.email_scan_due && !dismissedToday.has('email_scan')) {
+    const sinceText = checklistExtra.email_scan_days_since == null
+      ? '还没查过'
+      : `距上次查已经 ${checklistExtra.email_scan_days_since} 天`;
+    rows.push(`
+      <label class="checklist-row">
+        <input type="checkbox" onchange="dismissChecklistItemToday('email_scan')">
+        <span class="checklist-text">该查一次邮箱有没有拒信了（${sinceText}）——本机计划任务应该每天自动查，长时间没查可能是任务没跑，也可以在 Claude Code 对话里说一句"查一下邮箱"手动补一次</span>
+      </label>`);
+  }
+  // 本机计划任务无人值守扫描发现的疑似拒信：跟其它清单项不一样，这条是真实的待处理数据
+  // （pending_rejections 表），不是本地算出来的提醒，所以不走 checklistRowHtml 那套勾选框+
+  // localStorage 忽略今天的逻辑——两个按钮直接调接口，确认/忽略都是真状态变更，处理完这条
+  // 就从后端数据里消失了，不需要"今天先别提醒"这种临时状态。
+  (checklistExtra.pending_rejections || []).forEach((p) => {
+    const noteText = p.note ? `——${escapeHtml(p.note)}` : '';
+    rows.push(`
+      <div class="checklist-row checklist-row-pending-rejection">
+        <span class="checklist-text">疑似拒信：《${escapeHtml(p.title)}》@ ${escapeHtml(p.company)}${noteText}</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="confirmPendingRejection(${p.id})">确认是拒信</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="dismissPendingRejection(${p.id})">不是，忽略</button>
+      </div>`);
+  });
   if (!checklistExtra.resume_review_done && !dismissedToday.has('resume_review')) {
     rows.push(checklistRowHtml('resume_review', '还没做过简历体检，AI 能帮你挑出结构/成果/关键词/表达上的问题', `window.open('/resume', '_blank')`));
   }
@@ -1542,6 +1598,29 @@ async function addChecklistItem() {
 async function deleteChecklistItem(id) {
   try {
     const res = await fetch(`/api/checklist/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
+  } catch (e) {
+    showToast(`操作失败：${e.message}`, 'error');
+  } finally {
+    await loadChecklist();
+  }
+}
+
+async function confirmPendingRejection(id) {
+  try {
+    const res = await fetch(`/api/pending-rejections/${id}/confirm`, { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
+    await loadJobs();
+  } catch (e) {
+    showToast(`操作失败：${e.message}`, 'error');
+  } finally {
+    await loadChecklist();
+  }
+}
+
+async function dismissPendingRejection(id) {
+  try {
+    const res = await fetch(`/api/pending-rejections/${id}/dismiss`, { method: 'POST' });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || '未知错误');
   } catch (e) {
     showToast(`操作失败：${e.message}`, 'error');

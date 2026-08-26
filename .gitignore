@@ -4,6 +4,8 @@ __pycache__/
 venv/
 jobs.db
 jobs.db.bak*
+jobs.db-shm
+jobs.db-wal
 config.json
 resumes/
 .playwright_profile/

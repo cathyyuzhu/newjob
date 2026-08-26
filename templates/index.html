@@ -23,6 +23,10 @@
         title="通用面试题库：自我介绍、STAR 故事、讲述过往工作、通用问题（新标签页打开）">
         面试题库
       </a>
+      <a class="btn btn-secondary btn-plain btn-sm" id="practiceBtn" href="/interview/practice" target="_blank" rel="noopener"
+        title="上传准备文档，AI 出题，逐题语音作答并打分（新标签页打开）">
+        🎙️ 语音练习
+      </a>
       <a class="btn btn-secondary btn-plain btn-sm" id="resumeBtn" href="/resume" target="_blank" rel="noopener"
         title="我的简历：上传简历、跑 AI 体检、按建议生成优化版（新标签页打开）">
         我的简历
@@ -51,7 +55,7 @@
            ——添加链接用得比搜索/AI分析低频，合并进下拉能省一个按钮位（2026-08-18） -->
       <div class="split-btn">
         <button class="btn btn-primary btn-sm" id="runNowBtn" onclick="runNow()"
-          title="按「设置」里的关键词和城市，去 Indeed / LinkedIn 抓一轮新职位。抓到的新职位会自动排队做 AI 匹配分析，重复的和明显不相关的会直接跳过">
+          title="按「设置」里的关键词和城市，去 Indeed / LinkedIn 抓一轮新职位。抓到的新职位会自动排队做 AI 匹配分析，重复的和明显不相关的会直接跳过。如果配置了已启用的 How You Fit 搜索，会顺带在后台同步这些搜索（进度看下拉菜单里的按钮）">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           智能抓取
         </button>
@@ -87,7 +91,7 @@
                （linkedin_how_you_fit.sync_all_enabled_searches()），让用户配好搜索
                条目后不用等到第二天定时任务才能验证生效（2026-08-23）。 -->
           <button type="button" id="syncHowYouFitAllBtn" onclick="closeRunNowMenu(); syncHowYouFitAll();"
-            title="依次同步「设置」里配置的所有已启用的 How You Fit 搜索。要开登录态浏览器逐条扫描，条与条之间会节流等待，可能需要几分钟。首次使用前需要先手动登录过 LinkedIn，见 README">
+            title="依次同步「设置」里配置的所有已启用的 How You Fit 搜索。要开登录态浏览器逐条扫描，条与条之间会节流等待，可能需要几分钟。首次使用前需要先手动登录过 LinkedIn，见 README。点「智能抓取」主按钮也会顺带触发这个同步，这颗按钮的 loading 态是共用的">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
             同步 How You Fit 全部搜索
           </button>
@@ -303,224 +307,324 @@
 </div>
 
 <div class="modal-overlay" id="moreModalOverlay" onclick="if(event.target===this) closeMoreModal()">
-  <div class="modal">
+  <div class="modal modal-wide">
     <div class="modal-head">
-      <nav class="tabs modal-tabs">
-        <button class="tab-btn active" data-moretab="settings" onclick="switchMoreTab('settings')">设置</button>
-        <button class="tab-btn" data-moretab="runs" onclick="switchMoreTab('runs')">运行记录</button>
-      </nav>
+      <h3>设置</h3>
       <button class="icon-btn" onclick="closeMoreModal()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
       </button>
     </div>
-    <div class="modal-body">
 
-      <!-- ===== Settings subtab ===== -->
-      <section class="tab-panel active" id="moreSubpanel-settings">
-        <div class="card">
-          <div class="card-head">
-            <div>
+    <!-- 原来是「设置/运行记录」两个顶部标签 + 设置内里一整页长滚动 5 张卡片，内容太多
+         排不清（见 spec/roadmap.md「设置页重设计」条目）。改成左侧菜单，每类设置单独
+         一屏；原来「搜索设置」卡片里混了搜什么(关键词/城市/公司)、多久搜一次(定时)、
+         提醒(拒信检查间隔)、文件存哪(追踪表路径) 四种不同性质的东西，现在拆到
+         「搜索来源」「自动化与提醒」「简历与文件路径」三个菜单项里，AI模型卡片底部
+         的简历相关两项也一并挪去「简历与文件路径」——都是"文件放哪儿"，跟选模型是两回事。
+         各面板共享同一份表单字段（id 不变），保存设置一次性提交，不分面板保存。 -->
+    <div class="modal-main">
+      <aside class="settings-nav">
+        <div class="nav-group">
+          <div class="nav-group-label">设置</div>
+
+          <button class="nav-item active" data-section="appearance" onclick="switchSettingsSection('appearance')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+            外观
+          </button>
+
+          <button class="nav-item" data-section="search" onclick="switchSettingsSection('search')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            搜索来源
+          </button>
+
+          <button class="nav-item" data-section="auto" onclick="switchSettingsSection('auto')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+            自动化与提醒
+          </button>
+
+          <button class="nav-item" data-section="ai" onclick="switchSettingsSection('ai')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>
+            AI 模型
+          </button>
+
+          <button class="nav-item" data-section="files" onclick="switchSettingsSection('files')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>
+            简历与文件路径
+          </button>
+
+          <button class="nav-item" data-section="preference" onclick="switchSettingsSection('preference')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.35-9.5-8.8C.8 7.9 2.4 4.5 5.8 4.1c2-.24 3.7.9 4.6 2.4a1 1 0 0 0 1.2 0c.9-1.5 2.6-2.64 4.6-2.4 3.4.4 5 3.8 3.3 7.1C19 15.65 12 20 12 20Z"/></svg>
+            偏好档案
+          </button>
+
+          <button class="nav-item" data-section="easyapply" onclick="switchSettingsSection('easyapply')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8Z"/></svg>
+            Easy Apply 自动回答
+          </button>
+        </div>
+
+        <div class="nav-divider"></div>
+
+        <div class="nav-group">
+          <div class="nav-group-label">日志</div>
+          <button class="nav-item" data-section="runs" onclick="switchSettingsSection('runs')">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4M21 12v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h11"/></svg>
+            运行记录
+          </button>
+        </div>
+      </aside>
+
+      <div class="settings-content">
+        <div class="content-scroll">
+
+          <section class="settings-panel active" data-panel="appearance">
+            <div class="panel-head">
               <h2>外观</h2>
               <p>没手动选过就跟随系统的深浅色设置；选过之后记在本机浏览器里，换设备要重新选。</p>
             </div>
-          </div>
-          <div class="appearance-row">
-            <span>深色模式</span>
-            <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
-              <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
-            </button>
-          </div>
-        </div>
+            <div class="appearance-row">
+              <span>深色模式</span>
+              <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
+                <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+              </button>
+            </div>
+          </section>
 
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <h2>搜索设置</h2>
-              <p>按关键词 × 城市定时自动抓取 Indeed / LinkedIn 新职位，去重后存入待审核列表。</p>
+          <section class="settings-panel" data-panel="search">
+            <div class="panel-head">
+              <h2>搜索来源</h2>
+              <p>决定"智能抓取"到底去抓哪些职位——下面的关键词 × 城市网格搜索是主力，另外两种是针对性更强的补充来源。定时/多久跑一次在「自动化与提醒」里配。</p>
             </div>
-          </div>
-          <div class="form-grid">
-            <div class="field">
-              <label>关键词（每行一个）</label>
-              <textarea id="keywords" rows="4" placeholder="Senior Product Manager&#10;AI产品经理"></textarea>
-            </div>
-            <div class="field">
-              <label>城市（每行一个，留空一行表示不限地点/远程）</label>
-              <textarea id="locations" rows="4" placeholder="Beijing&#10;Shanghai&#10;Remote"></textarea>
-            </div>
-            <div class="field span-2">
-              <label>重点关注公司（每行一个，可选）</label>
-              <textarea id="linkedinTargetCompanies" rows="3" placeholder="Amazon&#10;HSBC&#10;Riot Games"></textarea>
-              <p class="field-hint">额外对这些公司单独跑一次 LinkedIn 定向搜索，不受关键词搜索的排名/条数上限影响——沿用上面的关键词，不用重复填。保存时会解析成 LinkedIn 内部 ID，公司别配太多（5~8 家为宜），解析结果见下方。</p>
-              <p class="field-hint" id="targetCompanyStatus"></p>
-            </div>
-            <!-- LinkedIn "How You Fit"（个人档案匹配）搜索同步（2026-08-23）：登录态下
-                 LinkedIn 基于你的档案算出的"你可能符合条件"搜索结果页，跟「重点关注公司」
-                 一样是额外抓取来源，但每条要存名字+URL+启用开关三样东西，textarea 放不下，
-                 改成逐行结构化的小列表，增删改都在本地DOM操作，随「保存设置」一起提交
-                 （见 collectHowYouFitSearches()）。扫描失败时后端会自动升级给一个AI导航
-                 兜底重新判断页面，这是项目里第一次真正的LLM自主决策循环，见
-                 spec/tech-solution.md「关键决策」一节。 -->
-            <div class="field span-2">
-              <label>LinkedIn 个人匹配搜索（How You Fit）</label>
-              <p class="field-hint">
-                登录态下 LinkedIn 基于你的档案判断"你可能符合条件"的搜索结果页——在 LinkedIn
-                上打开该视图后复制地址栏完整链接贴到下面。<strong>这是登录态自动化操作</strong>
-                ，已加同步间隔节流和数量上限（最多 8 条），但仍有账号风险，不要配太多条。
-                首次使用前需要先手动登录过 LinkedIn，见 README。
-              </p>
-              <div id="howYouFitList"></div>
-              <button type="button" class="btn btn-secondary btn-sm" onclick="addHowYouFitRow()">+ 添加一条</button>
-            </div>
-            <div class="field">
-              <label>Indeed 国家代码</label>
-              <input id="country_indeed" type="text" placeholder="china">
-            </div>
-            <div class="field">
-              <label>每个关键词+城市组合返回条数</label>
-              <input id="results_wanted" type="number" min="1" max="100">
-            </div>
-            <div class="field">
-              <label>只抓取最近几天内发布的职位（留空或0表示不限）</label>
-              <input id="days_old" type="number" min="0" max="365" placeholder="30">
-            </div>
-            <div class="field">
-              <label>每天定时时间（本机时间）</label>
-              <div class="time-row">
-                <label class="switch-row">
-                  <input id="schedule_enabled" type="checkbox">
-                  <span>开启</span>
-                </label>
-                <input id="schedule_hour" type="number" min="0" max="23">
-                <span>时</span>
-                <input id="schedule_minute" type="number" min="0" max="59">
-                <span>分</span>
+
+            <div class="subsection">
+              <div class="subsection-title">关键词 × 城市网格搜索<span class="tag">主要来源</span></div>
+              <p class="subsection-desc">每个关键词分别在每个城市搜一次，逐条抓回来后自动去重、跑 AI 匹配分析。</p>
+              <div class="form-grid">
+                <div class="field">
+                  <label>关键词（每行一个）</label>
+                  <textarea id="keywords" rows="4" placeholder="Senior Product Manager&#10;AI产品经理"></textarea>
+                  <p class="field-hint">职位标题命中其中任意一个即算匹配</p>
+                </div>
+                <div class="field">
+                  <label>城市（每行一个）</label>
+                  <textarea id="locations" rows="4" placeholder="Beijing&#10;Shanghai&#10;Remote"></textarea>
+                  <p class="field-hint">留空一行表示"不限地点/远程"这一档也搜</p>
+                </div>
+                <div class="field">
+                  <label>Indeed 国家代码</label>
+                  <input id="country_indeed" type="text" placeholder="china">
+                  <p class="field-hint">决定 Indeed 搜索走哪个国家站点，不能留空（留空会导致整次抓取失败）</p>
+                </div>
+                <div class="field">
+                  <label>每个组合返回条数</label>
+                  <input id="results_wanted" type="number" min="1" max="100">
+                  <p class="field-hint">每种"关键词+城市"组合最多拉多少条，越大越全但越慢</p>
+                </div>
+                <div class="field span-2">
+                  <label>只抓最近几天内发布的职位</label>
+                  <input id="days_old" type="number" min="0" max="365" placeholder="30" style="max-width:220px">
+                  <p class="field-hint">过滤掉发布太久的老职位，留空或 0 表示不限</p>
+                </div>
               </div>
-              <p class="field-hint">关闭后不会每天自动运行，仍可手动点"立即搜索"</p>
             </div>
-            <div class="field span-2">
-              <label>去重 / 自动分析写入用的追踪表路径</label>
-              <input id="tracker_xlsx_path" type="text" placeholder="留空默认 ~/Downloads/JD匹配追踪表.xlsx">
-            </div>
-          </div>
-        </div>
 
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <h2>AI 模型与自动分析设置</h2>
+            <div class="subsection">
+              <div class="subsection-title">定向补充来源<span class="tag">可选</span></div>
+              <p class="subsection-desc">跟上面的网格搜索并行跑，不受它的排名/条数上限影响，不用重复填关键词。</p>
+              <div class="form-grid">
+                <div class="field span-2">
+                  <label>重点关注公司（每行一个）</label>
+                  <textarea id="linkedinTargetCompanies" rows="3" placeholder="Amazon&#10;HSBC&#10;Riot Games"></textarea>
+                  <p class="field-hint">对这些公司单独跑一次 LinkedIn 定向搜索，沿用上面的关键词。保存时会解析成 LinkedIn 内部 ID，公司别配太多（5~8 家为宜），解析结果见下方。</p>
+                  <p class="field-hint" id="targetCompanyStatus"></p>
+                </div>
+                <!-- LinkedIn "How You Fit"（个人档案匹配）搜索同步（2026-08-23）：登录态下
+                     LinkedIn 基于你的档案算出的"你可能符合条件"搜索结果页，跟「重点关注公司」
+                     一样是额外抓取来源，但每条要存名字+URL+启用开关三样东西，textarea 放不下，
+                     改成逐行结构化的小列表，增删改都在本地DOM操作，随「保存设置」一起提交
+                     （见 collectHowYouFitSearches()）。扫描失败时后端会自动升级给一个AI导航
+                     兜底重新判断页面，这是项目里第一次真正的LLM自主决策循环，见
+                     spec/tech-solution.md「关键决策」一节。 -->
+                <div class="field span-2">
+                  <label>LinkedIn 个人匹配搜索（How You Fit）</label>
+                  <p class="field-hint">
+                    登录态下 LinkedIn 基于你的档案判断"你可能符合条件"的搜索结果页——在 LinkedIn
+                    上打开该视图后复制地址栏完整链接贴到下面。<strong>这是登录态自动化操作</strong>
+                    ，已加同步间隔节流和数量上限（最多 8 条），但仍有账号风险，不要配太多条。
+                    首次使用前需要先手动登录过 LinkedIn，见 README。<strong>启用后</strong>，
+                    点首页「智能抓取」主按钮也会顺带在后台依次同步这里所有启用的搜索
+                    （跟每天定时任务一致），不需要每次都单独点"同步全部"。
+                  </p>
+                  <div id="howYouFitList"></div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="addHowYouFitRow()">+ 添加一条</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-panel" data-panel="auto">
+            <div class="panel-head">
+              <h2>自动化与提醒</h2>
+              <p>控制"多久自动做一次"——跟「搜索来源」里搜什么、搜哪里无关，只管节奏。</p>
+            </div>
+            <div class="form-grid">
+              <div class="field span-2">
+                <label>每天定时抓取时间（本机时间）</label>
+                <div class="time-row">
+                  <label class="switch-row">
+                    <input id="schedule_enabled" type="checkbox">
+                    <span>开启</span>
+                  </label>
+                  <input id="schedule_hour" type="number" min="0" max="23">
+                  <span>时</span>
+                  <input id="schedule_minute" type="number" min="0" max="59">
+                  <span>分</span>
+                </div>
+                <p class="field-hint">到点自动按「搜索来源」里的配置跑一轮抓取 + 匹配分析 + 已启用的 How You Fit 同步；关闭后不会每天自动运行，仍可在首页手动点"智能抓取"</p>
+              </div>
+              <div class="field span-2">
+                <label>邮件拒信检查提醒间隔（天，0表示关闭提醒）</label>
+                <input id="email_scan_interval_days" type="number" min="0" max="30" placeholder="1" style="max-width:220px">
+                <p class="field-hint">这不是后台自动任务——app.py 本身没有 Gmail 访问权限，需要在 Claude Code 对话里让它帮你查（说一句"查一下邮箱有没有拒信"）。这里只控制隔多少天在下面"每日任务清单"里提醒你一次，详见 README「邮件拒信自动识别怎么用」。</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-panel" data-panel="ai">
+            <div class="panel-head">
+              <h2>AI 模型</h2>
               <p>用 Claude 需要设 <code>ANTHROPIC_API_KEY</code> 环境变量，用 DeepSeek 需要设 <code>DEEPSEEK_API_KEY</code>（密钥只读环境变量，不进配置文件）。七块功能可以各配各的模型：匹配分析每条职位都要跑一次，便宜优先；定制简历/Cover Letter、面试准备、题库、简历体检、偏好档案都是生成一次看很久，质量优先；职位AI对话追问频繁，便宜优先。点击职位的"AI 分析"只计算匹配度并写入追踪表（不产生简历/CL），定制简历 + cover letter 改成职位详情页里按按钮单独生成。</p>
             </div>
-          </div>
-          <div class="form-grid">
-            <div class="field">
-              <label>JD 匹配分析用的模型</label>
-              <select class="model-select" id="modelTask-analysis" onchange="setTaskModel('analysis', this.value, this)"></select>
-            </div>
-            <div class="field">
-              <label>定制简历 / Cover Letter 生成用的模型</label>
-              <select class="model-select" id="modelTask-materials" onchange="setTaskModel('materials', this.value, this)"></select>
-            </div>
-            <div class="field">
-              <label>面试准备用的模型</label>
-              <select class="model-select" id="modelTask-interview_prep" onchange="setTaskModel('interview_prep', this.value, this)"></select>
-            </div>
-            <div class="field">
-              <label>通用题库用的模型（AI 起草 + 跟 AI 对话）</label>
-              <select class="model-select" id="modelTask-interview_bank" onchange="setTaskModel('interview_bank', this.value, this)"></select>
-            </div>
-            <div class="field">
-              <label>简历体检用的模型</label>
-              <select class="model-select" id="modelTask-resume_review" onchange="setTaskModel('resume_review', this.value, this)"></select>
-            </div>
-            <div class="field">
-              <label>职位详情页 AI 对话用的模型</label>
-              <select class="model-select" id="modelTask-job_chat" onchange="setTaskModel('job_chat', this.value, this)"></select>
-            </div>
-            <div class="field">
-              <label>偏好档案总结用的模型</label>
-              <select class="model-select" id="modelTask-preference_profile" onchange="setTaskModel('preference_profile', this.value, this)"></select>
-            </div>
-            <!-- 简历本身不在这里配了：改成在「我的简历」页上传，这里只读展示当前用的是哪份。
-                 保存设置时也不再提交 base_resume_path（后端白名单里已经去掉），否则这个
-                 空的只读框会把用户刚传的简历覆盖掉。 -->
-            <div class="field span-2">
-              <label>当前使用的简历</label>
-              <div class="settings-resume-row">
-                <span id="settingsResumeName">读取中…</span>
-                <a class="btn btn-secondary btn-sm" href="/resume" target="_blank" rel="noopener">去「我的简历」管理 →</a>
+            <div class="form-grid">
+              <div class="field">
+                <label>JD 匹配分析用的模型</label>
+                <select class="model-select" id="modelTask-analysis" onchange="setTaskModel('analysis', this.value, this)"></select>
+                <p class="field-hint">每条职位都跑一次，只算匹配度、写入追踪表</p>
+              </div>
+              <div class="field">
+                <label>定制简历 / Cover Letter 生成用的模型</label>
+                <select class="model-select" id="modelTask-materials" onchange="setTaskModel('materials', this.value, this)"></select>
+                <p class="field-hint">在职位详情页按按钮单独生成</p>
+              </div>
+              <div class="field">
+                <label>面试准备用的模型</label>
+                <select class="model-select" id="modelTask-interview_prep" onchange="setTaskModel('interview_prep', this.value, this)"></select>
+              </div>
+              <div class="field">
+                <label>通用题库用的模型（AI 起草 + 跟 AI 对话）</label>
+                <select class="model-select" id="modelTask-interview_bank" onchange="setTaskModel('interview_bank', this.value, this)"></select>
+              </div>
+              <div class="field">
+                <label>简历体检用的模型</label>
+                <select class="model-select" id="modelTask-resume_review" onchange="setTaskModel('resume_review', this.value, this)"></select>
+              </div>
+              <div class="field">
+                <label>职位详情页 AI 对话用的模型</label>
+                <select class="model-select" id="modelTask-job_chat" onchange="setTaskModel('job_chat', this.value, this)"></select>
+                <p class="field-hint">追问频繁，优先便宜模型</p>
+              </div>
+              <div class="field">
+                <label>偏好档案总结用的模型</label>
+                <select class="model-select" id="modelTask-preference_profile" onchange="setTaskModel('preference_profile', this.value, this)"></select>
               </div>
             </div>
-            <div class="field span-2">
-              <label>定制简历保存目录</label>
-              <input id="resume_output_dir" type="text" placeholder="留空默认跟基础简历同目录">
-            </div>
-          </div>
-        </div>
+          </section>
 
-        <!-- 偏好档案：忽略职位时留的原因攒够几条后自动总结成的一段话，会被塞进以后每次
-             匹配分析的 prompt 里。放在设置面板里给用户看到，是为了让"被塞进 prompt 的
-             内容"可见、可信任，不是又开一个独立页面（内容就一段话，用不上）。 -->
-        <div class="card">
-          <div class="card-head">
-            <div>
-              <h2>偏好档案</h2>
-              <p>忽略职位时留的原因攒够几条后，AI 会自动总结成一段话，帮以后的匹配分析更懂你排斥什么。忽略职位后会弹一个可跳过的原因小弹窗；已忽略但还没补过原因的职位，卡片上有单独的补录入口。</p>
+          <section class="settings-panel" data-panel="files">
+            <div class="panel-head">
+              <h2>简历与文件路径</h2>
+              <p>AI 用的是哪份简历、生成的文件存到哪——这些是"文件放哪儿"的问题，跟「AI 模型」选哪个模型是两回事，所以单独放这一类。</p>
             </div>
-            <button type="button" class="btn btn-secondary btn-sm" onclick="regeneratePreferenceProfile(this)">立即重新生成</button>
-          </div>
-          <div id="preferenceProfileCard">加载中…</div>
-        </div>
+            <div class="form-grid">
+              <!-- 简历本身不在这里配了：改成在「我的简历」页上传，这里只读展示当前用的是哪份。
+                   保存设置时也不再提交 base_resume_path（后端白名单里已经去掉），否则这个
+                   空的只读框会把用户刚传的简历覆盖掉。 -->
+              <div class="field span-2">
+                <label>当前使用的简历</label>
+                <div class="settings-resume-row">
+                  <span id="settingsResumeName">读取中…</span>
+                  <a class="btn btn-secondary btn-sm" href="/resume" target="_blank" rel="noopener">去「我的简历」管理 →</a>
+                </div>
+                <p class="field-hint">定制简历/Cover Letter 生成、面试准备、简历体检、AI 匹配分析都会读这份基础简历的内容作为你的背景信息；这里只做只读展示，要换一份简历要去「我的简历」页上传</p>
+              </div>
+              <div class="field span-2">
+                <label>定制简历保存目录</label>
+                <input id="resume_output_dir" type="text" placeholder="留空默认跟基础简历同目录">
+                <p class="field-hint">针对某个职位生成的定制简历 / Cover Letter 文件存到这个目录</p>
+              </div>
+              <div class="field span-2">
+                <label>追踪表路径（去重 / 分析结果写入用）</label>
+                <input id="tracker_xlsx_path" type="text" placeholder="留空默认 ~/Downloads/JD匹配追踪表.xlsx">
+                <p class="field-hint">抓取去重、AI 匹配分析结果都会写进这张 Excel——是整个流程共用的主数据文件，不是简历文件</p>
+              </div>
+            </div>
+          </section>
 
-        <div class="card">
-          <div class="card-head">
-            <div>
+          <!-- 偏好档案：忽略职位时留的原因攒够几条后自动总结成的一段话，会被塞进以后每次
+               匹配分析的 prompt 里。放在设置面板里给用户看到，是为了让"被塞进 prompt 的
+               内容"可见、可信任，不是又开一个独立页面（内容就一段话，用不上）。 -->
+          <section class="settings-panel" data-panel="preference">
+            <div class="panel-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;">
+              <div>
+                <h2>偏好档案</h2>
+                <p>忽略职位时留的原因攒够几条后，AI 会自动总结成一段话，帮以后的匹配分析更懂你排斥什么。忽略职位后会弹一个可跳过的原因小弹窗；已忽略但还没补过原因的职位，卡片上有单独的补录入口。</p>
+              </div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="regeneratePreferenceProfile(this)">立即重新生成</button>
+            </div>
+            <div id="preferenceProfileCard">加载中…</div>
+          </section>
+
+          <section class="settings-panel" data-panel="easyapply">
+            <div class="panel-head">
               <h2>Easy Apply 自动回答设置</h2>
               <p>LinkedIn Easy Apply 半自动投递遇到筛选问题时，会用这里配置的答案自动填写并点"下一步"；遇到下面没覆盖到的问题会停在那一步，等你手动填。不会自动点击最终的"提交申请"，这一步永远需要你自己确认。</p>
             </div>
-          </div>
-          <div class="form-grid">
-            <div class="field">
-              <label>工作签证 / 工作授权</label>
-              <input id="ea_work_authorization" type="text" placeholder="例如：无需公司担保工作签证">
+            <div class="form-grid">
+              <div class="field">
+                <label>工作签证 / 工作授权</label>
+                <input id="ea_work_authorization" type="text" placeholder="例如：无需公司担保工作签证">
+              </div>
+              <div class="field">
+                <label>期望薪资</label>
+                <input id="ea_expected_salary" type="text" placeholder="例如：30k-40k RMB/月">
+              </div>
+              <div class="field">
+                <label>入职时间 / Notice Period</label>
+                <input id="ea_notice_period" type="text" placeholder="例如：1个月内到岗">
+              </div>
+              <div class="field span-2">
+                <label>其它常见问题（每行一条，格式：问题关键词=答案）</label>
+                <textarea id="ea_extra_answers" rows="4" placeholder="是否愿意出差=愿意&#10;英语水平=流利&#10;是否有相关认证=否"></textarea>
+                <p class="field-hint">自动化会用"问题关键词"去匹配 Easy Apply 表单里问题的文字，包含这个关键词就填对应答案；没匹配上任何一行才会停下来</p>
+              </div>
             </div>
-            <div class="field">
-              <label>期望薪资</label>
-              <input id="ea_expected_salary" type="text" placeholder="例如：30k-40k RMB/月">
+          </section>
+
+          <section class="settings-panel" data-panel="runs">
+            <div class="panel-head">
+              <h2>运行记录</h2>
+              <p>每次自动 / 手动抓取的执行结果，最新的排在最上面。</p>
             </div>
-            <div class="field">
-              <label>入职时间 / Notice Period</label>
-              <input id="ea_notice_period" type="text" placeholder="例如：1个月内到岗">
+            <div class="table-wrap">
+              <table id="runsTable">
+                <thead>
+                  <tr><th>时间</th><th>关键词</th><th>找到</th><th>新增</th><th>去重跳过</th><th>不相关跳过</th><th>状态</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
             </div>
-            <div class="field span-2">
-              <label>其它常见问题（每行一条，格式：问题关键词=答案）</label>
-              <textarea id="ea_extra_answers" rows="4" placeholder="是否愿意出差=愿意&#10;英语水平=流利&#10;是否有相关认证=否"></textarea>
-              <p class="field-hint">自动化会用"问题关键词"去匹配 Easy Apply 表单里问题的文字，包含这个关键词就填对应答案；没匹配上任何一行才会停下来</p>
-            </div>
-          </div>
+          </section>
+
         </div>
 
-        <div class="card-footer" style="margin-top:-0.4rem;">
+        <div class="content-footer" id="settingsFooter">
           <button class="btn btn-primary" id="saveConfigBtn" onclick="saveConfig()">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
             保存设置
           </button>
           <span id="configSavedHint" style="font-size:0.82rem;color:var(--success);display:none;">已保存</span>
         </div>
-      </section>
-
-      <!-- ===== Runs subtab ===== -->
-      <section class="tab-panel" id="moreSubpanel-runs">
-        <div class="table-wrap">
-          <table id="runsTable">
-            <thead>
-              <tr><th>时间</th><th>关键词</th><th>找到</th><th>新增</th><th>去重跳过</th><th>不相关跳过</th><th>状态</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-
+      </div>
     </div>
   </div>
 </div>

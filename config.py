@@ -48,6 +48,11 @@ DEFAULT_CONFIG = {
     # 抓详情页之间的停顿，默认4秒）不是一回事——这个管完整开/关一次登录态浏览器会话之间
     # 的停顿，登录态行为暴露度更高，给得更宽松。
     "linkedin_how_you_fit_delay": 30,
+    # 邮件拒信自动识别（2026-08-23）的检查间隔，单位天，默认每天提醒一次。这不是
+    # scheduler.py 里那种真正的后台定时任务——app.py 本身没有 Gmail 访问能力，扫描动作
+    # 由 Claude Code 在对话里用 Gmail 连接器完成（见 spec/roadmap.md 对应条目），这个值
+    # 只用来算"该不该在每日任务清单里提醒你去查一次"，不会触发任何自动扫描。0 = 关闭提醒。
+    "email_scan_interval_days": 1,
     "schedule_enabled": True,  # 关闭后每天定时任务不会自动运行，需要手动点"立即搜索"
     "schedule_hour": 8,
     "schedule_minute": 0,
@@ -72,6 +77,7 @@ DEFAULT_CONFIG = {
         "interview_prep": "",  # 单条职位的面试准备
         "interview_bank": "",  # 通用题库：AI 起草 + 跟 AI 对话
         "resume_review": "",  # 简历体检：整份简历的诊断 + 逐段改写建议
+        "interview_practice": "",  # 面试语音练习：出题 + 逐题打分，同档质量优先
     },
     # LinkedIn Easy Apply 半自动投递：自动回答筛选问题用的个人资料表（2026-08-16）。
     # 三个高频字段固定命名，覆盖不到的问题走 extra_answers 关键词匹配；都匹配不上就停在

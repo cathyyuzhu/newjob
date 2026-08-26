@@ -93,7 +93,11 @@ print("list_stale_applications ok")
 
 # ---- 3. GET /api/checklist：结构 + 数据都对
 data = c.get("/api/checklist").get_json()
-assert set(data.keys()) == {"followups", "custom_items", "resume_review_done", "resume_review_ready", "resume_review_id"}, data
+assert set(data.keys()) == {
+    "followups", "custom_items", "resume_review_done", "resume_review_ready", "resume_review_id",
+    "email_scan_due", "email_scan_days_since", "pending_rejections",
+}, data
+assert data["pending_rejections"] == []
 followup_ids = [f["job_id"] for f in data["followups"]]
 assert job_stale in followup_ids and job_recent not in followup_ids
 assert data["custom_items"] == []
@@ -147,5 +151,33 @@ assert c.get("/api/checklist").get_json()["custom_items"] == []
 
 assert c.delete(f"/api/checklist/{item_id}").status_code == 404, "删一条不存在的记录该报404"
 print("custom checklist items ok")
+
+# ---- 5. 待确认拒信队列：确认落库、忽略只出队不改状态
+pending_job = insert_job("PM Pending Rejection", "https://example.com/5")
+conn = models.get_conn()
+conn.execute("UPDATE jobs SET application_status = 'applied' WHERE id = ?", (pending_job,))
+conn.commit()
+conn.close()
+pending_id = models.add_pending_rejection(pending_job, "Gmail来信主题《Update》：暂不推进")
+
+data = c.get("/api/checklist").get_json()
+assert len(data["pending_rejections"]) == 1
+assert data["pending_rejections"][0]["job_id"] == pending_job
+assert data["pending_rejections"][0]["company"] == "TestCo"
+assert data["pending_rejections"][0]["title"] == "PM Pending Rejection"
+
+r = c.post(f"/api/pending-rejections/{pending_id}/confirm")
+assert r.status_code == 200
+assert models.get_job(pending_job)["application_status"] == "rejected"
+assert any(n["source"] == "email_scan" for n in models.list_job_notes(pending_job))
+assert c.get("/api/checklist").get_json()["pending_rejections"] == []
+assert c.post(f"/api/pending-rejections/{pending_id}/confirm").status_code == 404, "确认过一次之后这条已经出队了"
+
+pending_id_2 = models.add_pending_rejection(pending_job, "误判")
+r = c.post(f"/api/pending-rejections/{pending_id_2}/dismiss")
+assert r.status_code == 200
+assert models.get_job(pending_job)["application_status"] == "rejected", "忽略不该动状态（这里已经是上一步确认过的 rejected）"
+assert c.get("/api/checklist").get_json()["pending_rejections"] == []
+print("pending rejections confirm/dismiss ok")
 
 print("\nALL PASS")

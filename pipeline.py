@@ -7,6 +7,7 @@ from datetime import date
 import interview
 import job_chat
 import llm
+import pdf_extract
 import preference_profile
 import resume_review
 import resume_store
@@ -20,6 +21,7 @@ from job_state import (
     finish_analyzing,
     finish_interview_prep,
     finish_materials,
+    finish_practice_generation,
     finish_profile_generation,
     in_progress_ids,
     mark_materials_queued,
@@ -33,14 +35,20 @@ from job_state import (
     start_analyzing,
     start_interview_prep,
     start_materials,
+    start_practice_generation,
     start_profile_generation,
     stop_requested,
 )
 from models import (
     count_dismiss_reasons,
+    get_interview_doc,
     get_job,
     get_latest_preference_profile,
+    get_practice_set,
+    insert_interview_doc,
     insert_interview_prep,
+    insert_practice_answer,
+    insert_practice_set,
     insert_preference_profile,
     insert_resume_review,
     list_bank_items,
@@ -798,3 +806,113 @@ def generate_bank_draft():
     if len(stats["failed_sections"]) == len(interview.BANK_SECTIONS):
         raise RuntimeError("；".join(stats["failed_sections"]))
     return stats
+
+
+# ---------------------------------------------------------------- 面试语音练习
+
+MAX_DOC_BYTES = 20 * 1024 * 1024
+DOC_ALLOWED_EXT = ".pdf"
+
+
+def save_uploaded_interview_doc(file_storage):
+    """校验并保存一份上传的面试准备文档，返回 models.insert_interview_doc() 的 id。
+
+    只收 .pdf——这个入口就是为了让用户上传一份自己整理的、通常是 PDF 导出的复合准备
+    材料，不是简历那种要按段落索引改写回去的结构化文档，收 docx/txt 不解决任何已知
+    需求，先不做（见 spec/roadmap.md 的范围取舍）。校验顺序沿用简历上传的三关
+    （resume_store.save_uploaded）：扩展名 → 大小 → 真的能抽出正文；直接从内存 bytes
+    解析（pdf_extract.extract_text_from_bytes），不落临时文件到磁盘——这份文档不像
+    简历需要保留原件供以后按段落改写，只是一次性喂给 LLM 的素材。
+    """
+    filename = (getattr(file_storage, "filename", "") or "").strip()
+    if not filename:
+        raise ValueError("没有收到文件。")
+    if os.path.splitext(filename)[1].lower() != DOC_ALLOWED_EXT:
+        raise ValueError("只支持 .pdf 格式的准备文档。")
+
+    data = file_storage.read()
+    if len(data) > MAX_DOC_BYTES:
+        raise ValueError(f"文件太大（{len(data) / 1024 / 1024:.1f}MB），上限 {MAX_DOC_BYTES // 1024 // 1024}MB。")
+
+    try:
+        text = pdf_extract.extract_text_from_bytes(data)
+    except Exception:
+        text = None
+    if not (text or "").strip():
+        raise ValueError(
+            "这个 PDF 解析不出任何文字，可能整份是扫描图片、没有文字层。"
+            "请确认这是一份可以在电脑上直接选中复制文字的 PDF。"
+        )
+
+    return insert_interview_doc(filename, text)
+
+
+def generate_practice_set_for_doc(doc_id, round_label_hint=None):
+    """给一份准备文档生成一套练习题，写入 interview_practice_sets 表。返回新记录的 dict。"""
+    doc = get_interview_doc(doc_id)
+    if not doc:
+        raise ValueError(f"interview doc {doc_id} not found")
+
+    cfg = load_config()
+    provider, model = llm.resolve_task(cfg, "interview_practice")
+    content = interview.generate_practice_questions(
+        doc["extracted_text"], round_label_hint=round_label_hint, model=model, provider=provider
+    )
+    set_id = insert_practice_set(
+        doc_id,
+        content_json=interview.dumps(content),
+        round_label=content.get("round_label"),
+        provider=provider,
+        model=model,
+    )
+    return {"set_id": set_id, "questions": len(content.get("questions") or [])}
+
+
+def generate_practice_set_for_doc_safe(doc_id, round_label_hint=None):
+    """带状态标记和错误落库的外层包装（对应 generate_interview_prep_safe 的角色）。"""
+    start_practice_generation(doc_id)
+    try:
+        return generate_practice_set_for_doc(doc_id, round_label_hint=round_label_hint)
+    except Exception as e:
+        provider, model = llm.resolve_task(load_config(), "interview_practice")
+        insert_practice_set(doc_id, error=str(e), round_label=round_label_hint, provider=provider, model=model)
+        raise
+    finally:
+        finish_practice_generation(doc_id)
+
+
+def score_practice_answer(set_id, question_id, transcript):
+    """给某道练习题的一次口头作答打分，写入 interview_practice_answers 表。返回
+    {"answer_id", "score"}。这个调用是同步的（不走后台线程+轮询）：单次打分是十几秒到
+    一分钟量级的一次 LLM 调用，跟题库单题对话（chat_bank_answer）同一档，不值得为它
+    再套一层状态机。"""
+    practice_set = get_practice_set(set_id)
+    if not practice_set or not practice_set.get("content_json"):
+        raise ValueError("这套练习题不存在或还没有生成完成。")
+
+    content = json.loads(practice_set["content_json"])
+    question = next((q for q in content.get("questions") or [] if q.get("id") == question_id), None)
+    if not question:
+        raise ValueError(f"题目 {question_id} 不存在于这套练习题里。")
+
+    cfg = load_config()
+    provider, model = llm.resolve_task(cfg, "interview_practice")
+    try:
+        score = interview.score_practice_answer(
+            question, transcript, interview_tips=content.get("interview_tips"), model=model, provider=provider
+        )
+    except Exception as e:
+        insert_practice_answer(
+            set_id, question_id, transcript, error=str(e), provider=provider, model=model
+        )
+        raise
+
+    answer_id = insert_practice_answer(
+        set_id,
+        question_id,
+        transcript,
+        score_json=json.dumps(score, ensure_ascii=False),
+        provider=provider,
+        model=model,
+    )
+    return {"answer_id": answer_id, "score": score}

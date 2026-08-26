@@ -39,6 +39,7 @@ from job_state import (
     how_you_fit_syncing,
     interview_prep_in_progress,
     materials_in_progress,
+    practice_generation_in_progress,
     request_materials_stop,
     request_stop,
     resume_review_error,
@@ -62,27 +63,36 @@ from models import (
     annotate_similar_groups,
     delete_bank_item,
     delete_checklist_item,
+    delete_interview_doc,
     delete_interview_prep,
     delete_job_note,
     get_bank_item,
+    get_interview_doc,
     get_job,
     get_latest_interview_prep,
     get_latest_preference_profile,
     get_latest_resume_review,
+    get_practice_set,
     init_db,
     job_ids_with_dismiss_reason,
     job_ids_with_interview_prep,
+    last_email_scan_run,
     list_bank_items,
     list_checklist_items,
+    list_interview_docs,
     list_interview_preps,
     list_job_notes,
     list_jobs,
     list_jobs_missing_cover_letter,
     list_jobs_with_tailored_resume,
+    list_latest_practice_answers,
+    list_pending_rejections,
+    list_practice_sets,
     list_runs,
     list_stale_applications,
     make_dedupe_key,
     note_counts,
+    remove_pending_rejection,
     set_application_status,
     set_job_starred,
     set_job_status,
@@ -91,6 +101,7 @@ from models import (
     update_job_materials,
 )
 from pipeline import (
+    MAX_DOC_BYTES,
     analyze_and_record_safe,
     analyze_pending_jobs,
     build_optimized_resume,
@@ -103,11 +114,14 @@ from pipeline import (
     generate_interview_prep_safe,
     generate_materials_batch,
     generate_materials_for_job_safe,
+    generate_practice_set_for_doc_safe,
     maybe_refresh_preference_profile,
     queue_pending_jobs,
     refetch_jd,
     refetch_missing_jd_jobs,
     run_resume_review,
+    save_uploaded_interview_doc,
+    score_practice_answer,
 )
 import resume_store
 from resume_store import ResumeMissingError, ResumeUploadError
@@ -118,10 +132,11 @@ from tracker_utils import list_entries
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
-# 简历上传的大小上限。超过这个数 Flask 会在读请求体之前就返回 413，不会先把几百MB
-# 读进内存再让我们自己判断。resume_store 里还有一道同样数值的校验，因为那边是"文件已
-# 经落到临时文件了"的最后一关（比如以后有别的入口不走 HTTP）。
-app.config["MAX_CONTENT_LENGTH"] = resume_store.MAX_RESUME_BYTES
+# 上传接口的大小上限。超过这个数 Flask 会在读请求体之前就返回 413，不会先把几百MB
+# 读进内存再让我们自己判断。resume_store/pipeline 里还各有一道同样数值的校验，因为
+# 那边是"文件已经拿到手了"的最后一关（比如以后有别的入口不走 HTTP）。取两个上传口
+# 里较大的那个——这是 Flask 全局唯一一个大小上限，不能按路由分别设置。
+app.config["MAX_CONTENT_LENGTH"] = max(resume_store.MAX_RESUME_BYTES, MAX_DOC_BYTES)
 
 init_db()
 
@@ -148,6 +163,14 @@ def index():
 @app.route("/interview")
 def interview_bank_page():
     return render_template("interview.html")
+
+
+# 面试语音练习：独立于具体职位的练习模块（2026-08-23）——上传的准备文档往往不对应库里
+# 任何一条职位（比如用户自己整理的复合准备材料），不挂在 /jobs/<id> 下面。同样是坐下来
+# 长时间交互的场景（录音、逐题练习），独立页面而不是弹窗，理由跟上面两处一致。
+@app.route("/interview/practice")
+def interview_practice_page():
+    return render_template("interview_practice.html")
 
 
 @app.route("/jobs/<int:job_id>/interview")
@@ -197,8 +220,17 @@ def update_config():
     cfg = load_config()
     data = request.get_json(force=True)
 
+    if "country_indeed" in data:
+        # 不能允许空串：scrape_jobs() 的 country_indeed 参数一旦是空字符串，jobspy 对每个
+        # 关键词×城市组合的请求都会直接抛"Invalid country string"，整次抓取found=0——
+        # 之前设置页没做非空校验，被悄悄清空过一次导致抓取静默失效了一整天
+        # （2026-08-24 实测踩过，见 spec/roadmap.md）。
+        raw = str(data["country_indeed"] or "").strip()
+        if not raw:
+            return jsonify({"error": "国家不能留空（决定去 Indeed 抓哪个国家的职位，清空会导致抓取整体失败）"}), 400
+        cfg["country_indeed"] = raw
+
     for key in (
-        "country_indeed",
         "tracker_xlsx_path",
         # base_resume_path 刻意不在这里：它现在只由「我的简历」页的上传/删除流程写。
         # 留在白名单里的话，设置页每次保存都会把表单里那个（现在是只读展示的）字段一起
@@ -212,7 +244,7 @@ def update_config():
             cfg[key] = data[key]
     if "schedule_enabled" in data:
         cfg["schedule_enabled"] = bool(data["schedule_enabled"])
-    for key in ("results_wanted", "days_old", "schedule_hour", "schedule_minute"):
+    for key in ("results_wanted", "days_old", "schedule_hour", "schedule_minute", "email_scan_interval_days"):
         if key in data:
             raw = data[key]
             # 设置页"只抓取最近几天内发布的职位"的输入框文案就是"留空或0表示不限"，
@@ -346,9 +378,26 @@ def _profile_refresh_background(force=False):
         logging.exception("background preference profile refresh failed")
 
 
+def _has_enabled_how_you_fit_searches():
+    cfg = load_config()
+    return any(s.get("enabled", True) for s in (cfg.get("linkedin_how_you_fit_searches") or []))
+
+
 @app.route("/api/search/run", methods=["POST"])
 def trigger_search():
     result = run_search_once()
+
+    # 手动点「智能抓取」顺带同步 How You Fit（2026-08-23 用户明确要求）：跟每日定时
+    # 任务的取舍一致——两个风险源互相独立，jobspy 搜索已经跑完不受影响，How You Fit
+    # 批量同步单独起后台线程跑，慢（要开登录态浏览器逐条扫）也不卡这次请求的响应。
+    # 没配置任何已启用的搜索、或批量同步已经在别处跑着，都不算错误，静默跳过——
+    # 跟 sync_how_you_fit_all_route 的 409 不同，这里只是「顺带」触发，不是用户主动
+    # 点的这个按钮，没必要因为撞车就报错。
+    result["how_you_fit_started"] = False
+    if _has_enabled_how_you_fit_searches() and start_how_you_fit_batch():
+        threading.Thread(target=_sync_how_you_fit_all_background, daemon=True).start()
+        result["how_you_fit_started"] = True
+
     # 搜索本身不需要简历，所以没上传简历也照常抓——只是抓完不排队分析，在响应里带一个
     # need_resume 让前端提示"职位搜到了，想看匹配度得先上传简历"。这里如果跟着 409 掉，
     # 用户连职位列表都拿不到，等于因为一个下游功能的前置条件把上游功能也废了。
@@ -1242,6 +1291,112 @@ def bank_assistant_chat_route():
         return jsonify({"error": str(e) or e.__class__.__name__}), 500
 
 
+# ---------------------------------------------------------------- 面试语音练习
+#
+# 上传准备文档 → 生成一套练习题 → 逐题录音作答 → 打分反馈。独立于具体职位（见
+# interview_practice_page 路由上的注释），数据模型/状态管理详见 models.py 里
+# interview_docs/interview_practice_sets/interview_practice_answers 表上方的注释。
+
+
+@app.route("/api/interview/practice/docs", methods=["GET"])
+def list_interview_docs_route():
+    """文档列表，每条附带当前是否正在生成题目——用于文档库页面渲染"生成中"态并安排轮询，
+    跟 /api/jobs 附带 interview_prep_state 是同一个用意。"""
+    docs = list_interview_docs()
+    for d in docs:
+        d["generating"] = practice_generation_in_progress(d["id"])
+    return jsonify(docs)
+
+
+@app.route("/api/interview/practice/docs/upload", methods=["POST"])
+def upload_interview_doc_route():
+    file_storage = request.files.get("file")
+    if not file_storage:
+        return jsonify({"error": "没有收到文件。"}), 400
+    try:
+        doc_id = save_uploaded_interview_doc(file_storage)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.exception("interview doc upload failed")
+        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+    return jsonify({"id": doc_id})
+
+
+@app.route("/api/interview/practice/docs/<int:doc_id>", methods=["DELETE"])
+def delete_interview_doc_route(doc_id):
+    if not delete_interview_doc(doc_id):
+        return jsonify({"error": "文档不存在"}), 404
+    return jsonify({"ok": True})
+
+
+def _practice_generation_background(doc_id, round_label_hint=None):
+    try:
+        result = generate_practice_set_for_doc_safe(doc_id, round_label_hint=round_label_hint)
+        logging.info("practice set generated for doc %s: %s", doc_id, result)
+    except Exception:
+        # 失败原因已经由 generate_practice_set_for_doc_safe() 写进
+        # interview_practice_sets 表了，前端读那一行就能看到，这里只记日志。
+        logging.exception("practice set generation failed for doc %s", doc_id)
+
+
+@app.route("/api/interview/practice/docs/<int:doc_id>/generate", methods=["POST"])
+def generate_practice_set_route(doc_id):
+    # 一次要吃下整份文档、出 8-15 道结构化题目，比匹配分析慢得多，必须后台跑、立刻返回，
+    # 前端轮询 GET /api/interview/practice/docs 的 generating 字段看进度。
+    if not get_interview_doc(doc_id):
+        return jsonify({"error": "文档不存在"}), 404
+    if practice_generation_in_progress(doc_id):
+        return jsonify({"error": "这份文档的题目正在生成中，请稍等"}), 409
+    data = request.get_json(silent=True) or {}
+    round_label_hint = (data.get("round_label") or "").strip() or None
+    threading.Thread(
+        target=_practice_generation_background,
+        args=(doc_id,),
+        kwargs={"round_label_hint": round_label_hint},
+        daemon=True,
+    ).start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/interview/practice/sets", methods=["GET"])
+def list_practice_sets_route():
+    """某份文档的全部练习题版本（可重新生成，历史保留，同 interview_preps 的多版本模式）。"""
+    doc_id = request.args.get("doc_id", type=int)
+    if not doc_id:
+        return jsonify({"error": "缺少 doc_id"}), 400
+    return jsonify(list_practice_sets(doc_id))
+
+
+@app.route("/api/interview/practice/sets/<int:set_id>", methods=["GET"])
+def get_practice_set_route(set_id):
+    """一套练习题的详情，连同这套题里每一题**最新**的作答记录一起返回——练习页需要
+    同时知道题目内容和当前进度，拆成两次请求没有实际好处。"""
+    practice_set = get_practice_set(set_id)
+    if not practice_set:
+        return jsonify({"error": "记录不存在"}), 404
+    practice_set["answers"] = list_latest_practice_answers(set_id)
+    return jsonify(practice_set)
+
+
+@app.route("/api/interview/practice/sets/<int:set_id>/questions/<question_id>/answer", methods=["POST"])
+def answer_practice_question_route(set_id, question_id):
+    # 同步返回，不走后台线程+轮询：单次打分是十几秒到一分钟量级的一次 LLM 调用，
+    # 跟题库单题对话（bank_item_chat_route）同一档，app.run(threaded=True) 本来就
+    # 能并发处理，再套一层状态机是过度设计。
+    data = request.get_json(force=True, silent=True) or {}
+    transcript = (data.get("transcript") or "").strip()
+    if not transcript:
+        return jsonify({"error": "还没有作答内容，请先录音或手动输入回答。"}), 400
+    try:
+        return jsonify(score_practice_answer(set_id, question_id, transcript))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        logging.exception("practice answer scoring failed")
+        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+
+
 # ---------------------------------------------------------------- 我的简历
 
 
@@ -1378,11 +1533,26 @@ MAX_CHECKLIST_ITEM_LENGTH = 200
 def get_checklist():
     """待审核/待投递两项前端已经有 allJobs 全量数据，直接在 static/app.js 里现算，
     不占这个接口的字段——这里只负责后端才算得出来的部分：超过7天没跟进的投递、
-    用户自建的待办条目、简历有没有体检过、体检给出的建议是不是还没去优化。"""
+    用户自建的待办条目、简历有没有体检过、体检给出的建议是不是还没去优化、
+    距上次邮件拒信扫描是不是已经超过设置页配置的提醒间隔。"""
     followups = [
         {"job_id": j["id"], "title": j["title"], "company": j["company"], "applied_at": j["applied_at"]}
         for j in list_stale_applications(days=7)
     ]
+
+    # 邮件拒信扫描提醒：app.py 本身够不到 Gmail（见 email_rejection_scan.py 顶部说明），
+    # 这里只算"距上次 Claude 帮你查过一轮已经过去几天了、够不够到设置页配的提醒间隔"，
+    # 不做任何真实扫描。interval=0 表示用户在设置页关掉了这条提醒。
+    interval_days = load_config().get("email_scan_interval_days", 1)
+    last_scan = last_email_scan_run()
+    email_scan_days_since = None
+    if last_scan:
+        try:
+            email_scan_days_since = (datetime.now() - datetime.fromisoformat(last_scan["run_at"])).days
+        except ValueError:
+            email_scan_days_since = None
+    email_scan_due = bool(interval_days) and (last_scan is None or (email_scan_days_since or 0) >= interval_days)
+
     latest_review = get_latest_resume_review()
     resume_review_ready = False
     resume_review_id = None
@@ -1409,8 +1579,31 @@ def get_checklist():
             "resume_review_done": bool(latest_review),
             "resume_review_ready": resume_review_ready,
             "resume_review_id": resume_review_id,
+            "email_scan_due": email_scan_due,
+            "email_scan_days_since": email_scan_days_since,
+            "pending_rejections": list_pending_rejections(),
         }
     )
+
+
+@app.route("/api/pending-rejections/<int:pending_id>/confirm", methods=["POST"])
+def confirm_pending_rejection(pending_id):
+    """无人值守扫描排进队列的疑似拒信，人工在网页上确认——这时候才真的改
+    application_status，走跟交互式扫描（email_rejection_scan.py apply）一样的落库路径。"""
+    pending = next((p for p in list_pending_rejections() if p["id"] == pending_id), None)
+    if not pending:
+        return jsonify({"error": "待确认记录不存在"}), 404
+    set_application_status(pending["job_id"], "rejected")
+    add_job_note(pending["job_id"], pending["note"] or "邮件扫描识别为拒信", source="email_scan")
+    remove_pending_rejection(pending_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/pending-rejections/<int:pending_id>/dismiss", methods=["POST"])
+def dismiss_pending_rejection(pending_id):
+    """判断为误判，直接从待确认队列移除，不改职位状态。"""
+    remove_pending_rejection(pending_id)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/checklist", methods=["POST"])

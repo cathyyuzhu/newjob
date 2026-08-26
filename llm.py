@@ -72,7 +72,7 @@ MODELS = [
 # job_chat（职位详情页的自由问答）单独一档：追问式的小问题，回复要快、聊起来不心疼调用次数。
 LLM_TASKS = (
     "analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat",
-    "preference_profile",
+    "preference_profile", "interview_practice",
 )
 
 MODELS_BY_ID = {m["id"]: m for m in MODELS}

@@ -14,12 +14,13 @@
 | 简历生成 | python-docx (>=1.1.0) | 按段落索引改写定制简历 / 优化版，保留原文档排版 |
 | 简历存储 | `resume_store.py` + 项目内 `resumes/` 目录（已 gitignore） | 用户上传的基础简历的唯一入口：校验、落盘、指纹、回写 `base_resume_path`。只收 `.docx` |
 | 简历体检 | `resume_review.py`（prompt + LLM 调用）+ `resume_reviews` 表 | 不针对具体职位的整份简历诊断，输出的 `paragraph_edits` 直接喂给 `write_tailored_resume` 生成优化版 |
-| LLM 调用层 | `llm.py` 统一封装两家 provider（`chat`/`chat_json`/`ask`/`ask_json`/`resolve`/`resolve_task`），支持多轮 `messages` + system prompt + 可调 `max_tokens`；模型清单集中在 `MODELS` 注册表 | Anthropic Claude API（`anthropic` SDK）或 DeepSeek API（`urllib` 直调，OpenAI 兼容接口）。六个功能位（`analysis` / `materials` / `interview_prep` / `interview_bank` / `resume_review` / `job_chat`）按 `config.json` 的 `llm_tasks` 各配各的模型，留空回退到全局 `llm_provider` |
+| LLM 调用层 | `llm.py` 统一封装两家 provider（`chat`/`chat_json`/`ask`/`ask_json`/`resolve`/`resolve_task`），支持多轮 `messages` + system prompt + 可调 `max_tokens`；模型清单集中在 `MODELS` 注册表 | Anthropic Claude API（`anthropic` SDK）或 DeepSeek API（`urllib` 直调，OpenAI 兼容接口）。功能位（`analysis` / `materials` / `interview_prep` / `interview_bank` / `resume_review` / `job_chat` / `interview_practice` 等）按 `config.json` 的 `llm_tasks` 各配各的模型，留空回退到全局 `llm_provider` |
 | LLM 工具调用（agent） | `llm.py` 的 `chat_tool_step()`（只支持 anthropic） | 项目里第一个真正的工具调用循环，唯一消费者是 `linkedin_how_you_fit.py` 的 How You Fit 页面导航兜底，见下方决策条目 |
 | AI 匹配分析 | `analyzer.py` | 复用 `jd-resume-matcher` 技能的 prompt/双因子模型，只判断值不值得看，不产出简历/cover letter |
 | 定制简历 / Cover Letter 生成 | `analyzer.py` 的 `generate_materials()` + `job_state.py` 的材料生成状态组 | 从匹配分析里拆出来的独立一次 LLM 调用，用户点按钮（单条/批量）才触发 |
 | 职位 AI 对话 | `job_chat.py` | 针对具体职位自由问答，system prompt 装 JD/匹配分析结论/简历，不落库 |
 | 面试准备 | `interview.py`（prompt + LLM 调用）+ `pipeline.py`（编排）+ `interview_preps` / `interview_bank` 表 | 单职位准备材料复用已有匹配分析结论；通用题库跨职位复用、用户可编辑，四个类别（自我介绍 / STAR 故事库 / 讲述过往工作 / 通用问题）分四次调用起草 |
+| 面试语音练习 | `interview.py` 的 `generate_practice_questions()`/`score_practice_answer()` + `pdf_extract.py`（PyMuPDF）+ `interview_docs`/`interview_practice_sets`/`interview_practice_answers` 表 | 独立于具体职位；上传 PDF 抽正文 → 出题优先改编文档已有内容 → 浏览器 `Web Speech API` 语音转文字 → 逐题打分（只给点评，不代笔标准答案），见下方决策 |
 | 前端 | 原生 HTML / CSS / JS | 无框架、无构建步骤 |
 | LinkedIn Easy Apply 自动化 | Playwright (>=1.45.0)，`launch_persistent_context` + `channel="msedge"`（本机无 Chrome） | 驱动真实浏览器、真实登录会话，非 headless；见下方决策 |
 
@@ -360,6 +361,24 @@ LinkedIn 的 jobs-tracker 列表页（`jobs-tracker/?stage=saved` 已收藏、`j
 2026-08-18 有过一条记录在案的决策（见 [product-review.md](product-review.md)、[roadmap.md](roadmap.md)）：不做 LinkedIn 个性化推荐流的自动化抓取，因为登录态下的高频请求容易触发封号，而 LinkedIn 是求职主通道；当时选择只做"粘贴 URL 手动导入"。这次 How You Fit 同步接入每日定时任务，是用户知情后主动要求的例外——How You Fit 是 LinkedIn 官方算出的高置信度匹配（可以指定关键词/地点参数），跟当时决策要规避的"完全没法参数化的个性化信息流"性质不完全一样，但"登录态自动化"本身的账号风险依然存在，不能假装它不存在。
 方案内置了三层具体的风险缓释措施（不只是文档提醒）：① `config.py` 的 `linkedin_how_you_fit_searches` 最多 8 条（`linkedin_how_you_fit.MAX_HOW_YOU_FIT_SEARCHES`），保存设置时超过直接拒绝；② `linkedin_how_you_fit_delay`（默认30秒）控制每条搜索之间的同步间隔，比访客身份用的 `linkedin_request_delay`（4秒）宽松得多，因为这里对应的是完整开/关一次登录态浏览器会话，行为暴露度更高；③ 默认空列表——没有配置任何搜索条目就不会有任何浏览器会话，功能天然是 opt-in 的。这是项目里第一次对"登录态浏览器自动化"设置硬性数量上限（跟 `linkedin_target_companies` 的"软性建议5~8家"不同），值得记下来供以后任何类似的"要不要给某个自动化开个口子"场景参照：数量上限+间隔节流的组合，比单纯的软性建议更能兜住"配置一多，风险自动放大"这个问题。
 
+**面试语音练习为什么是独立模块、不挂具体职位（2026-08-23）**
+用户想上传自己整理的一份复合准备文档（`Amazon_Interview_Prep.pdf`：自我介绍、STAR 故事、LP 对照、业务理解问答等），这份文档本身不是标准 JD，也不一定对应库里已经抓到的某条职位——挂 `job_id` 意味着用户得先在职位列表里找到（或手动建一条）对应的职位才能用这个功能，对这次的真实需求（面试就在 2 天后）是不必要的前置步骤。新增三张不建外键的表（沿用本项目一贯做法）：`interview_docs`（上传文档只存抽取出的正文，不保留原始 PDF——跟简历不同，简历要能重新下载原件，这份文档只是一次性喂给 LLM 的素材）、`interview_practice_sets`（一份文档可以重新出题，多版本保留，同 `interview_preps` 的版本模式）、`interview_practice_answers`（同一题可以重新作答多次，取最新一条展示，用 `ROW_NUMBER()` 窗口函数按 `question_id` 分组取最新，而不是在 Python 里再筛一遍）。
+
+**PDF 正文抽取为什么用 PyMuPDF 而不是更轻量的 pypdf（实测于 2026-08-23）**
+本来想用 `pypdf`（纯 Python、零系统依赖，看起来更符合"能不加依赖就不加"的一贯倾向），但拿这个功能真正要处理的文件（`Amazon_Interview_Prep.pdf`，中文正文用了内嵌字体）实测：默认解析和 `layout` 模式抽出来的中文全是乱码（CJK 编码表没解出来，两种模式结果一样烂，不是偶发的解析器小毛病）。换 `PyMuPDF`（`pymupdf` 包）抽同一份文件完全正常。这不是"先选轻量库、留着以后再优化"的权宜决定——是先拿真实文件测过、发现真的不能用才换的，选型必须过真实数据这一关，不能只看包大小和依赖数。代价：`pymupdf` 是编译好的二进制 wheel（不是纯 Python），体积比 `pypdf` 大不少，且 AGPL-3.0 许可（个人本地工具不涉及分发，暂不构成问题；如果以后走 [product-review.md](product-review.md) 提到的"开源"路线，需要重新评估这个依赖的许可证兼容性）。
+
+**面试语音练习为什么用浏览器 `Web Speech API` 而不是接一个云端 STT 服务（2026-08-23）**
+项目里此前完全没有语音能力（后端和前端都没有）。跟用户确认过取舍：`Web Speech API`（`SpeechRecognition`）零后端依赖、免费、实时出文字稿，直接把语音转写这一步完全交给浏览器自带的识别引擎，代价是只有 Chrome/Edge 等基于 Chromium 的浏览器支持、需要联网调用浏览器厂商自己的识别服务、中英文混说的识别准确率不保证很高。用户接受这个取舍——转写文字提交打分前会经过一个可编辑的文本框，识别错误可以手动修正再提交，不要求转写本身完美。没有做"先录音、再整段发给能处理音频的 LLM"这个更简单但拿不到可编辑文字稿的方案（这次是用户主动比较后选的浏览器方案，见交互设计取舍）。
+
+**面试语音练习打分为什么不返回"标准答案"（2026-08-23）**
+`spec/product-review.md`（2026-08-18 快照）诊断过现有"面试准备"模块的问题：用户原话"AI 生成的答案不够满意""它没有创造出新的东西，只是把我知道的东西表达出来""我觉得它虚假"，给出的方向是"少替你写，多向你提问"。这次新功能如果打分之后又贴一份"应该怎么说"的改写答案，会重新踩中同一个坑。`interview.score_practice_answer()` 的 prompt 里明确写了"绝不要给出一份完整改写答案"这条硬性约束，输出结构也物理上没有 `model_answer` 这类字段——不是靠 prompt 说了算、代码层面也没有承接这个字段的地方。出题阶段同理：`generate_practice_questions()` 优先复用文档里已经列出的问题（该文档本身就有大量"追问预案"），而不是让 LLM 凭空编题，`answer_points` 是"要点提示"不是"完整答案"，prompt 里也明确要求不要写成一段可以直接照读的回答。
+
+**面试语音练习出题为什么要求"优先从文档已有内容改编"，而不是直接把全文丢给 LLM 自由发挥（2026-08-23）**
+这份文档本身已经包含了大量结构化的、用户自己（或此前跟 Claude 对话）整理好的内容——追问预案、常见问题清单、每个 STAR 故事对应哪些 LP、面试官背景解读等。如果放任 LLM 自由生成一套新题，等于浪费了这些已经存在的、更贴合这场具体面试的信息，退化成一个通用的"背几道常见面试题"生成器，跟这次为什么要做这个功能（针对*这场*面试练习）的初衷相反。`PRACTICE_PROMPT` 明确分级：文档里现成的问题列表直接改编、文档给某个故事标注的"面试官最可能追问"单独出题、只有文档信息确实覆盖不到的才由 AI 补充——每题都标 `source_hint` 说明来源，练习时用户能看出这题是不是文档里本来就预判到的。
+
+**为什么让「智能抓取」主按钮也顺带触发 How You Fit 批量同步，而不是继续保持两者分开（2026-08-23）**
+起初的设计（见上面"LinkedIn How You Fit 同步为什么要覆盖……"一条）刻意把两者分开：手动点「智能抓取」只做访客身份的 jobspy 抓取，How You Fit 那种登录态浏览器自动化只挂在专门按钮/下拉菜单项/每日定时任务上，不跟着高频的"手动测一下搜索效果"这个动作走，避免每次随手点一下就多触发一次账号风险更高的操作。这次用户明确问"点智能抓取会不会带上 How You Fit"，确认之后要求"两者都要"——顺带触发 + UI 提示——相当于主动放宽了这条边界。做的时候没有推翻原来的风险缓释措施（数量上限、间隔节流仍然生效），只是多了一个触发入口，并且这个入口跟专门按钮共用同一把批量锁（`start_how_you_fit_batch()`）：两边不能同时各跑一份，谁先点谁占用，顺带触发撞上正在跑的批量同步时静默跳过而不是报错——因为对"智能抓取"这个动作而言，How You Fit 只是顺带的，不该因为这个次要目的没达成就让主请求报错。这是一个用户知情后主动收紧"自动化默认关闭、需要时才开"这条边界的例子，跟 2026-08-18 的"不做个性化推荐流抓取"到"How You Fit 例外"再到这次"How You Fit 接入更高频的触发点"，是同一条决策脉络的延续，不是遗忘或放松警惕。
+
 ## 已知技术限制
 
 - 定时任务依赖进程常驻，没有补跑机制。
@@ -375,6 +394,9 @@ LinkedIn 的 jobs-tracker 列表页（`jobs-tracker/?stage=saved` 已收藏、`j
 - 全应用只认**一份**基础简历，没有多简历/多版本管理。想投不同方向要自己换上传的文件，换了之后已有的体检结论会标记过期。
 - 简历只支持 `.docx`（原因见上方决策）；PDF、纯文本粘贴都不支持。
 - 生成的"优化版"固定覆盖 `resumes/optimized.docx` 同一个文件，不保留历史版本（原件一直都在，真要回溯从原件重来）。
+- 面试语音练习的语音转文字依赖浏览器 `Web Speech API`，只有 Chrome/Edge 等 Chromium 系浏览器支持、且需要联网调用浏览器厂商自己的识别服务；不支持的浏览器会自动降级成纯打字作答（见 `static/interview_practice.js` 的 `speechSupported()`），但没有服务端 STT 兜底。识别引擎同一时间只认一种语言（页面上做了中/英文切换按钮），做不到真正的中英文混说自动切换识别。
+- 面试语音练习上传的 PDF 不保留原始文件，只存抽取出的正文——删除文档后无法找回原文件，也没有"重新下载我传的那份 PDF"的入口（这是刻意的取舍，见上方决策，不是遗漏）。
+- 面试语音练习的题目/作答记录目前没有跨场次的统计视图（比如"哪一类题一直答得弱"），每次都是看单套题目内的进度，见 [roadmap.md](roadmap.md) 里这次范围取舍的说明。
 
 ---
-最后更新：2026-08-17（简历为什么只收 docx、为什么存进项目内 `resumes/`、`need_resume` 为什么是 409 且检查要放在排队之前、体检为什么单开表/单开功能位/同步执行、体检结果为什么要在 Python 侧再归一化一遍；匹配分析弹窗为什么翻案改成独立页面、标签为什么是 TEXT 列不是关联表、备注为什么是独立表、职位对话为什么不落库、材料生成为什么从分析里拆出来、材料生成状态为什么跟分析状态分开一组、忽略为什么只丢弃当前这条而不停整批）
+最后更新：2026-08-23（新增「面试语音练习模块」：为什么独立于职位建三张新表、PDF 正文抽取为什么用 PyMuPDF 而不是 pypdf（实测中文内嵌字体乱码）、为什么用浏览器 Web Speech API 而不是云端 STT、打分为什么刻意不返回标准答案、出题为什么要求优先改编文档已有内容而不是自由生成）。上一版：2026-08-17（简历为什么只收 docx、为什么存进项目内 `resumes/`、`need_resume` 为什么是 409 且检查要放在排队之前、体检为什么单开表/单开功能位/同步执行、体检结果为什么要在 Python 侧再归一化一遍；匹配分析弹窗为什么翻案改成独立页面、标签为什么是 TEXT 列不是关联表、备注为什么是独立表、职位对话为什么不落库、材料生成为什么从分析里拆出来、材料生成状态为什么跟分析状态分开一组、忽略为什么只丢弃当前这条而不停整批）

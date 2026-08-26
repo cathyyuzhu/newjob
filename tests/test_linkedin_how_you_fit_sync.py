@@ -516,6 +516,79 @@ assert status["error"] is None, status
 print("sync_how_you_fit_all_route starts/blocks-concurrent/reports result ok")
 
 
+# ==================== app.py trigger_search() 顺带触发 How You Fit 批量同步 ====================
+# 2026-08-23 用户明确要求：手动点「智能抓取」主按钮时，如果配置了已启用的 How You Fit
+# 搜索，顺带在后台跑一次批量同步，不需要用户额外去点下拉菜单里的「同步全部」。跟每日
+# 定时任务的取舍一致（scheduler.py），两个风险源互相独立、失败互不牵连。
+
+
+def fake_run_search_once():
+    return {"found": 0, "added": 0, "skipped_duplicate": 0, "skipped_irrelevant": 0, "errors": [], "new_job_ids": []}
+
+
+flask_app.run_search_once = fake_run_search_once
+
+# ---- 17. 没有配置任何已启用的 How You Fit 搜索：不触发批量同步 ----
+set_searches([])
+r = c.post("/api/search/run")
+assert r.status_code == 200, r.get_json()
+assert r.get_json()["how_you_fit_started"] is False
+assert flask_app.how_you_fit_batch_syncing() is False
+print("trigger_search skips how-you-fit batch sync when no enabled searches are configured ok")
+
+# ---- 18. 配了已启用的搜索：顺带触发批量同步，跟专门的「同步全部」按钮共用同一把锁 ----
+set_searches([{"id": "s1", "name": "PM", "url": TEST_URL, "enabled": True}])
+trigger_gate = threading.Event()
+
+
+def fake_sync_all_2(delay_seconds=None):
+    trigger_gate.wait(timeout=5)
+    return {"s1": {"result": {"added_ids": []}, "error": None}}
+
+
+h.sync_all_enabled_searches = fake_sync_all_2
+r = c.post("/api/search/run")
+assert r.status_code == 200, r.get_json()
+assert r.get_json()["how_you_fit_started"] is True
+assert flask_app.how_you_fit_batch_syncing() is True
+# 撞车验证：批量同步正在跑的时候，专门的「同步全部」按钮应该照常收到 409——两个入口
+# 共用同一把锁，不能同时各跑一份。
+r_conflict = c.post("/api/jobs/sync_how_you_fit_all")
+assert r_conflict.status_code == 409, r_conflict.get_json()
+trigger_gate.set()
+for _ in range(300):
+    if not flask_app.how_you_fit_batch_syncing():
+        break
+    time_module.sleep(0.02)
+print("trigger_search starts how-you-fit batch sync sharing the same lock as the dedicated button ok")
+
+# ---- 19. 批量同步已经在别处跑着时：顺带触发静默跳过，不报错、不打断已有同步 ----
+set_searches([{"id": "s1", "name": "PM", "url": TEST_URL, "enabled": True}])
+running_gate = threading.Event()
+finish_running_gate = threading.Event()
+
+
+def fake_sync_all_3(delay_seconds=None):
+    running_gate.set()
+    finish_running_gate.wait(timeout=5)
+    return {"s1": {"result": {"added_ids": []}, "error": None}}
+
+
+h.sync_all_enabled_searches = fake_sync_all_3
+r_started = c.post("/api/jobs/sync_how_you_fit_all")
+assert r_started.status_code == 200, r_started.get_json()
+running_gate.wait(timeout=5)
+r2 = c.post("/api/search/run")
+assert r2.status_code == 200, r2.get_json()
+assert r2.get_json()["how_you_fit_started"] is False
+finish_running_gate.set()
+for _ in range(300):
+    if not flask_app.how_you_fit_batch_syncing():
+        break
+    time_module.sleep(0.02)
+print("trigger_search silently skips how-you-fit batch sync when one is already running ok")
+
+
 # ==================== app.py update_config() ====================
 
 # ---- 17. 新增项没带 id：后端生成一个 12 位十六进制 id ----

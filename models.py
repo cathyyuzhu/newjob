@@ -156,6 +156,35 @@ def init_db():
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_notes_job ON job_notes(job_id)")
+    # 邮件拒信扫描的运行记录（2026-08-23）：只记"什么时候查过一次、查了几条、发现几条
+    # 拒信"，不记具体扫了哪些公司/邮件内容——那部分已经作为 job_notes（source='email_scan'）
+    # 落在对应职位上了。这张表纯粹是给"每日任务清单"算"该不该提醒你去查邮箱"用的，一条
+    # 时间戳就够，不需要外键关联具体职位。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS email_scan_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at TEXT NOT NULL,
+            jobs_checked INTEGER,
+            rejections_found INTEGER
+        )
+        """
+    )
+    # 无人值守扫描（本机计划任务每天跑一次 headless Claude Code）发现的疑似拒信，先落这张
+    # 表等人工确认，不直接改 application_status——邮件措辞模糊时容易误判（见
+    # spec/roadmap.md"邮件拒信自动识别"条目），无人值守场景下更没有人在对话里能兜底，所以
+    # 比交互式扫描（email_rejection_scan.py apply，人在 Claude Code 对话里当场确认）多一道
+    # 网页端确认/忽略的环节。确认后这行删掉，同时正常走 set_application_status+add_job_note。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pending_rejections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            note TEXT,
+            detected_at TEXT NOT NULL
+        )
+        """
+    )
     # 简历体检结果：整份简历的诊断 + 逐段改写建议。跟 interview_preps 同一个模式（含失败
     # 也落一行），但不挂 job_id——体检是针对简历本身的，跟具体投哪家无关。
     # resume_fingerprint 存体检那一刻简历文件的 mtime+size：用户换了简历之后，旧体检结论
@@ -215,6 +244,62 @@ def init_db():
         )
         """
     )
+    # 面试语音练习：独立于具体职位的练习模块（2026-08-23）——用户上传的准备文档
+    # （比如自己整理的一份复合面试准备材料，不是标准JD）往往不对应库里任何一条职位，
+    # 所以不挂 job_id，是三张全新的表而不是往 interview_preps 加字段。
+    #
+    # interview_docs：上传的原始文档，只存抽取出来的正文——不保留原始 PDF 文件本身
+    # （跟简历刻意保留原文件不同：简历要能重新下载原件，这份文档只是喂给 LLM 的素材，
+    # 没有"下载回原PDF"的需求，存文件反而多一份要清理的磁盘占用）。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS interview_docs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT,
+            uploaded_at TEXT NOT NULL,
+            extracted_text TEXT,
+            char_count INTEGER
+        )
+        """
+    )
+    # interview_practice_sets：从某份文档生成的一套练习题，可重新生成、保留历史版本
+    # （同 interview_preps 的多版本模式），content_json 存整套题（含每题的
+    # category/question/why_asked/answer_points/source_hint）。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS interview_practice_sets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            round_label TEXT,
+            content_json TEXT,
+            error TEXT,
+            llm_provider TEXT,
+            llm_model TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_practice_sets_doc ON interview_practice_sets(doc_id)")
+    # interview_practice_answers：每道题的作答+评分记录。question_id 对应
+    # content_json 里题目自己的 id（字符串），不是这张表的自增主键——同一题可以
+    # 重新作答多次，保留全部历史（最新一条代表当前状态），跟 job_dismiss_reasons
+    # "一条职位可以有多行"是同一个考虑。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS interview_practice_answers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            set_id INTEGER NOT NULL,
+            question_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            transcript TEXT,
+            score_json TEXT,
+            error TEXT,
+            llm_provider TEXT,
+            llm_model TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_practice_answers_set ON interview_practice_answers(set_id)")
     conn.commit()
     _migrate_dedupe_keys(conn)
     _merge_cross_source_duplicates(conn)
@@ -726,6 +811,71 @@ def set_application_status(job_id, application_status):
     conn.close()
 
 
+def list_applied_jobs():
+    """当前"已投递"（application_status='applied'）的全部职位——邮件拒信扫描用，
+    告诉调用方该去邮箱里查哪些公司，不查已经有后续结果（面试中/已拒绝/offer等）的职位。"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, company, title, applied_at, job_url FROM jobs "
+        "WHERE application_status = 'applied' ORDER BY applied_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def record_email_scan_run(jobs_checked, rejections_found):
+    """记一次邮件拒信扫描跑完了——由 email_rejection_scan.py 的 record-run 子命令调用，
+    在 Claude Code 完成一整轮"查已投递清单→搜Gmail→确认→落库"之后才记一笔，只是列出
+    候选、没走完确认流程的半截扫描不算数（避免"该提醒了"误判成"刚查过"）。"""
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO email_scan_runs (run_at, jobs_checked, rejections_found) VALUES (?, ?, ?)",
+        (datetime.now().isoformat(timespec="seconds"), jobs_checked, rejections_found),
+    )
+    conn.commit()
+    conn.close()
+
+
+def last_email_scan_run():
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM email_scan_runs ORDER BY run_at DESC, id DESC LIMIT 1").fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def add_pending_rejection(job_id, note):
+    """无人值守扫描发现一条疑似拒信，先排进待确认队列（不直接改状态）。"""
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO pending_rejections (job_id, note, detected_at) VALUES (?, ?, ?)",
+        (job_id, note, datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+    pending_id = cur.lastrowid
+    conn.close()
+    return pending_id
+
+
+def list_pending_rejections():
+    """待确认的疑似拒信，带上职位信息给网页展示用。"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT pending_rejections.id, pending_rejections.job_id, pending_rejections.note, "
+        "pending_rejections.detected_at, jobs.company, jobs.title "
+        "FROM pending_rejections JOIN jobs ON jobs.id = pending_rejections.job_id "
+        "ORDER BY pending_rejections.detected_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def remove_pending_rejection(pending_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM pending_rejections WHERE id = ?", (pending_id,))
+    conn.commit()
+    conn.close()
+
+
 def list_stale_applications(days=7):
     """已投递（application_status='applied'）超过 days 天还没有更新过状态的职位——
     "每日任务清单"里"该跟进了"这一项。只看 applied_at 有值的行：没有时间戳的（比如
@@ -1175,3 +1325,138 @@ def delete_checklist_item(item_id):
     conn.commit()
     conn.close()
     return cur.rowcount
+
+
+# ---------------------------------------------------------------- 面试语音练习
+
+
+def insert_interview_doc(filename, extracted_text):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO interview_docs (filename, uploaded_at, extracted_text, char_count) VALUES (?, ?, ?, ?)",
+        (filename, datetime.now().isoformat(timespec="seconds"), extracted_text, len(extracted_text or "")),
+    )
+    conn.commit()
+    doc_id = cur.lastrowid
+    conn.close()
+    return doc_id
+
+
+def list_interview_docs():
+    """全部已上传文档，最新的排最前面（不带 extracted_text——列表页只需要文件名/字数，
+    正文可能有几万字，没必要每次都拉全文）。"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id, filename, uploaded_at, char_count FROM interview_docs ORDER BY uploaded_at DESC, id DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_interview_doc(doc_id):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM interview_docs WHERE id = ?", (doc_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_interview_doc(doc_id):
+    """连带删掉这份文档名下的题目集和作答记录——文档没了，从它生成的练习题也失去了
+    存在的意义，不留孤儿数据。跟职位那边"只存 job_id 不建外键"的一贯做法一样，级联
+    删除在应用层手动做。"""
+    conn = get_conn()
+    set_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM interview_practice_sets WHERE doc_id = ?", (doc_id,)
+    )]
+    for set_id in set_ids:
+        conn.execute("DELETE FROM interview_practice_answers WHERE set_id = ?", (set_id,))
+    conn.execute("DELETE FROM interview_practice_sets WHERE doc_id = ?", (doc_id,))
+    cur = conn.execute("DELETE FROM interview_docs WHERE id = ?", (doc_id,))
+    conn.commit()
+    conn.close()
+    return cur.rowcount
+
+
+def insert_practice_set(doc_id, content_json=None, round_label=None, error=None, provider=None, model=None):
+    """写入一套练习题。失败也写一行（同 insert_interview_prep 的理由）——不然用户点了
+    「生成题目」之后页面永远是空态，看不出是还在跑还是失败了。"""
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO interview_practice_sets (doc_id, created_at, round_label, content_json, error, llm_provider, llm_model) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (doc_id, datetime.now().isoformat(timespec="seconds"), round_label, content_json, error, provider, model),
+    )
+    conn.commit()
+    set_id = cur.lastrowid
+    conn.close()
+    return set_id
+
+
+def list_practice_sets(doc_id):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM interview_practice_sets WHERE doc_id = ? ORDER BY created_at DESC, id DESC", (doc_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_practice_set(set_id):
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM interview_practice_sets WHERE id = ?", (set_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_latest_practice_set(doc_id, success_only=False):
+    conn = get_conn()
+    sql = "SELECT * FROM interview_practice_sets WHERE doc_id = ?"
+    if success_only:
+        sql += " AND error IS NULL AND content_json IS NOT NULL"
+    sql += " ORDER BY created_at DESC, id DESC LIMIT 1"
+    row = conn.execute(sql, (doc_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def insert_practice_answer(set_id, question_id, transcript, score_json=None, error=None, provider=None, model=None):
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO interview_practice_answers "
+        "(set_id, question_id, created_at, transcript, score_json, error, llm_provider, llm_model) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            set_id, question_id, datetime.now().isoformat(timespec="seconds"),
+            transcript, score_json, error, provider, model,
+        ),
+    )
+    conn.commit()
+    answer_id = cur.lastrowid
+    conn.close()
+    return answer_id
+
+
+def list_latest_practice_answers(set_id):
+    """这套题里每一题**最新**的一条作答记录（不是全部历史）——练习页只需要展示"当前
+    进度"，历史重答记录暂时不做单独的回看入口（见 spec/roadmap.md 的范围取舍）。
+    用窗口函数按 question_id 分组取最新一条，比 Python 里再筛一遍更直接。"""
+    conn = get_conn()
+    rows = conn.execute(
+        """
+        SELECT * FROM (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY question_id ORDER BY created_at DESC, id DESC
+            ) AS rn
+            FROM interview_practice_answers WHERE set_id = ?
+        ) WHERE rn = 1
+        """,
+        (set_id,),
+    ).fetchall()
+    conn.close()
+    # rn 只是窗口函数计算过程中的辅助列，不是数据本身，不该跟着 API 响应泄漏出去。
+    results = []
+    for r in rows:
+        d = dict(r)
+        d.pop("rn", None)
+        results.append(d)
+    return results

@@ -96,10 +96,10 @@ for gone in ['data-appstatus="rejected"', 'data-appstatus="declined"']:
     assert gone not in index_html, f"筛选栏里还留着 {gone}"
 for kept in ["rejected", "declined"]:
     assert kept in appjs, f"投递状态下拉不该丢掉 {kept}（历史数据还在用）"
-# 主题切换搬进了设置面板，但按钮本体和 id 没变
-assert 'id="themeToggle"' in index_html and "moreSubpanel-settings" in index_html
+# 主题切换搬进了设置弹窗里的「外观」面板，但按钮本体和 id 没变
+assert 'id="themeToggle"' in index_html and 'data-panel="appearance"' in index_html
 theme_pos = index_html.index('id="themeToggle"')
-assert theme_pos > index_html.index('id="moreSubpanel-settings"'), "主题按钮应该在设置面板里，不在顶栏"
+assert theme_pos > index_html.index('data-panel="appearance"'), "主题按钮应该在设置弹窗的「外观」面板里，不在顶栏"
 print("home layout revamp ok")
 
 # ---- 添加职位链接（2026-08-18）：按钮 → 弹窗 → 提交，三处 id 要接得上
@@ -261,7 +261,7 @@ assert {m["id"] for m in data["models"]} >= {"claude-sonnet-5", "claude-haiku-4-
 assert all(m["provider"] in ("anthropic", "deepseek") for m in data["models"])
 assert set(data["llm_tasks"]) == {
     "analysis", "materials", "interview_prep", "interview_bank", "resume_review", "job_chat",
-    "preference_profile",
+    "preference_profile", "interview_practice",
 }
 assert data["fallback"], "留空的功能位要能告诉前端它实际会用哪个模型"
 
@@ -277,6 +277,7 @@ assert tasks == {
     "resume_review": "",
     "job_chat": "",
     "preference_profile": "",
+    "interview_practice": "",
 }, tasks
 # 界面上选不到的东西存不进去，免得存进一个打不通的模型名
 assert c.post("/api/config", json={"llm_tasks": {"analysis": "gpt-9"}}).status_code == 400

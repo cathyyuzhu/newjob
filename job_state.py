@@ -398,6 +398,27 @@ def resume_review_error():
         return _resume_review_error
 
 
+# 面试语音练习：出题生成状态——跟 _interview_prep_ids 同一个模式（只需要一个
+# 'generating' 中间态，结果本身落库在 interview_practice_sets，失败原因前端从那一行
+# 的 error 字段读）。按 doc_id 区分而不是全局单例：不同文档的出题互不相干，可以同时跑。
+_practice_generating_ids = set()
+
+
+def start_practice_generation(doc_id):
+    with _lock:
+        _practice_generating_ids.add(doc_id)
+
+
+def finish_practice_generation(doc_id):
+    with _lock:
+        _practice_generating_ids.discard(doc_id)
+
+
+def practice_generation_in_progress(doc_id):
+    with _lock:
+        return doc_id in _practice_generating_ids
+
+
 # LinkedIn jobs-tracker 列表同步状态（"已收藏"/"已投递"，见 linkedin_tracker.py）——
 # 跟题库起草（_bank_generating/_bank_error）同一个模式：全局单例、同一时刻最多跑一次
 # （要开一次真实浏览器扫列表，重复跑除了浪费时间，两次浏览器还会抢同一个登录 profile

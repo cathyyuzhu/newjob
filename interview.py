@@ -611,3 +611,203 @@ def chat_bank_assistant(
     )
     result = _chat(system, history, message, model, provider)
     return {"reply": result["reply"]}
+
+
+# ---------------------------------------------------------------- 面试语音练习
+#
+# 跟上面"面试准备"/"题库"的关键区别：这两个功能都是"AI 帮你写答案"，产品评审
+# （spec/product-review.md 2026-08-18）明确诊断过这个形态让用户觉得"虚假""没有创造出
+# 新东西"，建议方向是"少替你写，多向你提问，把你的真实经历问出来"。这里的两个函数
+# 因此刻意设计成不同的角色：出题时优先复用用户自己文档里已经列好的问题（不是凭空编），
+# 打分时只给点评和分维度反馈，绝不返回一份"标准答案"替用户重写。
+
+PRACTICE_MAX_TOKENS = None  # 同 PREP_MAX_TOKENS：一次要出十几道结构化题目，不设上限
+
+PRACTICE_PROMPT = """你是一个资深的面试辅导教练，正在帮候选人把一份他自己整理的面试准备文档，
+转化成一套可以逐题开口练习的题目清单。
+
+## 候选人上传的准备文档原文
+{doc_text}
+
+## 用户给的轮次提示（可能为空）
+{round_label_hint}
+
+## 任务
+1. **round_label**：这场面试是第几轮/什么性质（比如"二面""技术面"），优先从文档里找
+   （文档经常会自己写清楚，比如标题或说明段落），文档没写就用用户给的提示，都没有就填
+   "面试练习"。
+
+2. **interview_tips**：从文档里找"面试当天技巧""回答注意事项""checklist"这一类元指导
+   （比如"结果部分要有量化数字""多用第一人称""不要自己点破这体现了哪条LP"），原样提炼
+   成一份简短清单，**这份清单之后会被直接用来评分候选人的口头回答**，所以要具体、可判断，
+   不要空泛的"要自信""要清晰"。文档里如果确实没有这类内容，就基于STAR结构（情境-任务-
+   行动-结果，结果要有数据）和简洁度给3-5条通用但可判断的标准。
+
+3. **questions**：8-15 道题，**核心原则是优先从文档里已经列出的内容改编，不要凭空生成**：
+   - 文档里如果已经有"追问预案""常见问题清单""行为面试类问题""业务理解延伸追问"这一类
+     现成的问题列表，直接拿来用（可以稍微调整措辞让它更像面试官会问出口的样子），这些题
+     `source_hint` 写"来自文档《具体章节名》"。
+   - 文档里给某个故事/某段经历标注了"面试官最可能追问"或类似的重点提示，把这个追问也
+     单独出成一道题。
+   - 只有文档信息确实覆盖不到、但这类角色/轮次的面试大概率会问到的典型问题（比如通用的
+     行为面/领导力原则类问题），才由你自己补充，这些题 `source_hint` 写"AI补充（文档未
+     覆盖）"。
+   - 优先级：文档里标注为"必须准备""第一梯队""重点"的内容对应的题目排在前面。
+   - 每题给出：
+     - category：这道题的类型（自己判断合适的分类，比如"行为面/LP""故事追问""业务理解"
+       "背景与动机"等，同类的题 category 要写法一致）
+     - question：面试官会怎么问出口
+     - why_asked：为什么这场面试可能会问这题（结合文档里的信息，不是泛泛而谈）
+     - answer_points：候选人如果要答好这题，应该覆盖到的要点列表（可以直接参考文档里
+       已经写好的回答思路/框架，但只列要点，不要把文档里现成的完整答案照抄进来——
+       候选人是要开口自己组织语言练习，不是来这里念稿的）
+     - source_hint：这道题的信息来源（文档具体章节 或 "AI补充"）
+
+## 硬性约束
+- 全部输出用中文。
+- answer_points 是"要点提示"，不是"标准答案"——不要写成一段可以直接照读的完整回答。
+- 不要编造文档里没有的经历或数据。
+
+## 输出格式
+只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
+{{
+  "round_label": "二面",
+  "interview_tips": ["Result 部分一定要有可量化的数字", "..."],
+  "questions": [
+    {{"category": "行为面/LP", "question": "...", "why_asked": "...",
+      "answer_points": ["...", "..."], "source_hint": "来自文档《行为面试类》"}}
+  ]
+}}
+"""
+
+
+def generate_practice_questions(doc_text, round_label_hint=None, model=None, provider="anthropic"):
+    """从一份准备文档生成一套练习题。返回解析并补好 id 的 dict：
+    {"round_label", "interview_tips", "questions": [{"id", "category", "question",
+    "why_asked", "answer_points", "source_hint"}, ...]}
+
+    题目 id 不用模型给的（模型编号未必唯一/稳定），统一在这里按顺序重新分配 q1/q2/…，
+    保证同一套题里 id 一定唯一——后面作答、打分都要靠这个 id 找到对应的题。
+    """
+    if not (doc_text or "").strip():
+        raise RuntimeError("这份文档没有抽取出任何正文，无法生成练习题。")
+
+    prompt = PRACTICE_PROMPT.format(
+        doc_text=doc_text,
+        round_label_hint=round_label_hint or "（未提供）",
+    )
+    result = llm.ask_json(prompt, provider=provider, model=model, max_tokens=PRACTICE_MAX_TOKENS)
+    if not isinstance(result, dict) or not result.get("questions"):
+        raise RuntimeError("LLM 返回的练习题内容不完整（缺少题目列表），请重试一次。")
+
+    questions = []
+    for i, q in enumerate(result["questions"], start=1):
+        if not isinstance(q, dict) or not (q.get("question") or "").strip():
+            continue
+        questions.append(
+            {
+                "id": f"q{i}",
+                "category": q.get("category") or "其它",
+                "question": q["question"].strip(),
+                "why_asked": q.get("why_asked") or "",
+                "answer_points": [p for p in (q.get("answer_points") or []) if p],
+                "source_hint": q.get("source_hint") or "",
+            }
+        )
+    if not questions:
+        raise RuntimeError("LLM 没有返回任何有效题目，请重试一次。")
+
+    return {
+        "round_label": result.get("round_label") or "面试练习",
+        "interview_tips": [t for t in (result.get("interview_tips") or []) if t],
+        "questions": questions,
+    }
+
+
+SCORE_MAX_TOKENS = None
+
+SCORE_PROMPT = """你是一个资深的面试辅导教练，候选人刚刚对着一道练习题开口回答完，你现在要
+给这次口头回答打分和反馈。
+
+## 这道题
+问题：{question}
+为什么会问：{why_asked}
+候选人应该覆盖的要点提示：
+{answer_points}
+
+## 候选人自己整理的评分标准（来自他的准备文档，这是这次评分最重要的依据）
+{interview_tips}
+
+## 候选人的口头回答（语音转文字，可能有识别错误/口语化表达，不要因为这类小瑕疵扣分）
+{transcript}
+
+## 你的任务
+按下面几个维度给这次回答打分（0到1的小数），并给出具体的强项和待改进点。
+
+## 硬性约束
+- **只做点评和反馈，绝不要给出一份"应该怎么说"的完整改写答案**——候选人是在练习自己
+  开口表达真实经历，不是来找你代笔的。可以在 improvements 里指出"这里可以补充哪类信息"，
+  但不要替他把整段话写出来。
+- 打分要具体到这次回答实际说了什么，不要套话（比如不要写"回答得不错，继续加油"这种
+  没有信息量的评语）。
+- 优先按候选人自己文档里的评分标准（interview_tips）来判断，而不是套一个通用模板。
+- 如果回答明显跑题、或者太短以至于无法评价，如实指出，不要为了凑够维度硬打分。
+- 全部输出用中文。
+
+## 输出格式
+只输出一个JSON对象，不要有任何其他文字、不要用markdown代码块包裹，字段如下：
+{{
+  "overall_score": 0.75,
+  "dimensions": [
+    {{"name": "结构完整性（STAR）", "score": 0.8, "comment": "情境和任务交代清楚，但结果部分没有说具体数字"}},
+    {{"name": "具体性与数据支撑", "score": 0.6, "comment": "..."}},
+    {{"name": "简洁度", "score": 0.85, "comment": "..."}}
+  ],
+  "strengths": ["...", "..."],
+  "improvements": ["...", "..."]
+}}
+"""
+
+
+def _format_tips(tips):
+    return "\n".join(f"- {t}" for t in (tips or [])) or "（文档没有明确的评分标准，按STAR结构完整度和结果是否量化来判断）"
+
+
+def score_practice_answer(question, transcript, interview_tips=None, model=None, provider="anthropic"):
+    """给一次口头作答打分。question 是 generate_practice_questions() 返回的题目 dict
+    之一，transcript 是浏览器语音识别转出来的文字（用户提交前可能已手动纠正过）。
+
+    返回 {"overall_score", "dimensions", "strengths", "improvements"}——刻意不含任何
+    "标准答案"字段，见函数上面模块级注释里的角色边界说明。
+    """
+    if not (transcript or "").strip():
+        raise RuntimeError("还没有作答内容，请先录音或手动输入回答。")
+
+    prompt = SCORE_PROMPT.format(
+        question=question.get("question", ""),
+        why_asked=question.get("why_asked") or "（未说明）",
+        answer_points="\n".join(f"- {p}" for p in (question.get("answer_points") or [])) or "（无）",
+        interview_tips=_format_tips(interview_tips),
+        transcript=transcript.strip(),
+    )
+    result = llm.ask_json(prompt, provider=provider, model=model, max_tokens=SCORE_MAX_TOKENS)
+    if not isinstance(result, dict) or result.get("overall_score") is None:
+        raise RuntimeError("LLM 返回的评分内容不完整，请重试一次。")
+
+    def _clamp(v):
+        try:
+            return max(0.0, min(1.0, float(v)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    dimensions = []
+    for d in result.get("dimensions") or []:
+        if isinstance(d, dict) and d.get("name"):
+            dimensions.append({"name": d["name"], "score": _clamp(d.get("score")), "comment": d.get("comment") or ""})
+
+    return {
+        "overall_score": _clamp(result.get("overall_score")),
+        "dimensions": dimensions,
+        "strengths": [s for s in (result.get("strengths") or []) if s],
+        "improvements": [s for s in (result.get("improvements") or []) if s],
+    }

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>面试语音练习</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app-shell">
+
+  <header class="topbar">
+    <div class="brand">
+      <div>
+        <h1 id="practiceTitle">面试语音练习</h1>
+        <div class="sub">上传准备文档 · AI 出题 · 开口作答 · 打分反馈</div>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <a class="btn btn-secondary btn-sm" href="/">← 返回职位列表</a>
+      <a class="btn btn-secondary btn-sm" href="/interview" target="_blank" rel="noopener"
+        title="跨职位通用的自我介绍、STAR 故事、过往工作、通用问题（新标签页打开）">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
+        通用题库 ↗
+      </a>
+      <select class="model-select" id="practiceModelSelect" title="出题/打分用哪个模型"
+        onchange="setTaskModel('interview_practice', this.value, this)"></select>
+      <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+      </button>
+    </div>
+  </header>
+
+  <section id="practiceRoot"></section>
+
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="/static/common.js"></script>
+<script src="/static/interview_practice.js"></script>
+</body>
+</html>
