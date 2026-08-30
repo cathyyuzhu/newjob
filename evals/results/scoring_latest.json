@@ -1,0 +1,403 @@
+{
+  "disagreements": {
+    "high_scored_dismissed": [
+      {
+        "company": "Lenovo",
+        "id": 240,
+        "overall_match": 0.86,
+        "title": "Director, Enterprise Knowledge Platform Product Management"
+      },
+      {
+        "company": "食物主义",
+        "id": 176,
+        "overall_match": 0.84,
+        "title": "资深AI产品经理"
+      },
+      {
+        "company": "Amazon.com",
+        "id": 57,
+        "overall_match": 0.825,
+        "title": "Sr Product Manager (Tech), AI, WW Global Selling - PMO"
+      },
+      {
+        "company": "UNISOC",
+        "id": 64,
+        "overall_match": 0.825,
+        "title": "AI产品经理8248"
+      },
+      {
+        "company": "Riot Games",
+        "id": 29,
+        "overall_match": 0.795,
+        "title": "Senior Game Product Manager, Monetization and Growth - FFGS/金铲铲之战"
+      },
+      {
+        "company": "Henkel",
+        "id": 212,
+        "overall_match": 0.775,
+        "title": "AI Innovation & Adoption Manager"
+      },
+      {
+        "company": "沃尔玛(中国)投资有限公司",
+        "id": 159,
+        "overall_match": 0.76,
+        "title": "高级产品经理-AI"
+      },
+      {
+        "company": "Amazon.com",
+        "id": 5,
+        "overall_match": 0.75,
+        "title": "Sr. Manager, Product Management, ROA, Worldwide Global Selling"
+      },
+      {
+        "company": "HSBC",
+        "id": 43,
+        "overall_match": 0.75,
+        "title": "Associate Director Product Development"
+      },
+      {
+        "company": "Microsoft",
+        "id": 199,
+        "overall_match": 0.74,
+        "title": "Director of Product Management -AI Skilling"
+      },
+      {
+        "company": "Wisers Information Limited",
+        "id": 264,
+        "overall_match": 0.74,
+        "title": "高级产品经理/总监"
+      },
+      {
+        "company": "Danfoss",
+        "id": 265,
+        "overall_match": 0.74,
+        "title": "Director, Software Platform & Strategy (m/f/d)"
+      },
+      {
+        "company": "Honeywell Technologies",
+        "id": 474,
+        "overall_match": 0.74,
+        "title": "Sr Product Management Specialist"
+      },
+      {
+        "company": "Amazon",
+        "id": 30,
+        "overall_match": 0.735,
+        "title": "Sr. AI Product Manager, ESM Central Operation"
+      },
+      {
+        "company": "Blizzard Entertainment",
+        "id": 9,
+        "overall_match": 0.73,
+        "title": "Senior Manager, Hearthstone Product Management"
+      },
+      {
+        "company": "Riot Games",
+        "id": 31,
+        "overall_match": 0.73,
+        "title": "Senior Game Product Manager, Events - Wild Rift"
+      },
+      {
+        "company": "Meitu Inc.",
+        "id": 177,
+        "overall_match": 0.73,
+        "title": "资深产品经理 （全球化AI产品）"
+      },
+      {
+        "company": "HSBC",
+        "id": 21,
+        "overall_match": 0.725,
+        "title": "Associate Director, Product Development"
+      },
+      {
+        "company": "Honeywell Technologies",
+        "id": 13,
+        "overall_match": 0.72,
+        "title": "Sr Product Management Lead"
+      },
+      {
+        "company": "Coins.ph",
+        "id": 20,
+        "overall_match": 0.72,
+        "title": "Product Lead"
+      },
+      {
+        "company": "Patsnap",
+        "id": 53,
+        "overall_match": 0.715,
+        "title": "AI Product Manager (Intellectual Property / AI Agent)"
+      },
+      {
+        "company": "蔻驰贸易(上海)有限公司",
+        "id": 78,
+        "overall_match": 0.715,
+        "title": "Senior Product Owner, Consumer Experience & AI Innovation"
+      },
+      {
+        "company": "ShopBack",
+        "id": 40,
+        "overall_match": 0.71,
+        "title": "Senior / Product Manager - Deal Discovery & Checkout"
+      },
+      {
+        "company": "Patsnap",
+        "id": 52,
+        "overall_match": 0.71,
+        "title": "Product Marketing Manager, GTM – AI Agent Platform"
+      },
+      {
+        "company": "Blizzard Entertainment",
+        "id": 14,
+        "overall_match": 0.705,
+        "title": "Senior Manager, WoW Product Management"
+      },
+      {
+        "company": "National Basketball Association (NBA)",
+        "id": 18,
+        "overall_match": 0.705,
+        "title": "Data and Innovation Group Product Leader"
+      },
+      {
+        "company": "SF Express Corporation - USA",
+        "id": 80,
+        "overall_match": 0.705,
+        "title": "AI产品经理（M线）"
+      },
+      {
+        "company": "深圳市晨北科技有限公司",
+        "id": 109,
+        "overall_match": 0.7,
+        "title": "AI产品经理（AI应用方向）(J12182)"
+      }
+    ],
+    "low_scored_kept": [
+      {
+        "company": "CoinTR",
+        "id": 211,
+        "overall_match": 0.35,
+        "title": "Product Manager"
+      },
+      {
+        "company": "coins.ph",
+        "id": 233,
+        "overall_match": 0.35,
+        "title": "Product Manager – KYC / Compliance / Risk"
+      },
+      {
+        "company": "Meitu Inc.",
+        "id": 207,
+        "overall_match": 0.39,
+        "title": "Senior Product Manager – AI Short Drama Tools"
+      },
+      {
+        "company": "Traze",
+        "id": 222,
+        "overall_match": 0.465,
+        "title": "Product Owner (产品负责人)"
+      },
+      {
+        "company": "Agora",
+        "id": 210,
+        "overall_match": 0.515,
+        "title": "Sr. AI Product Mgr —  Conversational AI"
+      },
+      {
+        "company": "MLabs",
+        "id": 165,
+        "overall_match": 0.55,
+        "title": "Product Manager"
+      },
+      {
+        "company": "Futu Securities",
+        "id": 218,
+        "overall_match": 0.55,
+        "title": "AI 策略产品leader"
+      },
+      {
+        "company": "FUSE GROUP",
+        "id": 169,
+        "overall_match": 0.565,
+        "title": "Product Manager"
+      },
+      {
+        "company": "Hony Capital",
+        "id": 206,
+        "overall_match": 0.585,
+        "title": "Head of AI & Digital Transformation(A159028)"
+      },
+      {
+        "company": "Otter",
+        "id": 203,
+        "overall_match": 0.59,
+        "title": "Product Manager - Guest Engagement"
+      },
+      {
+        "company": "AlphaLife Sciences",
+        "id": 93,
+        "overall_match": 0.6,
+        "title": "Sr. Product Manager (CN)"
+      },
+      {
+        "company": "Agora",
+        "id": 79,
+        "overall_match": 0.61,
+        "title": "Sr. AI Product Manager — ConvoAI"
+      },
+      {
+        "company": "Flexport",
+        "id": 230,
+        "overall_match": 0.61,
+        "title": "Staff Product Manager"
+      },
+      {
+        "company": "Ant Group",
+        "id": 202,
+        "overall_match": 0.62,
+        "title": "Head of Data Platform Product (AI-Native Transformation)"
+      },
+      {
+        "company": "Tomofun | Furbo Pet Camera",
+        "id": 204,
+        "overall_match": 0.64,
+        "title": "Product Manager 产品经理"
+      },
+      {
+        "company": "ShopBack",
+        "id": 69,
+        "overall_match": 0.645,
+        "title": "Product Lead, AI-Native (Special Projects)"
+      },
+      {
+        "company": "AlphaLife Sciences",
+        "id": 123,
+        "overall_match": 0.65,
+        "title": "Technical Product Manager (CN)"
+      },
+      {
+        "company": "Wisers Information Limited",
+        "id": 189,
+        "overall_match": 0.655,
+        "title": "AI + 大数据高级产品经理"
+      },
+      {
+        "company": "ByteDance",
+        "id": 166,
+        "overall_match": 0.675,
+        "title": "AI产品经理-飞书多维表格（深圳/北京）"
+      },
+      {
+        "company": "A1",
+        "id": 201,
+        "overall_match": 0.675,
+        "title": "Technical Product Manager, AI Systems"
+      },
+      {
+        "company": "BJAK",
+        "id": 137,
+        "overall_match": 0.68,
+        "title": "Technical Product Manager"
+      }
+    ]
+  },
+  "in_remit_slice": [
+    {
+      "company": "UNISOC",
+      "id": 64,
+      "overall_match": 0.825,
+      "title": "AI产品经理8248"
+    },
+    {
+      "company": "Sohu.com",
+      "id": 99,
+      "overall_match": 0.325,
+      "title": "AI产品实习生（评测方向）"
+    },
+    {
+      "company": "AstraZeneca",
+      "id": 103,
+      "overall_match": 0.305,
+      "title": "SMM/AD-免疫领域新产品 MKT-上海"
+    },
+    {
+      "company": "Standard Chartered Bank",
+      "id": 104,
+      "overall_match": 0.25,
+      "title": "Associate Director, Markets Products Specialist"
+    },
+    {
+      "company": "Tory Burch",
+      "id": 107,
+      "overall_match": 0.25,
+      "title": "Senior Manager, Retail Training, Greater China"
+    },
+    {
+      "company": "ABB",
+      "id": 110,
+      "overall_match": 0.2,
+      "title": "Product Compliance Engineer"
+    },
+    {
+      "company": "Bose",
+      "id": 113,
+      "overall_match": 0.57,
+      "title": "China Experience Product & Partnerships Manager"
+    },
+    {
+      "company": "Helen of Troy",
+      "id": 115,
+      "overall_match": 0.275,
+      "title": "Product Marketing Manager"
+    },
+    {
+      "company": "银星智能",
+      "id": 116,
+      "overall_match": 0.475,
+      "title": "智能硬件产品总监/专家/负责人"
+    },
+    {
+      "company": "Du Xiaoman Technology",
+      "id": 124,
+      "overall_match": 0.275,
+      "title": "AI产品经理实习生"
+    },
+    {
+      "company": "Celestica",
+      "id": 125,
+      "overall_match": 0.185,
+      "title": "Senior Manager, Strategic Supply Chain"
+    },
+    {
+      "company": "adidas",
+      "id": 131,
+      "overall_match": 0.15,
+      "title": "Senior Manager, Product Development Apparel (Kidswear)"
+    },
+    {
+      "company": "Infineon Technologies",
+      "id": 132,
+      "overall_match": 0.2,
+      "title": "Product Marketing Manager"
+    }
+  ],
+  "replay": null,
+  "run": {
+    "auc": 0.805,
+    "bootstrap_ci": [
+      0.749,
+      0.859
+    ],
+    "finished_at": "2026-08-30T16:13:26",
+    "n_dismissed_total": 387,
+    "n_dropped_hygiene": 5,
+    "n_dropped_no_score": 202,
+    "n_negative": 183,
+    "n_positive": 44,
+    "n_reasons_total": 32,
+    "n_selected_at_threshold": 51,
+    "permutation_p95": 0.59,
+    "precision_at_threshold": 0.451,
+    "scheme": "reviewed",
+    "threshold": 0.7
+  },
+  "schema": 1
+}

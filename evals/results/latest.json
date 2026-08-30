@@ -1,0 +1,157 @@
+{
+  "fixtures": {
+    "company_origin_known": {
+      "detail": [
+        "6 家公司在 3 次调用里全部判断正确"
+      ],
+      "kind": "classify_companies",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "PASS",
+      "rule": "公司归属分类：知名公司的 foreign/domestic 判断应跟常识一致",
+      "soft": false,
+      "status": "PASS"
+    },
+    "company_overview_honesty": {
+      "detail": [
+        "第1次：如实说明信息不足 —— 未找到该公司的相关信息",
+        "第2次：如实说明信息不足 —— 未找到该公司的相关信息",
+        "第3次：如实说明信息不足 —— 未找到该公司的相关信息"
+      ],
+      "kind": "overview_honesty",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "PASS",
+      "rule": "公司简介不编造：对虚构公司应如实说明信息不足，而不是编出一段介绍",
+      "soft": true,
+      "status": "PASS"
+    },
+    "hard_gap_double_mandatory": {
+      "detail": [
+        "cognitive_match: mean=0.300 (0.30~0.30, range=0.00, n=3)",
+        "content_match: mean=0.483 (0.45~0.50, range=0.05, n=3)",
+        "overall_match: mean=0.392 (0.38~0.40, range=0.03, n=3)",
+        "raw_cognitive_match: mean=0.300 (0.30~0.30, range=0.00, n=3)",
+        "核验通过的硬缺口条数=[2, 2, 2]"
+      ],
+      "kind": "analyze",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "PASS",
+      "rule": "硬性门槛拖累（2条以上未覆盖的强制性要求：无PMP认证 + 不会日语）：cognitive_match 应进一步下调，不应超过 0.4",
+      "soft": false,
+      "status": "PASS"
+    },
+    "hard_gap_single_mandatory": {
+      "detail": [
+        "cognitive_match: mean=0.483 (0.45~0.50, range=0.05, n=3)",
+        "content_match: mean=0.717 (0.60~0.80, range=0.20, n=3)",
+        "overall_match: mean=0.600 (0.53~0.65, range=0.12, n=3)",
+        "raw_cognitive_match: mean=0.483 (0.45~0.50, range=0.05, n=3)",
+        "核验通过的硬缺口条数=[1, 1, 1]"
+      ],
+      "kind": "analyze",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "PASS",
+      "rule": "硬性门槛拖累（1条未覆盖的强制性要求：简历没有PMP认证）：cognitive_match 不应超过 0.5",
+      "soft": false,
+      "status": "PASS"
+    },
+    "materials_no_fabrication": {
+      "detail": [
+        "check: cover_letter_fabrication（跟简历改写分开判断）—— cover_letter 引入了简历里不存在的数字：[['1000', '1000+', '2', '80', '80%'], ['1000', '1000+', '2', '80', '80%'], ['80', '80%']]"
+      ],
+      "kind": "materials",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "FAIL",
+      "rule": "定制简历改写不得引入简历里不存在的数字/量化指标（不能为了凑JD要求编数据）",
+      "soft": true,
+      "status": "WARN"
+    },
+    "pref_profile_none": {
+      "detail": [
+        "cognitive_match: mean=0.900 (0.90~0.90, range=0.00, n=3)",
+        "content_match: mean=0.593 (0.58~0.60, range=0.02, n=3)",
+        "overall_match: mean=0.747 (0.74~0.75, range=0.01, n=3)",
+        "raw_cognitive_match: mean=0.900 (0.90~0.90, range=0.00, n=3)"
+      ],
+      "kind": "analyze",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "PASS",
+      "rule": "锚点（非独立断言）：不带偏好档案时的基准分数，供下面带档案的版本对比",
+      "soft": false,
+      "status": "PASS"
+    },
+    "pref_profile_repel": {
+      "detail": [
+        "content_match: 本条 mean=0.467 (0.40~0.55, range=0.15, n=3)；锚点 mean=0.593 (0.58~0.60, range=0.02, n=3)"
+      ],
+      "kind": "analyze",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "PASS",
+      "rule": "偏好档案软信号：命中排斥点时 content_match 不应高于不带档案的版本，但不能被一票否决压到接近0（下限 0.25）",
+      "soft": false,
+      "status": "PASS"
+    },
+    "seniority_entry_level_mismatch": {
+      "detail": [
+        "content_match: 本条 mean=0.283 (0.25~0.30, range=0.05, n=3)；锚点 mean=0.950 (0.95~0.95, range=0.00, n=3)"
+      ],
+      "kind": "analyze",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "PASS",
+      "rule": "职级错配拖累（重度）：应届/0-1年经验的岗位跟8年经验的候选人差距更极端，content_match 应比锚点低得更多、overall_match 门槛更低",
+      "soft": false,
+      "status": "PASS"
+    },
+    "seniority_junior_mismatch": {
+      "detail": [
+        "content_match: 本条 mean=0.350 (0.25~0.45, range=0.20, n=3)；锚点 mean=0.950 (0.95~0.95, range=0.00, n=3)",
+        "本次运行离散度(range=0.200)不小于要断言的 margin(0.1)，无法判断这次差异是真实效应还是抽样噪声 → INCONCLUSIVE"
+      ],
+      "kind": "analyze",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "INCONCLUSIVE",
+      "rule": "职级错配拖累（轻度）：1-2年经验的协助型初级岗，content_match 应明显低于资深锚点，overall_match 不应轻易越过 70% 投递线",
+      "soft": false,
+      "status": "INCONCLUSIVE"
+    },
+    "seniority_senior_anchor": {
+      "detail": [
+        "cognitive_match: mean=0.943 (0.93~0.95, range=0.02, n=3)",
+        "content_match: mean=0.950 (0.95~0.95, range=0.00, n=3)",
+        "overall_match: mean=0.947 (0.94~0.95, range=0.01, n=3)",
+        "raw_cognitive_match: mean=0.943 (0.93~0.95, range=0.02, n=3)"
+      ],
+      "kind": "analyze",
+      "n_error": 0,
+      "n_ok": 3,
+      "raw_status": "PASS",
+      "rule": "锚点（非独立断言）：技能高度匹配的资深岗位，供下面两条初级错配 fixture 做对比基准",
+      "soft": false,
+      "status": "PASS"
+    }
+  },
+  "run": {
+    "finished_at": "2026-08-30T17:04:05",
+    "fixture_set": "all",
+    "git_rev": "8cf087a",
+    "model": "deepseek-v4-pro",
+    "prompt_fingerprints": {
+      "COMPANY_ORIGIN_PROMPT": "1cf83e52e21d",
+      "MATERIALS_PROMPT": "7026728ce0b7",
+      "PROMPT_TEMPLATE": "824856b90c85"
+    },
+    "provider": "deepseek",
+    "repeats": 3,
+    "retries": 0,
+    "spread_measurable": true
+  },
+  "schema": 1
+}
