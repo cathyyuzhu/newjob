@@ -14,6 +14,7 @@ status='new'，区别只在职位内容是从哪来的——所以刻意不塞�
 """
 
 import logging
+import random
 import re
 import time
 from urllib.parse import parse_qs, urlparse
@@ -21,6 +22,8 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+import collect_errors
+import job_state
 from config import load_config
 from models import get_conn, init_db, insert_job, job_exists, make_dedupe_key
 from tracker_xlsx import existing_keys_from_tracker
@@ -183,14 +186,43 @@ def _looks_like_authwall(url, html):
 
 def fetch_via_guest(job_id, session=None):
     """不登录抓一条职位。抓到返回字段 dict，遇到登录墙/限流/解析不出来返回 None，
-    由调用方决定要不要走浏览器兜底。"""
+    由调用方决定要不要走浏览器兜底。
+
+    对瞬时失败分层重试（2026-08-29，见 collect_errors.RETRY_POLICY）：连接异常/
+    超时走 collect_errors.with_retry()；HTTP 429/5xx 是"请求成功但状态码不对"，
+    with_retry() 只认异常抓不到这种情况，这里按同一张 RETRY_POLICY 表单独手写一个
+    退避循环。两条路径都重试完还是不行，退回 None 交给调用方走浏览器兜底——
+    authwall/正文缺失不是"网络没打通"，不重试，多试也没用。
+    """
     sess = session or requests.Session()
     url = JOB_VIEW_URL.format(job_id=job_id)
+
+    def _get():
+        return sess.get(url, headers=GUEST_HEADERS, timeout=15, allow_redirects=True)
+
     try:
-        resp = sess.get(url, headers=GUEST_HEADERS, timeout=15, allow_redirects=True)
+        resp = collect_errors.with_retry(_get)
     except Exception as e:
         logger.info("guest fetch failed for %s: %s", job_id, e)
         return None
+
+    attempt = 0
+    while resp.status_code == 429 or resp.status_code >= 500:
+        kind = collect_errors.classify(None, http_status=resp.status_code)
+        policy = collect_errors.RETRY_POLICY[kind]
+        if attempt >= policy["max_retries"]:
+            break
+        delay = policy["base_delay_s"] * (2 ** attempt) + random.uniform(0, 1)
+        logger.info("guest fetch got HTTP %s for %s, retrying in %.1fs", resp.status_code, job_id, delay)
+        collect_errors.note_retry()
+        time.sleep(delay)
+        attempt += 1
+        try:
+            resp = _get()
+        except Exception as e:
+            logger.info("guest fetch failed for %s during retry: %s", job_id, e)
+            return None
+
     if resp.status_code != 200:
         logger.info("guest fetch got HTTP %s for %s", resp.status_code, job_id)
         return None
@@ -267,10 +299,22 @@ def fetch_via_browser(job_ids):
     先试无头，整批都没抓到才带界面重试一次：LinkedIn 对无头浏览器的识别比带界面严，
     偶尔会对无头会话直接甩登录墙——这种情况下带界面开一次通常就好了。反过来，如果无头
     已经抓到了内容，就没必要弹一个窗口打扰用户，所以不是无条件走带界面那条路。
+
+    读取（不写入）job_state 的 LinkedIn 登录态熔断（2026-08-29，见 job_state.py 顶部
+    说明）：如果 tracker/how_you_fit 那边最近连续判定过登录态失效，这里直接快速失败，
+    不再额外开一次浏览器撞墙——共用同一个登录 profile，账号风险是共同的。这条路径本身
+    不往熔断计数里写（每条链接遇到 authwall 只是静默返回 None，不是"确认撞墙"这么
+    肯定的信号，见 _browser_pass 里的处理），只读取熔断状态。
     """
     job_ids = list(dict.fromkeys(job_ids))
     if not job_ids:
         return {}
+    if job_state.linkedin_auth_breaker_open():
+        raise JobLinkError(
+            "LinkedIn 登录态最近连续判定失效，已暂停自动化 "
+            f"{job_state.linkedin_auth_breaker_remaining_seconds() // 60} 分钟，避免继续撞墙"
+            "增加账号风险；如果已经手动确认登录态没问题，重新运行一次 ensure_logged_in() 登录即可"
+        )
     result = _browser_pass(job_ids, headless=True)
     if any(result.get(jid) for jid in job_ids):
         return result

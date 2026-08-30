@@ -27,18 +27,10 @@ JD正文：
 
 ## 你的任务
 基于以上信息回答求职者关于这条职位的问题——可以是追问JD里没说清楚的地方、这家公司的
-背景、这个职级大概什么水平、怎么准备这次投递等等。如果问题超出你的知识范围（比如需要
-实时信息你答不上来），如实说不知道，不要编造。
+背景、这个职级大概什么水平、怎么准备这次投递等等。{anti_fabrication_note}
 
 用中文回答，直接给结论和依据，不要写成客套的开场白。回复保持简短，除非用户明确要求
 展开讲。"""
-
-
-def _truncate(text, limit=MAX_CONTEXT_CHARS):
-    text = (text or "").strip()
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "…（已截断）"
 
 
 def _format_analysis_context(tracker_entry):
@@ -66,9 +58,10 @@ def chat_about_job(job, tracker_entry, resume_text, message, history=None, model
     system = SYSTEM_TEMPLATE.format(
         company=job.get("company") or "",
         title=job.get("title") or "",
-        jd_text=_truncate(job.get("jd_text")) or "(未获取到JD正文)",
+        jd_text=llm.truncate(job.get("jd_text"), MAX_CONTEXT_CHARS) or "(未获取到JD正文)",
         analysis_context=_format_analysis_context(tracker_entry),
-        resume_text=_truncate(resume_text) or "(未能读取简历内容)",
+        resume_text=llm.truncate(resume_text, MAX_CONTEXT_CHARS) or "(未能读取简历内容)",
+        anti_fabrication_note=llm.ANTI_FABRICATION_NOTE,
     )
     messages = sanitize_chat_history(history) + [{"role": "user", "content": message}]
     reply = llm.chat(messages, provider=provider, model=model, system=system)

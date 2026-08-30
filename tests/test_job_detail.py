@@ -30,7 +30,14 @@ import llm
 
 MATERIALS_RESULT = {
     "needs_customization": True,
-    "resume_paragraph_edits": [{"index": 1, "text": "主导XX项目改版，转化率+18%"}],
+    "resume_paragraph_edits": [
+        # 照抄了第 1 段原文 → 核查通过，会被写进定制简历
+        {"index": 1, "original": "负责XX项目", "text": "主导XX项目改版，转化率+18%"},
+        # 索引指向第 2 段但原文是第 1 段的 → 应用会覆写掉"教育背景"那段。
+        # 定制简历这条路径直接落盘、没有人工复核，所以必须在这里就丢掉
+        # （见 analyzer.generate_materials 里的 DROP_HARMFUL）。
+        {"index": 2, "original": "负责XX项目", "text": "不该被写进去的内容"},
+    ],
     "resume_optimization_bullets": ["把职责改成量化成果"],
     "cover_letter": "Dear Hiring Manager, I am excited to apply...",
 }
@@ -168,6 +175,10 @@ from docx import Document
 
 doc = Document(result["resume_path"])
 assert doc.paragraphs[1].text == "主导XX项目改版，转化率+18%", "定制简历应该真的按段落索引改写了"
+# ★核查生效★：那条索引指错段的建议必须被丢掉，第 2 段保持原样。
+# 不拦的话 write_tailored_resume 是整段替换，"教育背景"会被静默覆盖掉。
+assert doc.paragraphs[2].text == "教育背景", f"指错段的改写建议不该被应用：{doc.paragraphs[2].text}"
+assert len(result["resume_bullets"]) == 1
 
 job = models.get_job(job_id)
 assert job["resume_path"] == result["resume_path"]

@@ -794,19 +794,13 @@ def score_practice_answer(question, transcript, interview_tips=None, model=None,
     if not isinstance(result, dict) or result.get("overall_score") is None:
         raise RuntimeError("LLM 返回的评分内容不完整，请重试一次。")
 
-    def _clamp(v):
-        try:
-            return max(0.0, min(1.0, float(v)))
-        except (TypeError, ValueError):
-            return 0.0
-
     dimensions = []
     for d in result.get("dimensions") or []:
         if isinstance(d, dict) and d.get("name"):
-            dimensions.append({"name": d["name"], "score": _clamp(d.get("score")), "comment": d.get("comment") or ""})
+            dimensions.append({"name": d["name"], "score": llm.clamp(d.get("score")), "comment": d.get("comment") or ""})
 
     return {
-        "overall_score": _clamp(result.get("overall_score")),
+        "overall_score": llm.clamp(result.get("overall_score")),
         "dimensions": dimensions,
         "strengths": [s for s in (result.get("strengths") or []) if s],
         "improvements": [s for s in (result.get("improvements") or []) if s],

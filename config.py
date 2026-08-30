@@ -35,7 +35,7 @@ DEFAULT_CONFIG = {
     #       https://www.linkedin.com/jobs/search-results，不强校验 showHowYouFit 这个
     #       具体参数名（LinkedIn 前端实现细节，太严的校验容易被将来的改版打破）。
     #   enabled：关闭后每日定时任务跳过这一条，但配置本身保留，不用重新贴URL。
-    # 最多 8 条（见 linkedin_how_you_fit.MAX_HOW_YOU_FIT_SEARCHES），保存设置时超过会
+    # 最多 12 条（见 linkedin_how_you_fit.MAX_HOW_YOU_FIT_SEARCHES），保存设置时超过会
     # 报错拒绝——这是控制"每日定时任务背靠背开几个登录态浏览器会话"这个具体风险的
     # 硬上限，不只是软性建议。
     #
@@ -53,6 +53,9 @@ DEFAULT_CONFIG = {
     # 由 Claude Code 在对话里用 Gmail 连接器完成（见 spec/roadmap.md 对应条目），这个值
     # 只用来算"该不该在每日任务清单里提醒你去查一次"，不会触发任何自动扫描。0 = 关闭提醒。
     "email_scan_interval_days": 1,
+    # "每日任务清单"里"投递超过N天该跟进"这条提醒的阈值天数，0 = 关闭这条提醒
+    # （用户明确要求关掉，2026-08-29）。
+    "stale_application_reminder_days": 7,
     "schedule_enabled": True,  # 关闭后每天定时任务不会自动运行，需要手动点"立即搜索"
     "schedule_hour": 8,
     "schedule_minute": 0,

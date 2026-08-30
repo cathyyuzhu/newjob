@@ -194,7 +194,12 @@ async function loadReview() {
     reviewContent = null;
     reviewMeta = null;
   }
-  selectedEdits = new Set((reviewContent && reviewContent.paragraph_edits || []).map((_, i) => i));
+  // 默认全选，但跳过核查未通过的（applicable === false）——那些应用了会损坏简历。
+  selectedEdits = new Set(
+    (reviewContent && reviewContent.paragraph_edits || [])
+      .map((e, i) => (e.applicable === false ? -1 : i))
+      .filter((i) => i >= 0)
+  );
   renderReviewCard();
   renderEditsCard();
   if (reviewGenerating) startReviewPoll();
@@ -361,6 +366,10 @@ function renderEditsCard() {
     root.innerHTML = '';
     return;
   }
+  // applicable === false 的条目是服务端核查出来"应用了会损坏简历"的（AI 引用的原文跟
+  // 该段对不上，或者只摘抄了一部分而应用是整段替换）。刻意展示出来而不是直接过滤掉：
+  // 藏起来的话用户永远不知道 AI 指错过段——把校验结果显性化正是这一层存在的意义。
+  const blockedCount = edits.filter((e) => e.applicable === false).length;
 
   root.innerHTML = `
     <div class="card">
@@ -375,16 +384,19 @@ function renderEditsCard() {
 
       <label class="edits-selectall">
         <input type="checkbox" id="editsSelectAll" checked onchange="toggleAllEdits(this)">
-        <span>全选（共 ${edits.length} 条）</span>
+        <span>全选（共 ${edits.length} 条${blockedCount ? `，其中 ${blockedCount} 条未通过核对` : ''}）</span>
       </label>
 
       <div class="edit-list">
         ${edits.map((e, i) => `
-          <div class="edit-item">
+          <div class="edit-item${e.applicable === false ? ' edit-item-blocked' : ''}">
             <label class="edit-check">
-              <input type="checkbox" data-editindex="${i}" checked onchange="toggleEdit(${i}, this)">
+              <input type="checkbox" data-editindex="${i}"
+                ${e.applicable === false ? 'disabled' : 'checked'}
+                onchange="toggleEdit(${i}, this)">
             </label>
             <div class="edit-body">
+              ${e.warning ? `<div class="edit-warning">⚠ ${escapeHtml(e.warning)}</div>` : ''}
               ${e.reason ? `<div class="edit-reason">${escapeHtml(e.reason)}</div>` : ''}
               <div class="edit-before">
                 <span class="edit-tag">原文</span>
@@ -400,17 +412,24 @@ function renderEditsCard() {
     </div>`;
 }
 
+// 不可应用的条目一律不参与勾选：全选跳过它们，"是否已全选"也只按可应用的数量算，
+// 否则勾满了 checkbox 也永远点不亮全选框。
+function applicableIndexes() {
+  const edits = (reviewContent && reviewContent.paragraph_edits) || [];
+  return edits.map((e, i) => (e.applicable === false ? -1 : i)).filter((i) => i >= 0);
+}
+
 function toggleEdit(index, checkbox) {
   if (checkbox.checked) selectedEdits.add(index);
   else selectedEdits.delete(index);
-  const edits = (reviewContent && reviewContent.paragraph_edits) || [];
-  document.getElementById('editsSelectAll').checked = selectedEdits.size === edits.length;
+  document.getElementById('editsSelectAll').checked =
+    selectedEdits.size === applicableIndexes().length;
 }
 
 function toggleAllEdits(checkbox) {
-  const edits = (reviewContent && reviewContent.paragraph_edits) || [];
-  selectedEdits = checkbox.checked ? new Set(edits.map((_, i) => i)) : new Set();
+  selectedEdits = checkbox.checked ? new Set(applicableIndexes()) : new Set();
   document.querySelectorAll('[data-editindex]').forEach((box) => {
+    if (box.disabled) return;
     box.checked = checkbox.checked;
   });
 }

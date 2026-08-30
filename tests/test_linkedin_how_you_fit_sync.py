@@ -52,6 +52,7 @@ import linkedin_list_scan
 import job_link
 import job_state
 import app as flask_app
+import routes_search
 
 models.init_db()
 flask_app.app.config["TESTING"] = True
@@ -111,7 +112,37 @@ assert scan_calls == [(TEST_URL, True), (TEST_URL, False)], scan_calls
 print("fetch_search_job_ids retries visible after headless hits a login wall ok")
 
 
-# ---- 4. sync_search()：确定性扫描命中时不触发 agent ----
+# ---- 3b. 登录态熔断：连续 2 次真正判定登录态失效后，第 3 次直接快速失败，不再开浏览器
+#          （2026-08-29，见 job_state.py 顶部说明）----
+job_state._linkedin_auth = {"consecutive_failures": 0, "opened_until": None}  # 隔离本测试
+
+scan_calls.clear()
+for _ in range(2):
+    try:
+        h.fetch_search_job_ids(TEST_URL)
+        assert False
+    except h.HowYouFitSyncError:
+        pass
+assert job_state.linkedin_auth_breaker_open() is True
+scan_calls.clear()
+try:
+    h.fetch_search_job_ids(TEST_URL)
+    assert False, "熔断打开时应该直接快速失败"
+except h.HowYouFitAuthError as e:
+    assert "暂停自动化" in str(e), e
+assert scan_calls == [], "熔断打开时不应该真的去扫描页面"
+print("fetch_search_job_ids trips the LinkedIn auth breaker after repeated auth failures and fast-fails ok")
+
+# 成功一次清零熔断，不影响后面的测试
+job_state._linkedin_auth = {"consecutive_failures": 0, "opened_until": None}
+linkedin_list_scan.scan_job_list = lambda url, headless: {"9999999999"}
+got = h.fetch_search_job_ids(TEST_URL)
+assert got == {"9999999999"}
+assert job_state.linkedin_auth_breaker_open() is False
+print("fetch_search_job_ids clears the auth breaker counter on success ok")
+
+
+# ---- 4. sync_search()：确定性扫描命中足够多职位时不触发 agent ----
 job_link.add_jobs_from_urls = lambda urls: {
     "results": [{"url": u, "status": "added", "job_id": 1000 + i} for i, u in enumerate(urls)],
     "added_ids": [1000 + i for i in range(len(urls))],
@@ -121,12 +152,27 @@ real_scan_with_agent = h._scan_with_agent  # 后面几个测试要换回真实�
 agent_calls = []
 h._scan_with_agent = lambda url, headless=False: (agent_calls.append(url), set())[1]
 
-linkedin_list_scan.scan_job_list = lambda url, headless: {"1111111111"}
+enough_ids = {f"111111{i:04d}" for i in range(h.MIN_DETERMINISTIC_JOB_IDS)}
+linkedin_list_scan.scan_job_list = lambda url, headless: set(enough_ids)
 set_searches([{"id": "s1", "name": "PM", "url": TEST_URL, "enabled": True}])
 result = h.sync_search("s1")
-assert agent_calls == [], "确定性扫描命中职位时不该触发 agent 兜底"
-assert result["total_found"] == 1
-print("sync_search skips agent fallback when deterministic scan finds jobs ok")
+assert agent_calls == [], "确定性扫描命中足够职位时不该触发 agent 兜底"
+assert result["total_found"] == len(enough_ids)
+print("sync_search skips agent fallback when deterministic scan finds enough jobs ok")
+
+
+# ---- 4b. sync_search(force_agent=True)：设置页"用 agent 测试"按钮的入口，跳过
+#          确定性扫描直接强制走 agent，即使确定性扫描本来能扫到足够职位 ----
+scan_job_list_calls = []
+linkedin_list_scan.scan_job_list = lambda url, headless: (scan_job_list_calls.append(url), set(enough_ids))[1]
+agent_calls.clear()
+h._scan_with_agent = lambda url, headless=False: (agent_calls.append(url), {"6666666666"})[1]
+result = h.sync_search("s1", force_agent=True)
+assert scan_job_list_calls == [], "force_agent=True 应该完全跳过确定性扫描"
+assert agent_calls == [TEST_URL]
+assert result["total_found"] == 1 and result["degraded"] is None
+print("sync_search(force_agent=True) skips deterministic scan and forces the agent path ok")
+agent_calls.clear()
 
 
 # ---- 5. sync_search()：确定性扫描抱空时升级给 agent ----
@@ -136,6 +182,57 @@ result = h.sync_search("s1")
 assert agent_calls == [TEST_URL], "确定性扫描抱空时应该升级给 agent"
 assert result["total_found"] == 1
 print("sync_search escalates to agent fallback when deterministic scan finds nothing ok")
+
+
+# ---- 5b. sync_search()：确定性扫描收集到但数量明显偏少时，也升级给 agent，并集去重 ----
+agent_calls.clear()
+linkedin_list_scan.scan_job_list = lambda url, headless: {"3333333333", "4444444444"}
+h._scan_with_agent = lambda url, headless=False: (agent_calls.append(url), {"4444444444", "5555555555"})[1]
+result = h.sync_search("s1")
+assert agent_calls == [TEST_URL], "确定性扫描数量偏少（低于 MIN_DETERMINISTIC_JOB_IDS）时也应该升级给 agent"
+assert result["total_found"] == 3, "偏少的确定性结果应该跟 agent 结果取并集去重，而不是被丢弃"
+print("sync_search escalates to agent fallback and merges results when deterministic scan finds too few ok")
+
+
+# ---- 5c. sync_search()：agent 兜底本身失败（判定 stuck/超步数）不该连累确定性扫描
+#          已经拿到的结果——2026-08-29 修复的设计级 bug，见 sync_search() 顶部说明 ----
+agent_calls.clear()
+linkedin_list_scan.scan_job_list = lambda url, headless: {"3333333333", "4444444444"}
+
+
+def failing_agent(url, headless=False):
+    agent_calls.append(url)
+    raise h.HowYouFitSyncError("AI 判定导航卡住：遇到验证码")
+
+
+h._scan_with_agent = failing_agent
+result = h.sync_search("s1")
+assert agent_calls == [TEST_URL]
+assert result["total_found"] == 2, "agent 兜底失败时应该保留确定性扫描已收集到的职位，而不是整条同步失败"
+assert result["degraded"] and "卡住" in result["degraded"], result["degraded"]
+print("sync_search keeps deterministic results and reports degraded when agent fallback fails ok")
+
+
+# ---- 5d. sync_search()：agent 步数耗尽但异常带了 partial_job_ids 时，要并进最终结果
+#          （2026-08-30 修复——之前只保留确定性扫描的结果，agent 自己已经收集到的
+#          真实数据会被无声丢弃，见 _scan_with_agent() 步数上限那段说明）----
+agent_calls.clear()
+linkedin_list_scan.scan_job_list = lambda url, headless: {"3333333333"}
+
+
+def step_limit_agent_with_partial_data(url, headless=False):
+    agent_calls.append(url)
+    err = h.HowYouFitSyncError("AI 导航超过步数上限（12轮）仍未确定结束，本次同步中止")
+    err.partial_job_ids = {"3333333333", "7777777777", "8888888888"}
+    raise err
+
+
+h._scan_with_agent = step_limit_agent_with_partial_data
+result = h.sync_search("s1")
+assert agent_calls == [TEST_URL]
+assert result["total_found"] == 3, "步数耗尽但 agent 已经收集到的真实职位id应该并进最终结果，不能只剩确定性扫描那 1 条"
+assert result["degraded"] and "步数上限" in result["degraded"], result["degraded"]
+print("sync_search merges partial_job_ids from a step-limit failure into the final result ok")
 
 # search_id 不存在于配置
 try:
@@ -234,9 +331,9 @@ class FakePlaywrightCM:
 def make_scripted_tool_step(tool_uses):
     queue = list(tool_uses)
 
-    def _fake(messages, tools, system=None, model=None, max_tokens=None):
+    def _fake(messages, tools, provider="anthropic", system=None, model=None, max_tokens=None):
         tu = queue.pop(0)
-        return {"stop_reason": "tool_use", "content_blocks": [{"type": "tool_use"}], "tool_use": tu}
+        return {"stop_reason": "tool_use", "assistant_message": {"role": "assistant", "content": []}, "tool_use": tu}
 
     return _fake
 
@@ -284,6 +381,39 @@ assert context6.closed, "扫描完要关掉浏览器上下文"
 print("_scan_with_agent completes normally and excludes job-link candidates (safety net 1) ok")
 
 
+# ---- 6b. 安全网1 也要拦住 componentkey 版职位卡片（2026-08-30）：LinkedIn 改版后
+#          职位卡片变成 <div role="button" componentkey="job-card-component-ref-ID">，
+#          没有 href，只靠 parse_linkedin_job_id() 完全拦不住——实测会被 agent 当成
+#          普通可点击候选逐个点开，点开只是切到详情面板、不算"导航离开"，那道安全网
+#          也拦不住，纯粹浪费步数一个新职位都收集不到 ----
+CLICK_CANDIDATE_WITH_COMPONENTKEY_JOB_CARD = {
+    "items": [
+        {"raw_index": 0, "kind": "click", "tag": "button", "role": "", "text": "加载更多",
+         "href": None, "componentKey": None},
+        {"raw_index": 1, "kind": "click", "tag": "div", "role": "button", "text": "某职位标题",
+         "href": None, "componentKey": "job-card-component-ref-4455933085"},
+    ]
+}
+collect_seq = [{"1"}, {"1", "2"}, {"1", "2", "3"}]
+linkedin_list_scan.collect_job_ids = fake_collect_ok
+llm.chat_tool_step = make_scripted_tool_step([
+    {"id": "t1", "name": "click_element", "input": {"index": 0}},
+    {"id": "t2", "name": "scroll", "input": {"index": 0}},
+    {"id": "t3", "name": "finish", "input": {"status": "reached_end", "reason": "没有更多了"}},
+])
+page = FakeAgentPage(
+    TEST_URL, snapshots=[CLICK_CANDIDATE_WITH_COMPONENTKEY_JOB_CARD, SCROLL_CANDIDATE, EMPTY_CANDIDATES]
+)
+context6b = FakeContext(page)
+h._launch_context = lambda p, headless: context6b
+
+result = h._scan_with_agent(TEST_URL, headless=False)
+assert result == {"1", "2", "3"}, result
+# componentkey 版职位卡片（raw_index 1）应该被排除，只有 raw_index 0 幸存并打上正式编号
+assert page.tag_calls[0] == [0], page.tag_calls
+print("_scan_with_agent excludes componentkey-based job card candidates (safety net 1b) ok")
+
+
 # ---- 7. 候选编号无效：不崩溃，只是这一轮不操作 ----
 noop_page = FakeAgentPage(TEST_URL, snapshots=[])
 h._apply_agent_action(noop_page, "click_element", {"index": 999}, {})
@@ -323,33 +453,63 @@ except h.HowYouFitSyncError as e:
 print("_scan_with_agent raises with model's reason when it decides stuck ok")
 
 
-# ---- 10. 超过步数上限仍未 finish：抛错，不静默返回不完整结果 ----
+# ---- 10. 超过步数上限仍未 finish：抛错，但异常上要带上已收集到的 job_ids（2026-08-30
+#          修复的真实数据丢失 bug——排查"用 agent 测试"报 0 条时发现，collect_job_ids()
+#          明明每轮都收集到了完整数据，只是模型没调 finish，之前直接抛错会把这些真实
+#          数据一起扔掉，见 _scan_with_agent() 步数上限那段说明）----
 llm.chat_tool_step = lambda *a, **kw: {
-    "stop_reason": "tool_use", "content_blocks": [],
+    "stop_reason": "tool_use", "assistant_message": {"role": "assistant", "content": []},
     "tool_use": {"id": "t", "name": "click_element", "input": {"index": 0}},
 }
 overflow_page = FakeAgentPage(TEST_URL, snapshots=[], default_snapshot=SCROLL_CANDIDATE)
 h._launch_context = lambda p, headless: FakeContext(overflow_page)
+linkedin_list_scan.collect_job_ids = lambda page: {"1", "2", "3"}
 try:
     h._scan_with_agent(TEST_URL, headless=False)
     assert False
 except h.HowYouFitSyncError as e:
     assert "步数上限" in str(e), e
-print("_scan_with_agent raises after exceeding MAX_AGENT_STEPS ok")
+    assert e.partial_job_ids == {"1", "2", "3"}, "步数耗尽不该把已经收集到的真实职位id也一起扔掉"
+print("_scan_with_agent raises after exceeding MAX_AGENT_STEPS but preserves collected job_ids ok")
+linkedin_list_scan.collect_job_ids = lambda page: {"1"}
 
 
-# ---- 11. 没有 ANTHROPIC_API_KEY：直接抛错，不尝试开浏览器 ----
-old_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+# ---- 11. 两个 API key 都没有：直接抛错，不尝试开浏览器 ----
+old_anthropic_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+old_deepseek_key = os.environ.pop("DEEPSEEK_API_KEY", None)
 try:
     try:
         h._scan_with_agent(TEST_URL, headless=False)
         assert False
     except h.HowYouFitSyncError as e:
-        assert "ANTHROPIC_API_KEY" in str(e), e
-    print("_scan_with_agent raises without ANTHROPIC_API_KEY ok")
+        assert "ANTHROPIC_API_KEY" in str(e) and "DEEPSEEK_API_KEY" in str(e), e
+    print("_scan_with_agent raises without ANTHROPIC_API_KEY or DEEPSEEK_API_KEY ok")
+
+    # ---- 11b. 没有 ANTHROPIC_API_KEY 但有 DEEPSEEK_API_KEY：退到 deepseek，正常跑完 ----
+    os.environ["DEEPSEEK_API_KEY"] = "test-key"
+    seen_providers = []
+    real_chat_tool_step = make_scripted_tool_step([
+        {"id": "t1", "name": "finish", "input": {"status": "reached_end", "reason": "没有更多了"}},
+    ])
+
+    def _capture_provider(messages, tools, provider="anthropic", system=None, model=None, max_tokens=None):
+        seen_providers.append(provider)
+        return real_chat_tool_step(messages, tools, provider=provider, system=system, model=model, max_tokens=max_tokens)
+
+    llm.chat_tool_step = _capture_provider
+    linkedin_list_scan.collect_job_ids = lambda page: {"1"}
+    fallback_page = FakeAgentPage(TEST_URL, snapshots=[EMPTY_CANDIDATES])
+    h._launch_context = lambda p, headless: FakeContext(fallback_page)
+    result_fallback = h._scan_with_agent(TEST_URL, headless=False)
+    assert result_fallback == {"1"}, result_fallback
+    assert seen_providers == ["deepseek"], seen_providers
+    print("_scan_with_agent falls back to deepseek when only DEEPSEEK_API_KEY is set ok")
 finally:
-    if old_key is not None:
-        os.environ["ANTHROPIC_API_KEY"] = old_key
+    os.environ.pop("DEEPSEEK_API_KEY", None)
+    if old_anthropic_key is not None:
+        os.environ["ANTHROPIC_API_KEY"] = old_anthropic_key
+    if old_deepseek_key is not None:
+        os.environ["DEEPSEEK_API_KEY"] = old_deepseek_key
 
 
 # ==================== sync_all_enabled_searches ====================
@@ -367,7 +527,7 @@ config.save_config(cfg)
 sync_search_calls = []
 
 
-def fake_sync_search(search_id):
+def fake_sync_search(search_id, force_agent=False):
     sync_search_calls.append(search_id)
     if search_id == "s3":
         raise RuntimeError("boom")
@@ -390,6 +550,28 @@ assert sleep_calls == [7], sleep_calls
 print("sync_all_enabled_searches throttles, isolates per-search errors, and skips disabled ones ok")
 
 
+# ---- 12b. 登录态失效应该立刻中止整批，不再尝试剩下的搜索——继续跑只是在同一个已经
+#           出问题的账号上反复撞墙，跟"这一条搜索恰好有问题"（上面 s3 的场景）性质
+#           不同（2026-08-29，缺口5修复）----
+set_searches([
+    {"id": "a1", "name": "A", "url": TEST_URL, "enabled": True},
+    {"id": "a2", "name": "B", "url": TEST_URL, "enabled": True},
+])
+auth_calls = []
+
+
+def fake_sync_search_auth(search_id, force_agent=False):
+    auth_calls.append(search_id)
+    raise h.HowYouFitAuthError("登录态已失效或未登录，请重新运行 ensure_logged_in() 登录后再试")
+
+
+h.sync_search = fake_sync_search_auth
+summary = h.sync_all_enabled_searches(delay_seconds=0)
+assert auth_calls == ["a1"], "登录态失效应该立刻中止整批，不再尝试第二条搜索"
+assert summary["a1"]["error"] and "a2" not in summary, summary
+print("sync_all_enabled_searches aborts the whole batch when a search hits LinkedInAuthRequired ok")
+
+
 # ==================== Flask 路由 ====================
 
 # ---- 13. 不存在的 search_id 返回 404 ----
@@ -401,12 +583,42 @@ assert r.status_code == 404, r.get_json()
 print("sync_how_you_fit_route rejects unknown search_id with 404 ok")
 
 
+# ---- 13b. POST ?force_agent=1 应该原样转发给 sync_search()（设置页"用 agent
+#           测试"按钮，2026-08-29）----
+force_agent_seen = []
+force_gate = threading.Event()
+
+
+def fake_sync_search_force_agent(search_id, force_agent=False):
+    force_agent_seen.append(force_agent)
+    force_gate.wait(timeout=5)
+    return {"results": [], "added_ids": [], "total_found": 0}
+
+
+h.sync_search = fake_sync_search_force_agent
+r = c.post("/api/jobs/sync_how_you_fit/s1?force_agent=1")
+assert r.status_code == 200, r.get_json()
+for _ in range(200):
+    if force_agent_seen:
+        break
+    time_module.sleep(0.02)
+force_gate.set()
+for _ in range(300):
+    status = c.get("/api/jobs/sync_how_you_fit/s1").get_json()
+    if not status["syncing"]:
+        break
+    time_module.sleep(0.02)
+assert force_agent_seen == [True], force_agent_seen
+print("sync_how_you_fit_route forwards ?force_agent=1 to sync_search ok")
+job_state.discard_how_you_fit_state("s1")  # 恢复干净状态，不影响下面测试 14 的初始状态断言
+
+
 # ---- 14. POST 启动 / 并发 409 / GET 轮询状态 / 完成后自动排队分析 ----
 sync_gate = threading.Event()
 added_job_id = {}
 
 
-def fake_sync_search_route(search_id):
+def fake_sync_search_route(search_id, force_agent=False):
     assert search_id == "s1"
     sync_gate.wait(timeout=5)
     conn = models.get_conn()
@@ -474,7 +686,7 @@ print("newly synced how-you-fit job gets queued for automatic analysis ok")
 sync_gate2 = threading.Event()
 
 
-def fake_sync_search_error(search_id):
+def fake_sync_search_error(search_id, force_agent=False):
     sync_gate2.wait(timeout=5)
     raise h.HowYouFitSyncError("登录态已失效或未登录，请重新运行 ensure_logged_in() 登录后再试")
 
@@ -526,14 +738,16 @@ def fake_run_search_once():
     return {"found": 0, "added": 0, "skipped_duplicate": 0, "skipped_irrelevant": 0, "errors": [], "new_job_ids": []}
 
 
-flask_app.run_search_once = fake_run_search_once
+# trigger_search() 现在住在 routes_search.py 里，patch 要打在它实际引用 run_search_once
+# 的那个模块上（app.py 已经不再直接定义任何路由）。
+routes_search.run_search_once = fake_run_search_once
 
 # ---- 17. 没有配置任何已启用的 How You Fit 搜索：不触发批量同步 ----
 set_searches([])
 r = c.post("/api/search/run")
 assert r.status_code == 200, r.get_json()
 assert r.get_json()["how_you_fit_started"] is False
-assert flask_app.how_you_fit_batch_syncing() is False
+assert job_state.how_you_fit_batch_syncing() is False
 print("trigger_search skips how-you-fit batch sync when no enabled searches are configured ok")
 
 # ---- 18. 配了已启用的搜索：顺带触发批量同步，跟专门的「同步全部」按钮共用同一把锁 ----
@@ -550,14 +764,14 @@ h.sync_all_enabled_searches = fake_sync_all_2
 r = c.post("/api/search/run")
 assert r.status_code == 200, r.get_json()
 assert r.get_json()["how_you_fit_started"] is True
-assert flask_app.how_you_fit_batch_syncing() is True
+assert job_state.how_you_fit_batch_syncing() is True
 # 撞车验证：批量同步正在跑的时候，专门的「同步全部」按钮应该照常收到 409——两个入口
 # 共用同一把锁，不能同时各跑一份。
 r_conflict = c.post("/api/jobs/sync_how_you_fit_all")
 assert r_conflict.status_code == 409, r_conflict.get_json()
 trigger_gate.set()
 for _ in range(300):
-    if not flask_app.how_you_fit_batch_syncing():
+    if not job_state.how_you_fit_batch_syncing():
         break
     time_module.sleep(0.02)
 print("trigger_search starts how-you-fit batch sync sharing the same lock as the dedicated button ok")
@@ -583,7 +797,7 @@ assert r2.status_code == 200, r2.get_json()
 assert r2.get_json()["how_you_fit_started"] is False
 finish_running_gate.set()
 for _ in range(300):
-    if not flask_app.how_you_fit_batch_syncing():
+    if not job_state.how_you_fit_batch_syncing():
         break
     time_module.sleep(0.02)
 print("trigger_search silently skips how-you-fit batch sync when one is already running ok")

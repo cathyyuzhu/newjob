@@ -9,6 +9,14 @@ let currentAppStatus = '';
 let starredOnly = false;
 // 标签筛选：单选（再点一次取消），空字符串表示不筛
 let currentTag = '';
+// 批量选择（2026-08-30）：开着的时候职位卡片上会多出复选框，用于"全选 + 一次性移入
+// 已忽略"。selectedJobIds 跨筛选切换不清空（用户可能想先选一批、切个筛选再多选几个），
+// 只在退出批量模式或批量操作完成后清空。currentRenderedJobIds 是 renderJobs() 每次算出
+// 的"当前筛选下全部职位 id"（不止渲染出来给点的那部分，也包含相似分组折叠里的成员），
+// 供"全选"使用，避免另写一份重复的筛选逻辑。
+let batchSelectMode = false;
+let selectedJobIds = new Set();
+let currentRenderedJobIds = [];
 
 // ---------- 筛选状态 ↔ URL ----------
 // 五套筛选（审核状态 / 公司国籍 / 重点关注 / 投递状态 / 标签）加搜索词原来只活在内存里，
@@ -169,6 +177,7 @@ async function loadConfig() {
   document.getElementById('results_wanted').value = cfg.results_wanted;
   document.getElementById('days_old').value = cfg.days_old;
   document.getElementById('email_scan_interval_days').value = cfg.email_scan_interval_days;
+  document.getElementById('stale_application_reminder_days').value = cfg.stale_application_reminder_days;
   document.getElementById('schedule_enabled').checked = cfg.schedule_enabled !== false;
   document.getElementById('schedule_hour').value = cfg.schedule_hour;
   document.getElementById('schedule_minute').value = cfg.schedule_minute;
@@ -206,7 +215,7 @@ function renderTargetCompanyStatus(list) {
   el.textContent = parts.join(' · ');
 }
 
-// ---------- LinkedIn "How You Fit" 搜索列表（设置页，2026-08-23）----------
+// ---------- LinkedIn 智能匹配推荐（内部仍叫 How You Fit）搜索列表（设置页，2026-08-23）----------
 // 跟「重点关注公司」同一类"额外抓取来源"，但每条要存名字+URL+启用开关三样东西，
 // 一行 textarea 放不下，改成逐行结构化小列表：增删改都是本地DOM操作，随「保存设置」
 // 一起提交（见 collectHowYouFitSearches()）；单条"立即同步"是独立于保存设置之外的
@@ -224,6 +233,9 @@ function howYouFitRowHtml(search) {
       <label class="switch-row"><input class="hyf-enabled" type="checkbox" ${checked}> 启用</label>
       <button type="button" class="icon-btn hyf-sync-btn" title="立即同步这一条" onclick="syncHowYouFitRow(this)" ${id ? '' : 'disabled'}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+      <button type="button" class="icon-btn hyf-agent-test-btn" title="用 agent 测试：跳过确定性扫描，强制打开一个可见浏览器让 AI 接管导航，正常入库" onclick="syncHowYouFitRow(this, true)" ${id ? '' : 'disabled'}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v5.5L4 15a2 2 0 0 0 1.7 3h12.6a2 2 0 0 0 1.7-3l-5-7.5V2"/><path d="M8.5 2h7"/><path d="M7.5 12h9"/></svg>
       </button>
       <button type="button" class="icon-btn hyf-remove-btn" title="删除这一条" onclick="removeHowYouFitRow(this)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
@@ -267,7 +279,7 @@ function collectHowYouFitSearches() {
   })).filter((s) => s.name || s.url); // 整行留空就不提交，避免白占数量上限
 }
 
-async function syncHowYouFitRow(btn) {
+async function syncHowYouFitRow(btn, forceAgent = false) {
   const row = btn.closest('.hyf-row');
   const searchId = row.dataset.id;
   if (!searchId) {
@@ -277,10 +289,13 @@ async function syncHowYouFitRow(btn) {
   const statusEl = row.querySelector('.hyf-status');
   setBtnLoading(btn, '');
   try {
-    const res = await fetch(`/api/jobs/sync_how_you_fit/${searchId}`, { method: 'POST' });
+    const url = `/api/jobs/sync_how_you_fit/${searchId}${forceAgent ? '?force_agent=1' : ''}`;
+    const res = await fetch(url, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '未知错误');
-    statusEl.textContent = '同步中…（要开一次登录态浏览器，可能需要一两分钟）';
+    statusEl.textContent = forceAgent
+      ? 'Agent 测试中…（会开一个可见浏览器窗口，跳过确定性扫描，直接看 AI 怎么操作）'
+      : '同步中…（要开一次登录态浏览器，可能需要一两分钟）';
     pollHowYouFitSync(searchId, btn, statusEl);
   } catch (e) {
     showToast(`同步失败：${e.message}`, 'error');
@@ -331,7 +346,7 @@ async function syncHowYouFitAll() {
     const res = await fetch('/api/jobs/sync_how_you_fit_all', { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '未知错误');
-    showToast('已在后台开始依次同步所有已启用的 How You Fit 搜索，可能需要几分钟', 'info', 6000);
+    showToast('已在后台开始依次同步所有已启用的 LinkedIn 智能匹配推荐搜索，可能需要几分钟', 'info', 6000);
     pollHowYouFitAll(btn);
   } catch (e) {
     showToast(`同步失败：${e.message}`, 'error');
@@ -359,7 +374,7 @@ async function pollHowYouFitAll(btn, { intervalMs = 4000, timeoutMs = 600000 } =
     const addedTotal = ((data.result && data.result.added_ids) || []).length;
     const errorCount = Object.values(summary).filter((s) => s.error).length;
     showToast(
-      `How You Fit 批量同步完成：新入库 ${addedTotal} 条${errorCount ? `，${errorCount} 条搜索失败` : ''}`,
+      `LinkedIn 智能匹配推荐批量同步完成：新入库 ${addedTotal} 条${errorCount ? `，${errorCount} 条搜索失败` : ''}`,
       errorCount ? 'error' : 'success', 8000,
     );
     if (data.result && data.result.need_resume) handleNeedResume({ need_resume: true, error: data.result.need_resume_message });
@@ -416,6 +431,7 @@ async function saveConfig() {
     results_wanted: document.getElementById('results_wanted').value,
     days_old: document.getElementById('days_old').value,
     email_scan_interval_days: document.getElementById('email_scan_interval_days').value,
+    stale_application_reminder_days: document.getElementById('stale_application_reminder_days').value,
     schedule_enabled: document.getElementById('schedule_enabled').checked,
     schedule_hour: document.getElementById('schedule_hour').value,
     schedule_minute: document.getElementById('schedule_minute').value,
@@ -475,12 +491,12 @@ async function runNow() {
     // 搜索本身不需要简历，所以这里是 200 而不是 409——职位已经抓到了，只是没法自动
     // 算匹配度。额外提示一条，不掩盖上面那条"搜索完成"。
     if (res.need_resume) handleNeedResume({ need_resume: true, error: res.need_resume_message });
-    // 「智能抓取」顺带触发的 How You Fit 批量同步（2026-08-23，见 app.py trigger_search）：
-    // 跟专门的「同步 How You Fit 全部搜索」按钮共用同一套后端状态和轮询逻辑，这里只是
+    // 「智能抓取」顺带触发的 LinkedIn 智能匹配推荐批量同步（2026-08-23，见 app.py trigger_search）：
+    // 跟专门的「同步 LinkedIn 智能匹配推荐全部搜索」按钮共用同一套后端状态和轮询逻辑，这里只是
     // 换一个触发入口，UI 上复用那颗按钮的 loading 态，让用户能在下拉菜单里看到进度，
     // 而不是抓取完就悄悄在后台跑、用户完全无感知。
     if (res.how_you_fit_started) {
-      showToast('已顺带在后台开始同步已启用的 How You Fit 搜索，进度看「智能抓取」下拉菜单里的按钮', 'info', 6000);
+      showToast('已顺带在后台开始同步已启用的 LinkedIn 智能匹配推荐搜索，进度看「智能抓取」下拉菜单里的按钮', 'info', 6000);
       const hyfBtn = document.getElementById('syncHowYouFitAllBtn');
       setBtnLoading(hyfBtn, '同步中…');
       pollHowYouFitAll(hyfBtn);
@@ -576,9 +592,9 @@ async function submitJobLinks() {
   }
 }
 
-// ---------- 同步 LinkedIn 收藏 / 已投递 ----------
-// 「已收藏」「已投递」两个 LinkedIn 列表结构一样，共用同一套逻辑，按 stage 参数
-// （"saved"/"applied"）区分按钮、接口路径、提示文案里的列表名。
+// ---------- 同步 LinkedIn 收藏 / 已投递 / 面试 ----------
+// 「已收藏」「已投递」「面试」三个 LinkedIn 列表结构一样，共用同一套逻辑，按 stage
+// 参数（"saved"/"applied"/"interview"）区分按钮、接口路径、提示文案里的列表名。
 //
 // 跟「添加链接」的关键区别：那边是同步等一次 HTTP 请求就有逐条结果，这边要开一次真实
 // 浏览器扫列表，慢且耗时不确定，后端拆成"POST 启动 + GET 轮询状态"（见 app.py
@@ -588,6 +604,7 @@ async function submitJobLinks() {
 const TRACKER_STAGE_META = {
   saved: { btnId: 'syncSavedBtn', label: '收藏列表' },
   applied: { btnId: 'syncAppliedBtn', label: '已投递列表' },
+  interview: { btnId: 'syncInterviewBtn', label: '面试列表' },
 };
 
 async function syncTrackerStage(stage) {
@@ -632,8 +649,13 @@ async function pollTrackerSync(stage, btn, { intervalMs = 4000, timeoutMs = 2400
     const added = results.filter((r) => r.status === 'added').length;
     const dup = results.filter((r) => r.status === 'duplicate').length;
     const failed = results.filter((r) => r.status === 'failed').length;
+    // reconciled：顺带核对库里所有 LinkedIn 职位投递状态跟"已投递"/"面试"两个权威列表
+    // 是否一致、推进了几条（见 linkedin_tracker.sync_tracker_stage() 的说明），不止
+    // 针对这次新入库的——不管点的是哪个同步按钮都会跑这一步，所以只在有实际更新时才
+    // 显示，避免每次同步都念叨一遍空话。
+    const reconciledNote = result.reconciled ? ` · 投递状态核对更新 ${result.reconciled} 条` : '';
     showToast(
-      `${meta.label}共找到 ${result.total_found} 条 · 新入库 ${added} 条 · 已存在 ${dup} 条 · 失败 ${failed} 条`,
+      `${meta.label}共找到 ${result.total_found} 条 · 新入库 ${added} 条 · 已存在 ${dup} 条 · 失败 ${failed} 条${reconciledNote}`,
       failed ? 'error' : 'success', 8000,
     );
     if (results.length) {
@@ -703,7 +725,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }).catch(() => {});
   });
-  // How You Fit 批量同步现在除了自己的按钮，也会被「智能抓取」顺带触发（见 runNow()），
+  // LinkedIn 智能匹配推荐批量同步现在除了自己的按钮，也会被「智能抓取」顺带触发（见 runNow()），
   // 所以恢复态检查更有必要了：换个标签页打开、或者点完智能抓取后刷新页面，都不该让
   // 下拉菜单里的按钮显示成空闲态、误导用户以为同步已经结束或可以再点一次。
   fetch('/api/jobs/sync_how_you_fit_all').then((r) => r.json()).then((data) => {
@@ -1119,6 +1141,9 @@ function renderJobs() {
   if (starredOnly) jobs = jobs.filter((j) => !!j.starred);
   if (q) jobs = jobs.filter((j) => (j.title || '').toLowerCase().includes(q) || (j.company || '').toLowerCase().includes(q));
 
+  currentRenderedJobIds = jobs.map((j) => j.id);
+  updateBatchSelectBar();
+
   if (jobs.length === 0) {
     list.innerHTML = '';
     renderEmptyState(empty);
@@ -1127,48 +1152,82 @@ function renderJobs() {
   }
   empty.style.display = 'none';
 
-  // 分组排序（2026-08-17 视觉改版）：重点关注置顶 + 全部按匹配度从高到低，取代原来
-  // "最新抓取排最前"——服务"一眼看到该看什么"这个目标，跟用户确认过采用这个方案
-  // （而不是"只置顶重点关注、其余仍按最新排序"的折中方案），见 spec/roadmap.md。
-  const hasScore = (j) => j.overall_match != null;
-  const byScoreDesc = (a, b) => {
-    if (hasScore(a) && hasScore(b)) return b.overall_match - a.overall_match;
-    if (hasScore(a)) return -1;
-    if (hasScore(b)) return 1;
-    return 0; // 都没有分数，保持原来的相对顺序（数组 sort 是稳定排序）
-  };
-
-  const scoredJobs = jobs.filter(hasScore);
-  const heroJob = scoredJobs.length
-    ? scoredJobs.reduce((a, b) => (b.overall_match > a.overall_match ? b : a))
-    : null;
-  const rest = heroJob ? jobs.filter((j) => j.id !== heroJob.id) : jobs;
-  const starredJobs = rest.filter((j) => j.starred).sort(byScoreDesc);
-  const otherJobs = rest.filter((j) => !j.starred).sort(byScoreDesc);
+  // 「已收藏待投递」/「已投递」/「面试中」/「已忽略」这几个筛选按时间倒序展示（最近的排最前），
+  // 不套用下面的匹配度分组逻辑（重点关注置顶 + hero 大卡）——那套服务的是"一堆还没
+  // 决定的职位里该优先看哪条"，这几个视图关心的是"最近发生了什么"，是不同的浏览
+  // 目的，硬套分组会让"时间最晚排最前"这个诉求被打乱（用户要求这几个视图按时间倒序，
+  // 2026-08-26/2026-08-27）。
+  const isChronologicalView =
+    (currentStatus === 'reviewed' && currentAppStatus === 'not_applied') ||
+    currentAppStatus === 'applied' || currentAppStatus === 'interviewing' ||
+    currentStatus === 'dismissed';
 
   // 详情页「忽略」后要跳到列表里的下一条（见 job_detail.js 的 getNextJobId），
   // 这里把当前渲染顺序（只算可点进详情的）存下来，跨页面导航靠 sessionStorage 传。
   let html = '';
   const order = [];
-  if (heroJob) { html += jobCardHtml(heroJob, { hero: true }); order.push(heroJob.id); }
-  if (starredJobs.length) {
-    html += `<div class="job-group-head">${STAR_ICON_FILLED}重点关注 <span class="n">${starredJobs.length}</span></div>`;
-    html += starredJobs.map((j) => jobCardHtml(j)).join('');
-    starredJobs.forEach((j) => { if (j.overall_match != null) order.push(j.id); });
-  }
-  if (otherJobs.length) {
-    if (heroJob || starredJobs.length) html += `<div class="job-group-head plain">其余职位</div>`;
-    // 只在"其余职位"里做相似分组折叠（2026-08-18）：重点关注是已经逐条决定过要盯的，
-    // 折叠起来会违背标星的本意；hero 是全场最高分单条拎出来，同理不折叠。真正需要
-    // 折叠的场景是"同公司一次开了一堆相近岗位"，恰好都还没决定，落在这个分组里。
-    const grouped = groupJobsForRender(otherJobs);
-    html += grouped
+
+  if (isChronologicalView) {
+    // 排序用的时间：已投递/面试中优先用 applied_at（投递那一刻记的时间戳，只在
+    // 状态"变成已投递"那次写入，之后推进到面试中也不再更新，见 models.py
+    // set_application_status() 的说明，够反映"最近投递/进展"），没有则退回
+    // first_seen（投递状态跟踪功能上线前的历史记录没有这个时间戳）；「已收藏待投递」
+    // 还没投，天然没有 applied_at，只能用 first_seen（入库时间）。
+    const timeValue = (j) => {
+      const t = j.applied_at || j.first_seen;
+      return t ? new Date(t).getTime() : 0;
+    };
+    const sorted = jobs.slice().sort((a, b) => timeValue(b) - timeValue(a));
+    // 相似职位折叠（2026-08-18）照旧保留——跟排序方式无关，纯粹是"同公司一次开了
+    // 一堆相近岗位"时的视觉去重，折叠后组内仍按上面排好的时间顺序展开。
+    const grouped = groupJobsForRender(sorted);
+    html = grouped
       .map((entry) => (entry.type === 'group' ? similarGroupHtml(entry.jobs) : jobCardHtml(entry.job)))
       .join('');
     grouped.forEach((entry) => {
-      const jobs = entry.type === 'group' ? entry.jobs : [entry.job];
-      jobs.forEach((j) => { if (j.overall_match != null) order.push(j.id); });
+      const gJobs = entry.type === 'group' ? entry.jobs : [entry.job];
+      gJobs.forEach((j) => { if (j.overall_match != null) order.push(j.id); });
     });
+  } else {
+    // 分组排序（2026-08-17 视觉改版）：重点关注置顶 + 全部按匹配度从高到低，取代原来
+    // "最新抓取排最前"——服务"一眼看到该看什么"这个目标，跟用户确认过采用这个方案
+    // （而不是"只置顶重点关注、其余仍按最新排序"的折中方案），见 spec/roadmap.md。
+    const hasScore = (j) => j.overall_match != null;
+    const byScoreDesc = (a, b) => {
+      if (hasScore(a) && hasScore(b)) return b.overall_match - a.overall_match;
+      if (hasScore(a)) return -1;
+      if (hasScore(b)) return 1;
+      return 0; // 都没有分数，保持原来的相对顺序（数组 sort 是稳定排序）
+    };
+
+    const scoredJobs = jobs.filter(hasScore);
+    const heroJob = scoredJobs.length
+      ? scoredJobs.reduce((a, b) => (b.overall_match > a.overall_match ? b : a))
+      : null;
+    const rest = heroJob ? jobs.filter((j) => j.id !== heroJob.id) : jobs;
+    const starredJobs = rest.filter((j) => j.starred).sort(byScoreDesc);
+    const otherJobs = rest.filter((j) => !j.starred).sort(byScoreDesc);
+
+    if (heroJob) { html += jobCardHtml(heroJob, { hero: true }); order.push(heroJob.id); }
+    if (starredJobs.length) {
+      html += `<div class="job-group-head">${STAR_ICON_FILLED}重点关注 <span class="n">${starredJobs.length}</span></div>`;
+      html += starredJobs.map((j) => jobCardHtml(j)).join('');
+      starredJobs.forEach((j) => { if (j.overall_match != null) order.push(j.id); });
+    }
+    if (otherJobs.length) {
+      if (heroJob || starredJobs.length) html += `<div class="job-group-head plain">其余职位</div>`;
+      // 只在"其余职位"里做相似分组折叠（2026-08-18）：重点关注是已经逐条决定过要盯的，
+      // 折叠起来会违背标星的本意；hero 是全场最高分单条拎出来，同理不折叠。真正需要
+      // 折叠的场景是"同公司一次开了一堆相近岗位"，恰好都还没决定，落在这个分组里。
+      const grouped = groupJobsForRender(otherJobs);
+      html += grouped
+        .map((entry) => (entry.type === 'group' ? similarGroupHtml(entry.jobs) : jobCardHtml(entry.job)))
+        .join('');
+      grouped.forEach((entry) => {
+        const gJobs = entry.type === 'group' ? entry.jobs : [entry.job];
+        gJobs.forEach((j) => { if (j.overall_match != null) order.push(j.id); });
+      });
+    }
   }
   list.innerHTML = html;
   saveJobListOrder(order);
@@ -1230,6 +1289,7 @@ function jobCardHtml(j, opts) {
   if (opts.hero) cls.push('hero');
   return `
     <div class="${cls.join(' ')}" data-id="${j.id}" ${clickable ? `onclick="location.href='/jobs/${j.id}'"` : ''}>
+      ${batchSelectMode ? `<input type="checkbox" class="job-select-checkbox" onclick="event.stopPropagation()" onchange="toggleJobSelected(${j.id}, this.checked)" ${selectedJobIds.has(j.id) ? 'checked' : ''}>` : ''}
       ${matchBadge(j)}
       <div class="job-main">
         <div class="job-title-row">
@@ -1378,12 +1438,76 @@ async function setJobStatus(id, status, previousStatus = null) {
       `已标记为「${label}」`, 'success', undoable ? 6000 : 2000,
       undoable ? { label: '撤销', onClick: () => setJobStatus(id, previousStatus) } : null,
     );
-    // 忽略已经生效之后再问原因（可选、可跳过）——不能反过来，问原因不该拖慢"忽略"
-    // 这个刻意做成零摩擦的高频动作（见上面的注释）。
-    if (status === 'dismissed') openDismissReasonPrompt(id, loadJobs);
+    // 忽略后弹一次原因小弹窗这个流程暂时隐藏（2026-08-30，用户要求）——批量忽略一次
+    // 选中几十条时逐条弹窗完全不可用，加个人性化。已忽略卡片上"记录忽略原因"的补录入口
+    // （dismissReasonButtonHtml）没有跟着关，想留原因的人仍然可以手动点。以后要按需
+    // 开关这个自动弹窗，计划挪进设置页做成一个开关，见 spec/roadmap.md。
+    // if (status === 'dismissed') openDismissReasonPrompt(id, loadJobs);
   } catch (e) {
     showToast(`操作失败：${e.message}`, 'error');
   } finally {
+    loadJobs();
+  }
+}
+
+// ---------- 批量选择：多选职位 → 全选 → 一次性移入已忽略（2026-08-30） ----------
+// force 不传时按当前状态取反；批量操作做完后调用方会传 false 主动退出选择模式。
+function toggleBatchSelectMode(force) {
+  batchSelectMode = typeof force === 'boolean' ? force : !batchSelectMode;
+  if (!batchSelectMode) selectedJobIds.clear();
+  const bar = document.getElementById('batchSelectBar');
+  if (bar) bar.style.display = batchSelectMode ? 'flex' : 'none';
+  const toggleBtn = document.getElementById('batchSelectToggleBtn');
+  if (toggleBtn) toggleBtn.classList.toggle('active', batchSelectMode);
+  renderJobs();
+}
+
+function toggleJobSelected(id, checked) {
+  if (checked) selectedJobIds.add(id);
+  else selectedJobIds.delete(id);
+  updateBatchSelectBar();
+}
+
+// 全选/取消全选只作用于"当前筛选下能看到的这些职位"（currentRenderedJobIds），
+// 不是全库——切换筛选后已经选中的那些职位仍留在 selectedJobIds 里，不会被这里清掉。
+function toggleSelectAllJobs(checked) {
+  if (checked) currentRenderedJobIds.forEach((id) => selectedJobIds.add(id));
+  else currentRenderedJobIds.forEach((id) => selectedJobIds.delete(id));
+  renderJobs();
+}
+
+function updateBatchSelectBar() {
+  const countEl = document.getElementById('batchSelectCount');
+  if (!countEl) return; // 批量选择工具栏没在 DOM 里（非职位列表相关调用），静默跳过
+  countEl.textContent = selectedJobIds.size;
+  const dismissBtn = document.getElementById('batchDismissBtn');
+  if (dismissBtn) dismissBtn.disabled = selectedJobIds.size === 0;
+  const selectAllCheckbox = document.getElementById('batchSelectAllCheckbox');
+  if (selectAllCheckbox) {
+    selectAllCheckbox.checked = currentRenderedJobIds.length > 0
+      && currentRenderedJobIds.every((id) => selectedJobIds.has(id));
+  }
+}
+
+// 复用单条「忽略」的同一个接口（/api/jobs/<id>/status），并发逐条调用——量级是
+// 用户手动选出来的一批（几十条封顶），没必要为此新开一个批量后端接口。故意不走
+// setJobStatus()：那个函数是给单条操作用的，会各弹一次 toast/触发一次忽略原因弹窗
+// （目前已隐藏，见上面 setJobStatus 里的说明），批量场景只需要一次汇总提示。
+async function batchDismissSelected(btn) {
+  const ids = [...selectedJobIds];
+  if (!ids.length) return;
+  if (!window.confirm(`将把选中的 ${ids.length} 条职位一次性移入「已忽略」，确定继续吗？`)) return;
+  setBtnLoading(btn, '处理中…');
+  try {
+    const results = await Promise.allSettled(ids.map((id) => fetch(`/api/jobs/${id}/status`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'dismissed' }),
+    })));
+    const failed = results.filter((r) => r.status === 'rejected' || !r.value.ok).length;
+    if (failed) showToast(`已移入已忽略 ${ids.length - failed} 条，${failed} 条失败`, 'error', 6000);
+    else showToast(`已将 ${ids.length} 条职位移入「已忽略」`, 'success', 3000);
+  } finally {
+    restoreBtn(btn);
+    toggleBatchSelectMode(false);
     loadJobs();
   }
 }

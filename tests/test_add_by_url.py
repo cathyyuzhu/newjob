@@ -168,12 +168,24 @@ def fake_browser_fetch(job_ids):
 
 job_link.fetch_via_browser = fake_browser_fetch
 
-r = c.post("/api/jobs/add_by_url", json={"urls": "\n".join([
-    "https://www.linkedin.com/jobs/view/4123456789/",
-    "https://www.linkedin.com/jobs/search/?currentJobId=4222222222",
-    "https://www.linkedin.com/jobs/view/4333333333/",
-    "https://www.indeed.com/viewjob?jk=abc123",
-])})
+# 4333333333 那条模拟持续 429，会触发 job_link.fetch_via_guest() 里 2026-08-29 新加的
+# 限流退避重试（RETRY_POLICY["rate_limited"] 起始 60s）。job_link.time 是进程里唯一
+# 那份 time 模块（不是各模块各一份），`job_link.time.sleep = ...` 改的是全局
+# time.sleep，不只 job_link.py 自己——只在这次 POST 期间临时替换、结束立刻复原，
+# 不能一直留着替换掉：下面第4步等分析结果的轮询循环也用 `time.sleep()`，如果全局
+# sleep 一直是空操作，那个循环会瞬间跑完 300 次而不给后台分析线程任何真实的墙钟
+# 时间，看起来像是"分析永远没完成"。
+_real_sleep = time.sleep
+time.sleep = lambda s: None
+try:
+    r = c.post("/api/jobs/add_by_url", json={"urls": "\n".join([
+        "https://www.linkedin.com/jobs/view/4123456789/",
+        "https://www.linkedin.com/jobs/search/?currentJobId=4222222222",
+        "https://www.linkedin.com/jobs/view/4333333333/",
+        "https://www.indeed.com/viewjob?jk=abc123",
+    ])})
+finally:
+    time.sleep = _real_sleep
 assert r.status_code == 200, r.get_json()
 data = r.get_json()
 results = data["results"]

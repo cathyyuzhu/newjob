@@ -1,14 +1,14 @@
-"""同步 LinkedIn jobs-tracker 列表（"已收藏"/"已投递"）的冒烟测试（见 linkedin_tracker.py）。
+"""同步 LinkedIn jobs-tracker 列表（"已收藏"/"已投递"/"面试"）的冒烟测试（见 linkedin_tracker.py）。
 
 覆盖三块：
 1. 列表页扫描的核心逻辑（滚动收集职位链接/稳定后停止/登录墙识别/无头撞墙后带界面
    重试）——用一个 fake Playwright page 模拟，不开真实浏览器、不碰网络。这部分对
-   stage 不敏感（两个 stage 共用同一套扫描代码），只测一遍。
+   stage 不敏感（三个 stage 共用同一套扫描代码），只测一遍。
 2. Flask 路由（POST 启动 + GET 轮询状态 + 并发保护 409 + 完成后自动排队分析 + 不支持
    的 stage 返回 404）——mock 掉 linkedin_tracker.sync_tracker_stage，跟
    test_add_by_url.py 一样不产生真实网络/LLM 调用。
-3. "已投递"这个 stage 特有的行为：新入库的职位要自动打上 application_status='applied'，
-   "已收藏"不受影响。
+3. "已投递"/"面试"两个 stage 各自特有的行为：新入库的职位分别自动打上
+   application_status='applied'/'interviewing'，"已收藏"不受影响。
 """
 import os
 import sys
@@ -160,6 +160,40 @@ assert linkedin_tracker._scan_tracker_jobs("saved", headless=True) is None
 print("_scan_tracker_jobs returns None on login wall ok")
 
 
+# ---- 1b. collect_job_ids()：componentkey 兜底（2026-08-30）——LinkedIn "根据您的
+#          偏好推荐职位"页面把卡片从 <a href="/jobs/view/ID"> 改成了
+#          <div role="button" componentkey="job-card-component-ref-ID">，旧的纯
+#          href 选择器在这个页面上完全收不到职位，确定性扫描和复用同一个函数的 agent
+#          兜底因此双双归零。两种标记要能分别识别、也要能同时出现时合并去重 ----
+class SelectorAwarePage:
+    """按传入的选择器返回不同结果，模拟同一个页面里 href 和 componentkey 两种标记
+    可能同时存在（新旧改版过渡期）或只有一种存在的情况。"""
+
+    def __init__(self, href_results, component_key_results):
+        self._href_results = href_results
+        self._component_key_results = component_key_results
+
+    def eval_on_selector_all(self, selector, js_fn):
+        if "componentkey" in selector:
+            return self._component_key_results
+        return self._href_results
+
+
+only_componentkey_page = SelectorAwarePage(
+    href_results=[],
+    component_key_results=["job-card-component-ref-4455933085", "job-card-component-ref-4432254332", "junk-attr-value"],
+)
+assert linkedin_list_scan.collect_job_ids(only_componentkey_page) == {"4455933085", "4432254332"}
+print("collect_job_ids extracts ids from componentkey when there are no href-based links ok")
+
+mixed_page = SelectorAwarePage(
+    href_results=["https://www.linkedin.com/jobs/view/1111111111/"],
+    component_key_results=["job-card-component-ref-1111111111", "job-card-component-ref-2222222222"],
+)
+assert linkedin_list_scan.collect_job_ids(mixed_page) == {"1111111111", "2222222222"}, "两种标记的结果应该合并去重，不是互相替换"
+print("collect_job_ids merges and dedupes href-based and componentkey-based ids ok")
+
+
 # ---- 2. fetch_tracker_job_ids：不支持的 stage 直接报错，不会尝试开浏览器/查登录态 ----
 try:
     linkedin_tracker.fetch_tracker_job_ids("archived")
@@ -214,6 +248,37 @@ linkedin_tracker._scan_tracker_jobs = fake_scan_headless_ok
 got = linkedin_tracker.fetch_tracker_job_ids("saved")
 assert got == {"9999999999"} and calls == [("saved", True)], (got, calls)
 print("fetch_tracker_job_ids doesn't retry visible when headless already found jobs ok")
+
+
+# ---- 4b. 登录态熔断：连续 2 次真正判定登录态失效后，第 3 次直接快速失败，不再开浏览器
+#          （2026-08-29，见 job_state.py 顶部说明）----
+job_state._linkedin_auth = {"consecutive_failures": 0, "opened_until": None}  # 隔离本测试
+
+linkedin_tracker._scan_tracker_jobs = fake_scan_always_wall
+calls.clear()
+for _ in range(2):
+    try:
+        linkedin_tracker.fetch_tracker_job_ids("applied")
+        assert False
+    except linkedin_tracker.TrackerSyncError:
+        pass
+assert job_state.linkedin_auth_breaker_open() is True
+calls.clear()
+try:
+    linkedin_tracker.fetch_tracker_job_ids("applied")
+    assert False, "熔断打开时应该直接快速失败"
+except linkedin_tracker.TrackerAuthError as e:
+    assert "暂停自动化" in str(e), e
+assert calls == [], "熔断打开时不应该真的去开浏览器扫描"
+print("fetch_tracker_job_ids trips the LinkedIn auth breaker after repeated auth failures and fast-fails ok")
+
+# 成功一次清零熔断，不影响后面的测试
+job_state._linkedin_auth = {"consecutive_failures": 0, "opened_until": None}
+linkedin_tracker._scan_tracker_jobs = fake_scan_headless_ok
+got = linkedin_tracker.fetch_tracker_job_ids("saved")
+assert got == {"9999999999"}
+assert job_state.linkedin_auth_breaker_open() is False
+print("fetch_tracker_job_ids clears the auth breaker counter on success ok")
 
 
 # ---- 5. Flask 路由：不支持的 stage 返回 404 ----
@@ -347,6 +412,59 @@ applied_job = models.get_job(applied_job_id["id"])
 assert applied_job["application_status"] == "applied", applied_job
 assert applied_job["applied_at"], "同步进来的已投递职位要记一个 applied_at 时间戳"
 print("newly synced applied-list job is auto-marked application_status='applied' with applied_at ok")
+
+
+# ---- 7b. "面试" stage 特有行为：新入库职位自动标记 application_status='interviewing'，
+# 不是'applied'——LinkedIn 把职位挪进"面试"列表后就不再出现在"已投递"列表里，这条职位
+# 本来就已经过了投递阶段，标记要体现"更靠后"而不是倒退成"已投递"（见 app.py
+# _sync_tracker_background 的说明）。 ----
+interview_sync_gate = threading.Event()
+interview_job_id = {}
+
+
+def fake_sync_interview():
+    interview_sync_gate.wait(timeout=5)
+    conn = models.get_conn()
+    job_id = models.insert_job(conn, {
+        "title": "Interviewing PM",
+        "company": "Interview Co",
+        "location": "Beijing",
+        "site": "linkedin",
+        "job_url": "https://www.linkedin.com/jobs/view/7777777777",
+        "date_posted": "",
+        "keyword": "Interviewing PM",
+        "jd_text": "We need a product manager and this candidate is already in the interview stage.",
+    })
+    conn.commit()
+    conn.close()
+    interview_job_id["id"] = job_id
+    return {
+        "results": [{"url": "...", "status": "added", "job_id": job_id, "title": "Interviewing PM", "company": "Interview Co"}],
+        "added_ids": [job_id],
+        "total_found": 1,
+    }
+
+
+def fake_sync_tracker_stage_interview(stage):
+    assert stage == "interview"
+    return fake_sync_interview()
+
+
+linkedin_tracker.sync_tracker_stage = fake_sync_tracker_stage_interview
+
+r = c.post("/api/jobs/sync_tracker/interview")
+assert r.status_code == 200, r.get_json()
+interview_sync_gate.set()
+for _ in range(300):
+    status = c.get("/api/jobs/sync_tracker/interview").get_json()
+    if not status["syncing"]:
+        break
+    time.sleep(0.02)
+assert status["error"] is None, status
+assert status["result"]["added_ids"] == [interview_job_id["id"]]
+interview_job = models.get_job(interview_job_id["id"])
+assert interview_job["application_status"] == "interviewing", interview_job
+print("newly synced interview-list job is auto-marked application_status='interviewing' ok")
 
 
 # ---- 8. 出错路径：sync_tracker_stage 抛错时 GET 状态里能看到 error ----

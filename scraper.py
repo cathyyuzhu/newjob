@@ -5,12 +5,17 @@ stores new postings in the SQLite queue for manual review.
 """
 import logging
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 
 import pandas as pd
 
+import collect_errors
 from config import load_config
-from models import get_conn, init_db, insert_job, log_run, job_exists, make_dedupe_key, upgrade_to_linkedin_if_needed
+from models import (
+    get_conn, init_db, insert_collect_run, insert_job, log_run, job_exists,
+    make_dedupe_key, recent_found_counts, upgrade_to_linkedin_if_needed,
+)
 from relevance import location_looks_relevant, title_looks_relevant
 from tracker_xlsx import existing_keys_from_tracker
 
@@ -78,6 +83,9 @@ def _ingest_df(df, conn, keyword, tracker_keys, configured_locations, stats, new
 
 
 def run_search_once():
+    run_started_iso = datetime.now().isoformat(timespec="seconds")
+    run_started_at = time.time()
+    collect_errors.reset_retry_count()
     init_db()
     cfg = load_config()
     keywords = cfg["keywords"]
@@ -104,6 +112,13 @@ def run_search_once():
         log_run(conn, keywords, 0, 0, 0, error=f"python-jobspy not installed: {e}")
         conn.commit()
         conn.close()
+        insert_collect_run(
+            source="jobspy", started_at=run_started_iso,
+            duration_ms=int((time.time() - run_started_at) * 1000),
+            found=0, added=0, skipped_duplicate=0, skipped_irrelevant=0, failed=1,
+            ok=0, error_kind="bug", error_detail=f"python-jobspy not installed: {e}",
+            retries=0, agent_used=0, suspicious=0,
+        )
         raise
 
     # LinkedIn 每条职位都要多发一次详情页请求才能拿到 JD 正文，短时间内量一大很容易被限流/
@@ -125,6 +140,10 @@ def run_search_once():
     stats = {"found": 0, "added": 0, "skipped": 0, "skipped_irrelevant": 0}
     new_job_ids = []
     errors = []
+    # collect_errors.classify() 结果，跟 errors 一一对应但分开存——errors 是给用户看的
+    # 人话文案（沿用 search_runs.error 已有的格式），error_kinds 是给 collect_runs 落库
+    # 用的结构化分类，两者形状不一样，不合并。
+    error_kinds = []
 
     conn = get_conn()
     for keyword in keywords:
@@ -140,7 +159,12 @@ def run_search_once():
                 if call["is_linkedin"] and location and "," not in location:
                     call_location = f"{location}, {country_indeed.title()}"
                 try:
-                    df = scrape_jobs(
+                    # with_retry 只重试 transient/rate_limited（比如网络抖动、jobspy
+                    # 底层请求偶尔超时）；限流退避/网络重试对同一个 关键词×城市×站点
+                    # 组合重放是安全的——入库靠 dedupe_key + job_exists 去重，重放
+                    # 不会把同一条职位插两次。
+                    df = collect_errors.with_retry(
+                        scrape_jobs,
                         site_name=call["sites"],
                         search_term=keyword,
                         location=call_location,
@@ -154,6 +178,7 @@ def run_search_once():
                 except Exception as e:
                     logger.exception("search failed for %s / %s / %s", keyword, call_location, call["sites"])
                     errors.append(f"{keyword}/{call_location}/{','.join(call['sites'])}: {e}")
+                    error_kinds.append(collect_errors.classify(e))
                     df = None
 
                 if call["is_linkedin"] and linkedin_cutoff is not None and df is not None and not df.empty and "date_posted" in df.columns:
@@ -183,7 +208,8 @@ def run_search_once():
         for keyword in keywords:
             for company in target_companies:
                 try:
-                    df = scrape_jobs(
+                    df = collect_errors.with_retry(
+                        scrape_jobs,
                         site_name=["linkedin"],
                         search_term=keyword,
                         results_wanted=linkedin_results_wanted,
@@ -194,6 +220,7 @@ def run_search_once():
                 except Exception as e:
                     logger.exception("company-targeted search failed for %s / %s", keyword, company.get("name"))
                     errors.append(f"{keyword}/{company.get('name')}: {e}")
+                    error_kinds.append(collect_errors.classify(e))
                     df = None
 
                 _ingest_df(df, conn, keyword, tracker_keys, configured_locations, stats, new_job_ids)
@@ -214,12 +241,40 @@ def run_search_once():
     conn.commit()
     conn.close()
 
+    # 一次 run_search_once() 里可能跑几十次 关键词×城市×站点 组合，每个失败的组合
+    # 各自隔离（见 _ingest_df 调用点的说明），但 collect_runs 只记一行汇总——跟已有
+    # 的 search_runs 表同一个粒度。多个组合失败、分类还不一样时取出现次数最多的那个
+    # kind，不是"哪个更严重"，只是给一个有代表性的标签，具体原因看 error_detail 原文。
+    #
+    # 空结果健康检查（缺口⑦）：这里不用 collect_errors.is_suspicious_drop() 那套
+    # "跟历史中位数比"——一次 run_search_once() 汇总了几十个 关键词×城市×站点 组合，
+    # 总数天然就比单条 tracker/how_you_fit 同步大得多、波动也更大，中位数比较容易
+    # 出现大量误报。改用一个更粗但更可靠的信号：没有任何组合报错（ok=1，说明不是
+    # 网络/限流/登录问题），但整个搜索周期里一条职位都没找到——这在关键词/城市/站点
+    # 任何一个不是空的情况下都极不正常，大概率是某个站点访客接口被静默拦截/改版
+    # （历史上 f_TPR 参数导致 LinkedIn 返回 26 字节空页面就是这种"没报错但啥也没有"
+    # 的形态，靠人肉抓包才发现）。单个组合 0 行仍然正常（关键词在某个城市没有新职位
+    # 太常见了），只有"全部组合汇总后一条都没有"才算可疑。
+    ran_any_combo = bool(keywords) and bool(site_calls or (target_companies and "linkedin" in sites))
+    suspicious = not errors and ran_any_combo and stats["found"] == 0
+    insert_collect_run(
+        source="jobspy", started_at=run_started_iso,
+        duration_ms=int((time.time() - run_started_at) * 1000),
+        found=stats["found"], added=stats["added"], skipped_duplicate=stats["skipped"],
+        skipped_irrelevant=stats["skipped_irrelevant"], failed=len(errors),
+        ok=0 if errors else 1,
+        error_kind=Counter(error_kinds).most_common(1)[0][0] if error_kinds else None,
+        error_detail="; ".join(errors) if errors else None,
+        retries=collect_errors.get_retry_count(), agent_used=0, suspicious=int(suspicious),
+    )
+
     return {
         "found": stats["found"],
         "added": stats["added"],
         "skipped_duplicate": stats["skipped"],
         "skipped_irrelevant": stats["skipped_irrelevant"],
         "errors": errors,
+        "suspicious": suspicious,
         "new_job_ids": new_job_ids,
     }
 

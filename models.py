@@ -300,6 +300,90 @@ def init_db():
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_practice_answers_set ON interview_practice_answers(set_id)")
+    # 通知：后台线程跑的同步/AI任务（LinkedIn同步、批量分析、材料生成、体检等，耗时几十秒
+    # 到几分钟不等）完成时落一条记录，跟 /api/checklist 聚合的"当前有哪些条件成立"不同——
+    # 通知是"发生过一件事"，用户看过之前一直在，不随状态变化消失。不做单条已读追踪，
+    # 只有一个全局"未读数"，打开下拉列表即视为看过、整体清零（见 mark_all_notifications_read）。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            category TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT 'info',
+            title TEXT NOT NULL,
+            message TEXT,
+            link TEXT,
+            read_at TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_read ON notifications(read_at)")
+    # LLM 调用流水：每次真实打到 API 的调用记一行（成功和失败都记）。埋点打在 llm.py 的
+    # _call_anthropic/_call_deepseek 两个收口函数里，所以覆盖全项目所有 LLM 调用。
+    #
+    # 跟 interview_preps/resume_reviews 那几张表上的 llm_provider/llm_model 两列不是一回事：
+    # 那两列只说"这条结果是谁生成的"，这张表回答的是"这个月花了多少钱、哪个任务最容易失败、
+    # 哪个模型慢"——原来这些一个都答不上来（Anthropic 的 resp.usage 全项目从来没被读过）。
+    #
+    # 刻意不存 prompt/响应原文：一次匹配分析的 prompt 是简历全文+JD全文（10-20KB），
+    # 每天几十次调用，一年就是几百MB，而这份数据99%的时间没人看。prompt_chars 只记长度，
+    # 足够回答"是不是 prompt 变长导致变贵/被截断"这类问题。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS llm_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            task TEXT,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            ok INTEGER NOT NULL,
+            error_type TEXT,
+            error TEXT,
+            duration_ms INTEGER NOT NULL,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cost_usd REAL,
+            max_tokens INTEGER,
+            prompt_chars INTEGER,
+            usage_json TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_calls_task ON llm_calls(task, created_at)")
+
+    # 职位收集运行流水（2026-08-29，见 spec/roadmap.md「职位收集链路的错误处理生产级
+    # 加固」缺口7）：jobspy 搜索 / tracker 同步 / how-you-fit 同步 / 手动贴链接，每次
+    # 运行成败都写一行。跟 llm_calls 同样的取舍：不存页面 HTML/响应原文，只存结构化
+    # 统计和 collect_errors.classify() 给出的失败分类，这份数据的用途是看趋势/排错，
+    # 不是留档——tracker/how_you_fit 同步之前完全不落库，查不到"最近几次某个来源分别
+    # 找到几条"，断崖式下跌（往往意味着 LinkedIn 悄悄改版）只能靠人肉发现。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS collect_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            duration_ms INTEGER,
+            found INTEGER,
+            added INTEGER,
+            skipped_duplicate INTEGER,
+            skipped_irrelevant INTEGER,
+            failed INTEGER,
+            ok INTEGER NOT NULL,
+            error_kind TEXT,
+            error_detail TEXT,
+            retries INTEGER,
+            agent_used INTEGER,
+            suspicious INTEGER
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_collect_runs_source ON collect_runs(source, started_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_collect_runs_started ON collect_runs(started_at)")
+
     conn.commit()
     _migrate_dedupe_keys(conn)
     _merge_cross_source_duplicates(conn)
@@ -811,6 +895,102 @@ def set_application_status(job_id, application_status):
     conn.close()
 
 
+# 只有这几个状态允许被"核对"自动推进——"收藏"跟"投递"在 LinkedIn 上不是互斥状态
+# （同一条职位可以同时出现在"已收藏"和"已投递"两个列表里），所以"待投"/"已投递"
+# 这两个还在正常流程里的状态发现 LinkedIn 上其实进度更靠前时，可以放心推进；
+# "已拒绝"/"已婉拒"是流程走完后的终态（可能是用户手动标的，也可能是邮件拒信扫描
+# 确认过的，见 email_rejection_scan.py），即使 LinkedIn 的"已投递"列表里暂时还挂着
+# 这条（LinkedIn 不会因为被拒就自动把职位从列表里摘掉），也不该被核对逻辑悄悄改回
+# "已投递"——这是它俩在 _APPLICATION_PROGRESS_RANK 里跟"待投"同分（都是1分）却不能
+# 用同一条规则处理的原因，不能只靠 rank 比较，得显式排除。"Offer"同理不该被降级，
+# 但 rank 比较本身已经保护了它（4分，比"已投递""面试中"都高），不用额外排除。
+_RECONCILE_ADVANCEABLE_STATUSES = {"not_applied", "applied", "interviewing"}
+
+
+def reconcile_application_status_from_linkedin(applied_ids, interview_ids):
+    """核对库里所有 LinkedIn 职位的投递状态，跟 LinkedIn 官方"已投递"/"面试"两个
+    jobs-tracker 列表（这两个列表是判断"这条职位到底投没投"的权威数据源）对齐，把
+    落后的状态推进——只升不降，用 _APPLICATION_PROGRESS_RANK 判断。
+
+    起因：用户反馈"同步 LinkedIn 收藏"进来的职位很多其实已经在 LinkedIn 上投递过了，
+    职达里却一直卡在"待投"——根因是"收藏"同步一直假设"从收藏列表来的职位=还没投"，
+    但 LinkedIn 的"收藏"和"投递"是两个独立维度，不是互斥的，这个假设本来就不成立。
+    实测在真实账号上核实过：库里有职位在 LinkedIn 上已经进入"已投递"/"面试"列表，
+    职达里却还是"待投"，不是孤例（见 spec/roadmap.md 2026-08-26 的记录）。
+
+    不止应用给"这次同步新入库的职位"——历史上通过任何渠道（收藏同步、关键词自动
+    搜索、手动贴链接）入库的 LinkedIn 职位，只要 job_url 能解析出 id 且在传入的两个
+    集合里，都会被核对，不局限于本次同步这一批，这样能顺带修好历史积压的错配，不用
+    再单独跑一次迁移脚本。
+
+    applied_ids/interview_ids 由调用方传入（linkedin_tracker.fetch_tracker_job_ids()
+    扫出来的 LinkedIn 职位 id 集合），这里只管拿去核对入库数据，不关心怎么扫出来的。
+    返回被更新的职位数——按"这条职位"去重计数，不是按"改了几个字段"计数：一条职位
+    如果 application_status 和 status 在这次调用里都被推进了，只算一条，不算两条
+    （下面 _promote_reviewed_for_applied_jobs() 顺带修的 status 卡壳，跟这里的
+    application_status 推进用同一个 id 集合去重合并）。
+    """
+    from job_link import parse_linkedin_job_id
+
+    touched_ids = set()
+    if applied_ids or interview_ids:
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT id, job_url, application_status FROM jobs WHERE site = 'linkedin'"
+        ).fetchall()
+        conn.close()
+
+        for row in rows:
+            if row["application_status"] not in _RECONCILE_ADVANCEABLE_STATUSES:
+                continue
+            job_id = parse_linkedin_job_id(row["job_url"] or "")
+            if not job_id:
+                continue
+            if job_id in interview_ids:
+                target = "interviewing"
+            elif job_id in applied_ids:
+                target = "applied"
+            else:
+                continue
+            current_rank = _APPLICATION_PROGRESS_RANK.get(row["application_status"], 1)
+            target_rank = _APPLICATION_PROGRESS_RANK.get(target, 1)
+            if target_rank <= current_rank:
+                continue
+            set_application_status(row["id"], target)
+            touched_ids.add(row["id"])
+
+    touched_ids |= _promote_reviewed_for_applied_jobs()
+    return len(touched_ids)
+
+
+def _promote_reviewed_for_applied_jobs():
+    """把"投递状态不是待投、但审核状态还停在待审核"这种不该出现的组合统一修掉——
+    "已经投递"逻辑上必然意味着"已经审核过、决定要投"，不可能还停在"待审核"。
+
+    起因：用户反馈"待审核"列表里有几条职位的投递状态明明是"已投递"，却还停在
+    "待审核"。查下来发现根因不止是上面 reconcile_application_status_from_linkedin()
+    这个当天新写的函数——`app.py` 的 `_sync_tracker_background()` 从"同步 LinkedIn
+    已投递/面试"这个功能（2026-08-22）上线起，同步新入库的职位后就一直只调用
+    set_application_status() 打"已投递"/"面试中"，从来没人管过 status 要不要跟着挪；
+    新入库的职位 status 默认是 'new'，两个字段从那时起就有可能不一致，只是没人注意到。
+
+    所以这一步扫描范围不限定"这次核对推进了什么"、也不限定 site='linkedin'——是个
+    通用不变量修复，跟数据从哪个渠道来的、是不是这次核对推进的无关。故意跳过
+    'dismissed'（已忽略）：那是用户显式做过的决定，不该被这里悄悄撤销回"已收藏"。
+    返回被推进的职位 id 集合（调用方要跟 application_status 推进那批 id 去重合并，
+    所以给集合而不是计数，见 reconcile_application_status_from_linkedin() 的说明）。
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT id FROM jobs WHERE status = 'new' AND application_status != 'not_applied'"
+    ).fetchall()
+    conn.close()
+    ids = {row["id"] for row in rows}
+    for job_id in ids:
+        set_job_status(job_id, "reviewed")
+    return ids
+
+
 def list_applied_jobs():
     """当前"已投递"（application_status='applied'）的全部职位——邮件拒信扫描用，
     告诉调用方该去邮箱里查哪些公司，不查已经有后续结果（面试中/已拒绝/offer等）的职位。"""
@@ -911,6 +1091,52 @@ def list_runs(limit=20):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- 通知
+
+
+def add_notification(category, title, message=None, level="info", link=None):
+    """后台任务（同步/AI分析等）完成时落一条通知。不做行数上限/自动清理，参照
+    search_runs 表的先例——本地单用户库，量级不大，不需要额外的清理逻辑。"""
+    conn = get_conn()
+    cur = conn.execute(
+        "INSERT INTO notifications (created_at, category, level, title, message, link) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (datetime.now().isoformat(timespec="seconds"), category, level, title, message, link),
+    )
+    conn.commit()
+    notification_id = cur.lastrowid
+    conn.close()
+    return notification_id
+
+
+def list_notifications(limit=50):
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM notifications ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def unread_notification_count():
+    conn = get_conn()
+    row = conn.execute("SELECT COUNT(*) AS n FROM notifications WHERE read_at IS NULL").fetchone()
+    conn.close()
+    return row["n"]
+
+
+def mark_all_notifications_read():
+    """打开通知下拉列表时调用——不做单条已读追踪，看过一次就整体清零未读数，
+    交互复杂度对齐 /api/checklist 的"今天先别提醒"那一档，不过度设计。"""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE notifications SET read_at = ? WHERE read_at IS NULL",
+        (datetime.now().isoformat(timespec="seconds"),),
+    )
+    conn.commit()
+    conn.close()
 
 
 # ---------------------------------------------------------------- 面试准备
@@ -1460,3 +1686,211 @@ def list_latest_practice_answers(set_id):
         d.pop("rn", None)
         results.append(d)
     return results
+
+
+# ---------------------------------------------------------------- LLM 调用流水
+
+
+# llm.py 里 _CallRecord 收集到的字段名，跟表结构一一对应。显式列出来而不是直接把
+# 调用方传来的 dict 拼进 SQL，避免 llm.py 那边加个字段就悄悄写出一条 SQL 语法错误。
+_LLM_CALL_FIELDS = (
+    "task", "provider", "model", "ok", "error_type", "error", "duration_ms",
+    "input_tokens", "output_tokens", "cost_usd", "max_tokens", "prompt_chars", "usage_json",
+)
+
+
+def insert_llm_call(**fields):
+    """写入一次 LLM 调用记录。由 llm.py 通过 set_recorder() 注册后调用——llm.py 不直接
+    import 本模块，那样会让"第5层地基"反向依赖数据层（见 spec/architecture.md）。
+
+    error 截断到 1000 字符：DeepSeek 的 HTTP 错误会把整个响应体带进来，个别情况下是
+    一大段 HTML，全存下来对排查没有额外价值。
+    """
+    error = fields.get("error")
+    if error and len(error) > 1000:
+        error = error[:1000] + "…（已截断）"
+    values = [datetime.now().isoformat(timespec="seconds")]
+    for name in _LLM_CALL_FIELDS:
+        values.append(error if name == "error" else fields.get(name))
+    conn = get_conn()
+    cur = conn.execute(
+        f"INSERT INTO llm_calls (created_at, {', '.join(_LLM_CALL_FIELDS)}) "
+        f"VALUES ({', '.join(['?'] * (len(_LLM_CALL_FIELDS) + 1))})",
+        values,
+    )
+    conn.commit()
+    conn.close()
+    return cur.lastrowid
+
+
+def update_llm_call_error(call_id, error_type=None, error=None):
+    """把一条已经记成成功的调用改判为失败。
+
+    用在 JSON 解析失败这种情况：API 本身返回 200（埋点已经记了 ok=1），但返回的文本
+    根本不是 JSON。这恰恰是最该统计的失败模式，不回填的话"哪个任务最容易失败"就漏掉了
+    最大的一类。
+    """
+    if not call_id:
+        return 0
+    if error and len(error) > 1000:
+        error = error[:1000] + "…（已截断）"
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE llm_calls SET ok = 0, error_type = ?, error = ? WHERE id = ?",
+        (error_type, error, call_id),
+    )
+    conn.commit()
+    conn.close()
+    return cur.rowcount
+
+
+def llm_call_stats(since=None, group_by="task"):
+    """按任务或模型聚合调用流水。since 是 ISO 日期字符串（含），不传就是全部历史。
+
+    SQLite 没有百分位函数，所以只给 avg/max 耗时；真要看 p95 得把 duration 拉到 Python
+    里算，目前的用量（每天几十次）还不值得为这个多写一层。
+    """
+    if group_by not in ("task", "model", "provider"):
+        raise RuntimeError(f"未知的聚合维度：{group_by}（应为 task / model / provider）")
+    sql = (
+        f"SELECT {group_by} AS key, COUNT(*) AS calls, SUM(1 - ok) AS failures, "
+        "SUM(cost_usd) AS cost_usd, AVG(duration_ms) AS avg_ms, MAX(duration_ms) AS max_ms, "
+        "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens "
+        "FROM llm_calls"
+    )
+    params = ()
+    if since:
+        sql += " WHERE created_at >= ?"
+        params = (since,)
+    sql += f" GROUP BY {group_by} ORDER BY calls DESC"
+    conn = get_conn()
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def llm_call_totals(since=None):
+    """总调用数 / 总失败数 / 总花费。跟 llm_call_stats 分开是因为按维度聚合再求和的话，
+    task 为 NULL 的那些行（没走 resolve_task 的调用）在 GROUP BY 里会单独成组，
+    调用方还得记得把它加回来，容易漏。"""
+    sql = (
+        "SELECT COUNT(*) AS calls, SUM(1 - ok) AS failures, SUM(cost_usd) AS cost_usd, "
+        "SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens FROM llm_calls"
+    )
+    params = ()
+    if since:
+        sql += " WHERE created_at >= ?"
+        params = (since,)
+    conn = get_conn()
+    row = conn.execute(sql, params).fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+# ---------------------------------------------------------------- 职位收集运行流水
+
+
+# collect_runs 表里 finished_at/ok 之外的其余列，跟 insert_collect_run() 的调用方
+# （scraper.py/linkedin_tracker.py/linkedin_how_you_fit.py/routes_search.py）逐个
+# 对应。显式列出来而不是直接把调用方传来的 dict 拼进 SQL，避免加个字段时悄悄写出
+# 一条 SQL 语法错误（跟 _LLM_CALL_FIELDS 同样的取舍）。
+_COLLECT_RUN_FIELDS = (
+    "source", "started_at", "duration_ms", "found", "added", "skipped_duplicate",
+    "skipped_irrelevant", "failed", "ok", "error_kind", "error_detail", "retries",
+    "agent_used", "suspicious",
+)
+
+
+def insert_collect_run(**fields):
+    """写入一次职位收集运行记录，成败都写一行——见 spec/roadmap.md「职位收集链路的
+    错误处理生产级加固」缺口7。error_kind 取值见 collect_errors.KINDS。
+
+    error_detail 截断到 1000 字符，跟 insert_llm_call() 的 error 截断同样的取舍。
+    """
+    error_detail = fields.get("error_detail")
+    if error_detail and len(error_detail) > 1000:
+        error_detail = error_detail[:1000] + "…（已截断）"
+    values = [datetime.now().isoformat(timespec="seconds")]
+    for name in _COLLECT_RUN_FIELDS:
+        values.append(error_detail if name == "error_detail" else fields.get(name))
+    conn = get_conn()
+    cur = conn.execute(
+        f"INSERT INTO collect_runs (finished_at, {', '.join(_COLLECT_RUN_FIELDS)}) "
+        f"VALUES ({', '.join(['?'] * (len(_COLLECT_RUN_FIELDS) + 1))})",
+        values,
+    )
+    conn.commit()
+    conn.close()
+    return cur.lastrowid
+
+
+def collect_run_stats(since=None, group_by="source"):
+    """按来源或失败分类聚合收集运行流水。since 是 ISO 日期字符串（含），不传就是
+    全部历史。按 error_kind 聚合时只看真的失败过的行（error_kind 非空），不然"没
+    出错"会作为一个 NULL 分组挤在结果里，没有意义。"""
+    if group_by not in ("source", "error_kind"):
+        raise RuntimeError(f"未知的聚合维度：{group_by}（应为 source / error_kind）")
+    sql = (
+        f"SELECT {group_by} AS key, COUNT(*) AS runs, SUM(1 - ok) AS failures, "
+        "SUM(found) AS found, SUM(added) AS added, SUM(failed) AS item_failed, "
+        "AVG(duration_ms) AS avg_ms FROM collect_runs"
+    )
+    conditions = []
+    params = []
+    if since:
+        conditions.append("started_at >= ?")
+        params.append(since)
+    if group_by == "error_kind":
+        conditions.append("error_kind IS NOT NULL")
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += f" GROUP BY {group_by} ORDER BY runs DESC"
+    conn = get_conn()
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def collect_run_totals(since=None):
+    """总运行次数 / 总失败次数 / 总找到 / 总入库。跟 collect_run_stats 分开的理由
+    跟 llm_call_totals 一样：按维度聚合再求和的话容易漏掉聚合维度本身为 NULL 的行。"""
+    sql = (
+        "SELECT COUNT(*) AS runs, SUM(1 - ok) AS failures, SUM(found) AS found, "
+        "SUM(added) AS added FROM collect_runs"
+    )
+    params = ()
+    if since:
+        sql += " WHERE started_at >= ?"
+        params = (since,)
+    conn = get_conn()
+    row = conn.execute(sql, params).fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+def recent_found_counts(source, limit=10):
+    """某个 source 最近 limit 次成功运行（ok=1）的 found 值，按时间倒序。供
+    collect_errors.is_suspicious_drop() 判断"这次数量是不是断崖式下跌"用——只看
+    成功过的运行，失败的运行 found 本来就没有意义（要么是 0，要么根本没跑完）。"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT found FROM collect_runs WHERE source = ? AND ok = 1 "
+        "ORDER BY started_at DESC LIMIT ?",
+        (source, limit),
+    ).fetchall()
+    conn.close()
+    return [r["found"] for r in rows if r["found"] is not None]
+
+
+def last_successful_collect_run_at(source):
+    """某个 source 最近一次成功（ok=1）运行的 started_at，没有则 None。供
+    scheduler.py 判断"距上次成功抓取是否已经超过一个正常调度周期"，决定进程启动时
+    要不要立刻补跑一次（比如笔记本合盖休眠错过了昨天的定时触发）。"""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT started_at FROM collect_runs WHERE source = ? AND ok = 1 "
+        "ORDER BY started_at DESC LIMIT 1",
+        (source,),
+    ).fetchone()
+    conn.close()
+    return row["started_at"] if row else None

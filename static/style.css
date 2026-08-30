@@ -228,6 +228,40 @@ body {
 .split-btn-menu button:hover { background: var(--bg-subtle); }
 .split-btn-menu button svg { width: 15px; height: 15px; flex-shrink: 0; color: var(--text-muted); }
 
+/* ---------- 通知铃铛 ---------- */
+/* 同步/AI分析后台任务完成的持久化提醒，跟 toast 不同——未读数是服务端算的，
+   跳走/关掉浏览器再回来也不会错过。6 个页面顶栏共用同一套标记，逻辑见
+   static/common.js 的 initNotifications()/toggleNotifDropdown()。 */
+.notif-wrap { position: relative; }
+.notif-badge {
+  position: absolute; top: -4px; right: -4px; min-width: 15px; height: 15px;
+  padding: 0 3px; border-radius: 999px; background: var(--danger); color: #fff;
+  font-size: 0.62rem; font-weight: 600; line-height: 15px; text-align: center;
+}
+.notif-dropdown {
+  display: none; position: absolute; top: calc(100% + 0.35rem); left: 0; z-index: 20;
+  width: 20rem; max-width: min(20rem, 90vw); max-height: 22rem; overflow-y: auto;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12); padding: 0.3rem;
+}
+.notif-dropdown.active { display: block; }
+.notif-empty { padding: 1rem 0.6rem; font-size: 0.8rem; color: var(--text-faint); text-align: center; }
+.notif-item {
+  display: flex; gap: 0.5rem; padding: 0.55rem 0.6rem; border-radius: var(--radius-sm);
+  text-decoration: none; color: inherit; cursor: default;
+}
+a.notif-item { cursor: pointer; }
+.notif-item:hover { background: var(--bg-subtle); }
+.notif-item + .notif-item { border-top: 1px solid var(--border); }
+.notif-dot { flex-shrink: 0; margin-top: 2px; }
+.notif-dot.success { color: var(--success); }
+.notif-dot.error { color: var(--danger); }
+.notif-dot.info { color: var(--primary); }
+.notif-body { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+.notif-title { font-size: 0.83rem; font-weight: 600; color: var(--text); }
+.notif-message { font-size: 0.78rem; color: var(--text-muted); word-break: break-word; }
+.notif-time { font-size: 0.7rem; color: var(--text-faint); }
+
 /* ---------- 今日抓取漏斗 ---------- */
 .funnel {
   font-size: 0.72rem; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
@@ -457,12 +491,12 @@ textarea:focus, input:focus, select:focus {
 #howYouFitList { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.6rem; }
 .hyf-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto auto auto auto;
   align-items: center;
   gap: 0.5rem;
 }
 .hyf-row .hyf-status { grid-column: 1 / -1; margin: -0.1rem 0 0; }
-.hyf-sync-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.hyf-sync-btn:disabled, .hyf-agent-test-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 @media (max-width: 720px) {
   .hyf-row { grid-template-columns: 1fr; }
 }
@@ -538,6 +572,22 @@ textarea:focus, input:focus, select:focus {
 .search-box svg { position: absolute; left: 0.6rem; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--text-faint); }
 .search-box input { padding-left: 2rem; background: var(--bg-elevated); }
 
+/* 批量选择工具栏上的"批量选择"按钮开着时反色，跟其它筛选态（chip.active/nav-item.active）
+   是同一套"选中=反色"视觉语言 */
+#batchSelectToggleBtn.active { background: var(--text); border-color: var(--text); color: var(--bg); }
+
+/* 批量选择工具栏：只在批量选择模式开启时显示（见 app.js toggleBatchSelectMode），
+   跟 filter-bar 视觉上是一排，但单独一行避免跟筛选 chip 抢位置 */
+.batch-select-bar {
+  align-items: center; gap: 0.9rem; margin: -0.4rem 0 1rem; padding: 0.55rem 0.8rem;
+  background: var(--bg-subtle); border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: 0.82rem; color: var(--text-muted); flex-wrap: wrap;
+}
+.batch-select-all { display: flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+.batch-select-all input { cursor: pointer; }
+.batch-select-count { margin-right: auto; }
+.batch-select-count b { color: var(--text); font-weight: 700; }
+
 /* ---------- Job list ----------
    卡片网格 → 分割线列表。renderJobs() 在 app.js 里对结果做了分组排序（重点关注置顶 +
    按匹配度从高到低，取代原来"最新抓取排最前"），这里只负责视觉，DOM 结构/ class 名
@@ -557,6 +607,10 @@ textarea:focus, input:focus, select:focus {
 .job-card.star.clickable:hover { padding-left: 0.85rem; }
 .job-title-star { color: var(--text); display: inline-flex; flex-shrink: 0; }
 .job-title-star svg { width: 13px; height: 13px; }
+
+/* 批量选择模式下每张卡片左侧的复选框，跟 matchBadge 并排 */
+.job-select-checkbox { flex-shrink: 0; width: 16px; height: 16px; margin-top: 0.15rem; cursor: pointer; accent-color: var(--text); }
+.job-card.hero .job-select-checkbox { accent-color: var(--bg); }
 
 /* "今日最高"大卡：全场最高分单独拎出来，整块反色，跟统计卡片选中态是同一套语言 */
 .job-card.hero {
@@ -912,7 +966,15 @@ tr:hover td { background: var(--bg-subtle); }
   display: flex; gap: 0.7rem; padding: 0.8rem 0.9rem;
   border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-subtle);
 }
+/* 服务端核查未通过的条目：AI 引用的原文跟该段对不上，应用会损坏简历。整条压暗 +
+   checkbox 禁用，但仍然展示出来——藏起来用户就不知道 AI 指错过段了。 */
+.edit-item-blocked { border-color: var(--warning); background: var(--warning-soft); opacity: 0.85; }
+.edit-warning {
+  font-size: 0.78rem; font-weight: 600; line-height: 1.5;
+  color: var(--warning-strong); margin-bottom: 0.45rem;
+}
 .edit-check input { width: auto; accent-color: var(--primary); margin-top: 0.2rem; }
+.edit-check input:disabled { cursor: not-allowed; }
 .edit-body { flex: 1; min-width: 0; }
 .edit-reason { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem; }
 .edit-before, .edit-after {

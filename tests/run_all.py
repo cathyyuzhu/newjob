@@ -16,11 +16,15 @@ for _s in (sys.stdout, sys.stderr):
         _s.reconfigure(encoding="utf-8", errors="replace")
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TESTS = ["test_llm.py", "test_llm_tool_use.py", "test_prep.py", "test_frontend.py", "test_bank.py",
-         "test_bank_chat.py", "test_resume.py", "test_job_detail.py", "test_dismiss_abort.py",
+TESTS = ["test_llm.py", "test_llm_logging.py", "test_llm_tool_use.py", "test_prep.py", "test_frontend.py", "test_bank.py",
+         "test_bank_chat.py", "test_resume_edits.py", "test_analyzer_rules.py",
+         "test_resume.py", "test_job_detail.py",
+         "test_dismiss_abort.py",
          "test_add_by_url.py", "test_preference_profile.py", "test_checklist.py", "test_dedupe_normalize.py",
          "test_linkedin_company.py", "test_linkedin_tracker_sync.py", "test_linkedin_how_you_fit_sync.py",
-         "test_email_rejection_scan.py"]
+         "test_email_rejection_scan.py", "test_reconcile_application_status.py", "test_notifications.py",
+         "test_collect_runs.py", "test_scheduler.py",
+         "test_eval_verdicts.py", "test_eval_repeats.py", "test_eval_fabrication.py", "test_eval_labels.py"]
 JS_FILES = ["static/common.js", "static/interview.js", "static/bank.js", "static/app.js",
             "static/resume.js", "static/job_detail.js", "static/interview_practice.js"]
 

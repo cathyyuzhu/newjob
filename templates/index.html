@@ -17,6 +17,17 @@
       <div class="sub">智能领航，过滤噪音，保留信号</div>
     </div>
     <div class="topbar-actions">
+      <!-- 通知铃铛：同步/AI分析这些后台任务完成时的持久化提醒，跟 showToast() 不同——
+           toast 只有正好停留在发起操作那个页面才能看到，铃铛的未读数是服务端算的，
+           跳走/关掉浏览器再回来也不会错过。6 个页面都有，逻辑共用 static/common.js
+           的 initNotifications()/toggleNotifDropdown()。 -->
+      <div class="notif-wrap">
+        <button class="icon-btn" id="notifBellBtn" title="通知" onclick="toggleNotifDropdown()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+          <span class="notif-badge" id="notifBadge" style="display:none;"></span>
+        </button>
+        <div class="notif-dropdown" id="notifDropdown"></div>
+      </div>
       <!-- 面试题库/我的简历都是偶尔才点一次的导航项（新标签页打开，不该把职位列表顶掉），
            2026-08-18 从中间操作区挪过来、去掉边框（.btn-plain），面试题库放我的简历左边 -->
       <a class="btn btn-secondary btn-plain btn-sm" id="bankBtn" href="/interview" target="_blank" rel="noopener"
@@ -55,7 +66,7 @@
            ——添加链接用得比搜索/AI分析低频，合并进下拉能省一个按钮位（2026-08-18） -->
       <div class="split-btn">
         <button class="btn btn-primary btn-sm" id="runNowBtn" onclick="runNow()"
-          title="按「设置」里的关键词和城市，去 Indeed / LinkedIn 抓一轮新职位。抓到的新职位会自动排队做 AI 匹配分析，重复的和明显不相关的会直接跳过。如果配置了已启用的 How You Fit 搜索，会顺带在后台同步这些搜索（进度看下拉菜单里的按钮）">
+          title="按「设置」里的关键词和城市，去 Indeed / LinkedIn 抓一轮新职位。抓到的新职位会自动排队做 AI 匹配分析，重复的和明显不相关的会直接跳过。如果配置了已启用的 LinkedIn 智能匹配推荐搜索，会顺带在后台同步这些搜索（进度看下拉菜单里的按钮）">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           智能抓取
         </button>
@@ -72,11 +83,11 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
             添加链接
           </button>
-          <!-- 同步 LinkedIn 收藏/已投递：跟「添加链接」同一类"补自动搜索漏掉的职位"入口，
-               区别是这个不用手动挨条复制链接——开一次登录态的浏览器把对应列表扫一遍，
-               找到的链接走跟「添加链接」完全相同的入库流程。要求本机之前手动登录过
+          <!-- 同步 LinkedIn 收藏/已投递/面试：跟「添加链接」同一类"补自动搜索漏掉的职位"
+               入口，区别是这个不用手动挨条复制链接——开一次登录态的浏览器把对应列表扫
+               一遍，找到的链接走跟「添加链接」完全相同的入库流程。要求本机之前手动登录过
                LinkedIn（见 README「同步 LinkedIn 收藏/已投递怎么用」），没登录过会在
-               结果里报错提示。两个按钮共用 syncTrackerStage()，只是传的 stage 不同。 -->
+               结果里报错提示。三个按钮共用 syncTrackerStage()，只是传的 stage 不同。 -->
           <button type="button" id="syncSavedBtn" onclick="closeRunNowMenu(); syncTrackerStage('saved');"
             title="打开一次登录态的浏览器，扫一遍你在 LinkedIn 上「已收藏」的职位列表，把里面的职位链接同步进待审核。首次使用前需要先手动登录过 LinkedIn，见 README">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
@@ -87,13 +98,22 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
             同步 LinkedIn 已投递
           </button>
-          <!-- How You Fit 全部搜索：跟每日定时任务用的是同一个后端函数
+          <!-- LinkedIn 会把职位挪进"面试"列表后就不再出现在"已投递"列表里了，光同步
+               已投递会漏掉这些职位，所以单独补一个入口，同步进来自动标记投递状态为
+               「面试中」（2026-08-26）。 -->
+          <button type="button" id="syncInterviewBtn" onclick="closeRunNowMenu(); syncTrackerStage('interview');"
+            title="打开一次登录态的浏览器，扫一遍你在 LinkedIn 上「面试」的职位列表，同步进职达并自动标记投递状态为「面试中」。LinkedIn 上标为面试阶段的职位不会再出现在「已投递」列表里，所以需要单独同步这个列表。首次使用前需要先手动登录过 LinkedIn，见 README">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            同步 LinkedIn 面试
+          </button>
+          <!-- LinkedIn 智能匹配推荐全部搜索（UI 显示名，内部仍叫 How You Fit，见下方设置区块
+               说明）：跟每日定时任务用的是同一个后端函数
                （linkedin_how_you_fit.sync_all_enabled_searches()），让用户配好搜索
                条目后不用等到第二天定时任务才能验证生效（2026-08-23）。 -->
           <button type="button" id="syncHowYouFitAllBtn" onclick="closeRunNowMenu(); syncHowYouFitAll();"
-            title="依次同步「设置」里配置的所有已启用的 How You Fit 搜索。要开登录态浏览器逐条扫描，条与条之间会节流等待，可能需要几分钟。首次使用前需要先手动登录过 LinkedIn，见 README。点「智能抓取」主按钮也会顺带触发这个同步，这颗按钮的 loading 态是共用的">
+            title="依次同步「设置」里配置的所有已启用的 LinkedIn 智能匹配推荐搜索。要开登录态浏览器逐条扫描，条与条之间会节流等待，可能需要几分钟。首次使用前需要先手动登录过 LinkedIn，见 README。点「智能抓取」主按钮也会顺带触发这个同步，这颗按钮的 loading 态是共用的">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
-            同步 How You Fit 全部搜索
+            同步 LinkedIn 智能匹配推荐全部搜索
           </button>
         </div>
       </div>
@@ -257,6 +277,23 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/></svg>
         批量生成材料
       </button>
+      <!-- 多选职位批量忽略（2026-08-30）：点这颗按钮进入选择模式，职位卡片上会出现复选框，
+           下面的 batchSelectBar 才会露出来。退出/完成后自动关闭，见 static/app.js 的
+           toggleBatchSelectMode()。 -->
+      <button class="btn btn-secondary btn-sm" id="batchSelectToggleBtn" onclick="toggleBatchSelectMode()" title="多选职位，一次性移入「已忽略」">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="m15.5 17.5 2 2 3-3"/></svg>
+        批量选择
+      </button>
+    </div>
+
+    <div class="batch-select-bar" id="batchSelectBar" style="display:none;">
+      <label class="batch-select-all">
+        <input type="checkbox" id="batchSelectAllCheckbox" onchange="toggleSelectAllJobs(this.checked)">
+        全选当前筛选下的职位
+      </label>
+      <span class="batch-select-count">已选择 <b id="batchSelectCount">0</b> 项</span>
+      <button class="btn btn-primary btn-sm" id="batchDismissBtn" onclick="batchDismissSelected(this)" disabled>移入已忽略</button>
+      <button class="btn btn-secondary btn-sm" onclick="toggleBatchSelectMode(false)">取消</button>
     </div>
 
     <div id="jobsSkeleton" class="skeleton" style="display:none;">
@@ -438,19 +475,23 @@
                   <p class="field-hint">对这些公司单独跑一次 LinkedIn 定向搜索，沿用上面的关键词。保存时会解析成 LinkedIn 内部 ID，公司别配太多（5~8 家为宜），解析结果见下方。</p>
                   <p class="field-hint" id="targetCompanyStatus"></p>
                 </div>
-                <!-- LinkedIn "How You Fit"（个人档案匹配）搜索同步（2026-08-23）：登录态下
-                     LinkedIn 基于你的档案算出的"你可能符合条件"搜索结果页，跟「重点关注公司」
-                     一样是额外抓取来源，但每条要存名字+URL+启用开关三样东西，textarea 放不下，
-                     改成逐行结构化的小列表，增删改都在本地DOM操作，随「保存设置」一起提交
-                     （见 collectHowYouFitSearches()）。扫描失败时后端会自动升级给一个AI导航
-                     兜底重新判断页面，这是项目里第一次真正的LLM自主决策循环，见
-                     spec/tech-solution.md「关键决策」一节。 -->
+                <!-- LinkedIn 智能匹配推荐搜索同步（UI 显示名；内部实现/文件名/配置字段仍叫
+                     How You Fit，是 LinkedIn 官方这个视图的原名，2026-08-29 只改了面向用户的
+                     文案，故意不跟着改代码标识符——见下面这条决策为什么不能直接叫"个性化推荐"：
+                     那个词在 spec/tech-solution.md 里专指 2026-08-18 被否决的另一个功能（LinkedIn
+                     首页推荐信息流的自动化抓取），跟这里是两回事，用了会跟决策记录自相矛盾）
+                     （2026-08-23）：登录态下 LinkedIn 基于你的档案算出的"你可能符合条件"搜索
+                     结果页，跟「重点关注公司」一样是额外抓取来源，但每条要存名字+URL+启用开关
+                     三样东西，textarea 放不下，改成逐行结构化的小列表，增删改都在本地DOM操作，
+                     随「保存设置」一起提交（见 collectHowYouFitSearches()）。扫描失败时后端会
+                     自动升级给一个AI导航兜底重新判断页面，这是项目里第一次真正的LLM自主决策
+                     循环，见 spec/tech-solution.md「关键决策」一节。 -->
                 <div class="field span-2">
-                  <label>LinkedIn 个人匹配搜索（How You Fit）</label>
+                  <label>LinkedIn 智能匹配推荐</label>
                   <p class="field-hint">
                     登录态下 LinkedIn 基于你的档案判断"你可能符合条件"的搜索结果页——在 LinkedIn
                     上打开该视图后复制地址栏完整链接贴到下面。<strong>这是登录态自动化操作</strong>
-                    ，已加同步间隔节流和数量上限（最多 8 条），但仍有账号风险，不要配太多条。
+                    ，已加同步间隔节流和数量上限（最多 12 条），但仍有账号风险，不要配太多条。
                     首次使用前需要先手动登录过 LinkedIn，见 README。<strong>启用后</strong>，
                     点首页「智能抓取」主按钮也会顺带在后台依次同步这里所有启用的搜索
                     （跟每天定时任务一致），不需要每次都单独点"同步全部"。
@@ -480,12 +521,17 @@
                   <input id="schedule_minute" type="number" min="0" max="59">
                   <span>分</span>
                 </div>
-                <p class="field-hint">到点自动按「搜索来源」里的配置跑一轮抓取 + 匹配分析 + 已启用的 How You Fit 同步；关闭后不会每天自动运行，仍可在首页手动点"智能抓取"</p>
+                <p class="field-hint">到点自动按「搜索来源」里的配置跑一轮抓取 + 匹配分析 + 已启用的 LinkedIn 智能匹配推荐同步；关闭后不会每天自动运行，仍可在首页手动点"智能抓取"</p>
               </div>
               <div class="field span-2">
                 <label>邮件拒信检查提醒间隔（天，0表示关闭提醒）</label>
                 <input id="email_scan_interval_days" type="number" min="0" max="30" placeholder="1" style="max-width:220px">
                 <p class="field-hint">这不是后台自动任务——app.py 本身没有 Gmail 访问权限，需要在 Claude Code 对话里让它帮你查（说一句"查一下邮箱有没有拒信"）。这里只控制隔多少天在下面"每日任务清单"里提醒你一次，详见 README「邮件拒信自动识别怎么用」。</p>
+              </div>
+              <div class="field span-2">
+                <label>投递超N天该跟进提醒（天，0表示关闭提醒）</label>
+                <input id="stale_application_reminder_days" type="number" min="0" max="60" placeholder="7" style="max-width:220px">
+                <p class="field-hint">"每日任务清单"里"投递超过N天了，该跟进一下"这条提醒的阈值，只看有投递时间戳的职位。设为0就不再出现这条提醒。</p>
               </div>
             </div>
           </section>

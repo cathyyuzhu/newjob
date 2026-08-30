@@ -9,6 +9,7 @@ import job_chat
 import llm
 import pdf_extract
 import preference_profile
+import resume_edits
 import resume_review
 import resume_store
 from analyzer import analyze_job, classify_companies, generate_materials
@@ -360,6 +361,7 @@ def maybe_refresh_preference_profile(force=False):
 
     返回 None 表示"没有触发这次生成"（阈值没到，或已经有一次在跑），不代表生成失败——
     失败也会正常落一行到 preference_profiles（跟 resume_review 同一个"失败也落库"的规矩）。
+    触发过这次生成时返回 {"error": ...} 或 {"ok": True}，供调用方（后台通知）区分成败。
     """
     total = count_dismiss_reasons()
     if not force:
@@ -377,9 +379,11 @@ def maybe_refresh_preference_profile(force=False):
         insert_preference_profile(
             content_text=result.get("summary"), source_reason_count=total, provider=provider, model=model,
         )
+        return {"ok": True}
     except Exception as e:
         logging.exception("preference profile generation failed")
         insert_preference_profile(error=str(e), source_reason_count=total, provider=provider, model=model)
+        return {"error": str(e)}
     finally:
         finish_profile_generation()
 
@@ -704,13 +708,25 @@ def build_optimized_resume(edits):
     的格式，所以用户原来的字体/字号/加粗都还在，不会拿到一份被重排过的简历。
     """
     base_resume_path = resume_store.require_base_resume()
-    clean = [
-        {"index": e["index"], "text": e["text"]}
+    candidates = [
+        {"index": e["index"], "text": e["text"], "original": e.get("original")}
         for e in (edits or [])
         if isinstance(e, dict) and isinstance(e.get("index"), int) and (e.get("text") or "").strip()
     ]
-    if not clean:
+    if not candidates:
         raise ValueError("没有勾选任何要应用的改写建议。")
+
+    # 对着**当前**简历重新核查一遍，不信任前端回传的内容。除了防篡改，主要是堵一条正常
+    # 路径：用户重新上传简历后再来应用旧体检的建议，段落索引全部错位，直接覆写错误段落。
+    # routes_resume.py 已经在算 stale 标志发给前端，但落盘这一步从来没检查过。
+    paragraphs = resume_edits.parse_indexed_paragraphs(read_resume_text(base_resume_path))
+    clean, rejected = resume_edits.filter_applicable(candidates, paragraphs)
+    if rejected:
+        logging.warning("应用改写建议时拒绝了 %s 条（跟当前简历对不上）：%s", len(rejected), rejected)
+    if not clean:
+        raise ValueError(
+            "勾选的改写建议跟当前简历对不上（可能是简历重新上传过），请重新做一次体检。"
+        )
 
     output_path = resume_store.optimized_path()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

@@ -106,6 +106,103 @@ function showToast(message, type = 'info', timeout = 4000, action = null) {
   return el;
 }
 
+// ---------- 通知铃铛 ----------
+// 同步/AI分析这些后台线程任务完成时，后端会落一条持久化记录（models.notifications
+// 表），跟 toast 不同——toast 只有正好停留在发起操作那个页面才能看到，这里的未读数
+// 是服务端算的，跳走/关掉浏览器再回来也不会错过。6 个页面都跑同一份逻辑，放这里共用。
+//
+// 不做单条已读追踪：点开下拉列表即视为"看过"，统一清零未读数，交互复杂度对齐
+// /api/checklist 的"今天先别提醒"那一档，不过度设计。
+const NOTIF_LEVEL_ICONS = {
+  success: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>',
+  error: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg>',
+  info: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+};
+
+let notifPollTimer = null;
+
+function initNotifications() {
+  const btn = document.getElementById('notifBellBtn');
+  if (!btn) return; // 极少数不带顶栏的页面片段，静默跳过
+  refreshNotifBadge();
+  const poll = () => {
+    notifPollTimer = setTimeout(() => {
+      // 页面在后台就别拉了，切回来时 visibilitychange 会立刻补一次（跟
+      // scheduleAnalyzingPoll 同一个考虑，通知不紧急，间隔比那个 4s 松得多）。
+      if (!document.hidden) refreshNotifBadge();
+      poll();
+    }, 25000);
+  };
+  poll();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshNotifBadge();
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.notif-wrap')) closeNotifDropdown();
+  });
+}
+
+async function refreshNotifBadge() {
+  try {
+    const data = await (await fetch('/api/notifications')).json();
+    const badge = document.getElementById('notifBadge');
+    if (data.unread > 0) {
+      badge.textContent = data.unread > 99 ? '99+' : String(data.unread);
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+  } catch (e) {
+    // 静默失败：徽标只是锦上添花的提醒，一次网络抖动不该弹错误 toast 打扰用户。
+  }
+}
+
+function closeNotifDropdown() {
+  const dropdown = document.getElementById('notifDropdown');
+  if (dropdown) dropdown.classList.remove('active');
+}
+
+async function toggleNotifDropdown() {
+  const dropdown = document.getElementById('notifDropdown');
+  if (dropdown.classList.contains('active')) {
+    closeNotifDropdown();
+    return;
+  }
+  dropdown.classList.add('active');
+  dropdown.innerHTML = '<div class="notif-empty">加载中…</div>';
+  try {
+    const data = await (await fetch('/api/notifications')).json();
+    renderNotifDropdown(data.items || []);
+  } catch (e) {
+    dropdown.innerHTML = '<div class="notif-empty">加载失败</div>';
+    return;
+  }
+  // 打开即视为"看过"：清零未读数，不做单条已读追踪。
+  fetch('/api/notifications/read_all', { method: 'POST' }).then(() => refreshNotifBadge()).catch(() => {});
+}
+
+function renderNotifDropdown(items) {
+  const dropdown = document.getElementById('notifDropdown');
+  if (!items.length) {
+    dropdown.innerHTML = '<div class="notif-empty">暂无通知</div>';
+    return;
+  }
+  dropdown.innerHTML = items.map((n) => {
+    const inner = `
+      <span class="notif-dot ${n.level}">${NOTIF_LEVEL_ICONS[n.level] || NOTIF_LEVEL_ICONS.info}</span>
+      <span class="notif-body">
+        <span class="notif-title">${escapeHtml(n.title)}</span>
+        ${n.message ? `<span class="notif-message">${escapeHtml(n.message)}</span>` : ''}
+        <span class="notif-time">${escapeHtml(n.created_at || '')}</span>
+      </span>`;
+    return n.link
+      ? `<a class="notif-item" href="${escapeHtml(n.link)}" target="_blank" rel="noopener">${inner}</a>`
+      : `<div class="notif-item">${inner}</div>`;
+  }).join('');
+}
+
+document.addEventListener('DOMContentLoaded', initNotifications);
+
 // 后端对"还没上传简历"统一回 409 + {need_resume: true}（见 app.py 的 need_resume_response）。
 // 匹配分析、面试准备、题库起草全都依赖简历，三个页面都可能撞上，所以处理放在 common.js。
 //
@@ -143,6 +240,18 @@ function restoreBtn(btn) {
 // 每个功能位（analysis / interview_prep / interview_bank / resume_review）各存各的，
 // 切换即存进 config.json。
 
+// 下拉里那句说明。价格从 price_in/price_out 结构化字段拼，不再写死在后端的 note 文案里
+// ——那两个数字同时还要给 llm_calls 流水算成本，只能有一处来源，否则必然漂移
+// （之前 note 里 sonnet-5 标的就是过期的 Sonnet 4.6 价格）。
+function modelNote(m) {
+  const parts = [];
+  if (m.note) parts.push(m.note);
+  if (m.price_in != null && m.price_out != null) {
+    parts.push(`约 $${m.price_in}/$${m.price_out} 每百万 token`);
+  }
+  return parts.join('，');
+}
+
 async function initModelSelect(selectId, task) {
   const el = document.getElementById(selectId);
   if (!el) return;
@@ -157,7 +266,7 @@ async function initModelSelect(selectId, task) {
       <option value="">跟随全局设置（${escapeHtml(data.fallback || '未配置')}）</option>
       ${Object.entries(groups).map(([provider, models]) => `
         <optgroup label="${escapeHtml(provider)}">
-          ${models.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.label)} — ${escapeHtml(m.note || '')}</option>`).join('')}
+          ${models.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.label)} — ${escapeHtml(modelNote(m))}</option>`).join('')}
         </optgroup>`).join('')}
     `;
     el.value = current;

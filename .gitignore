@@ -12,3 +12,4 @@ resumes/
 *.log
 .claude/settings.local.json
 evals/reports/
+debug_snapshots/

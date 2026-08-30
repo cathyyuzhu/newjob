@@ -1,4 +1,5 @@
 import threading
+import time
 
 # 记录职位当前的分析排队状态——后台自动分析（搜索后/启动补跑）一次会提交一批职位，
 # 但 pipeline.analyze_pending_jobs() 是逐条串行处理的（见该函数注释里"是否可以并发"
@@ -419,21 +420,24 @@ def practice_generation_in_progress(doc_id):
         return doc_id in _practice_generating_ids
 
 
-# LinkedIn jobs-tracker 列表同步状态（"已收藏"/"已投递"，见 linkedin_tracker.py）——
-# 跟题库起草（_bank_generating/_bank_error）同一个模式：全局单例、同一时刻最多跑一次
-# （要开一次真实浏览器扫列表，重复跑除了浪费时间，两次浏览器还会抢同一个登录 profile
-# 的独占锁，后一次必然报错）。多存一个 result 是因为这个操作没有像题库/体检那样落库
-# 的地方，前端只能靠这里拿到"抓到几条/入库几条"的汇总数字，不像 add_by_url 那样能在
-# 同一次HTTP请求里同步拿到结果。
+# LinkedIn jobs-tracker 列表同步状态（"已收藏"/"已投递"/"面试"，见 linkedin_tracker.py）
+# ——跟题库起草（_bank_generating/_bank_error）同一个模式：全局单例、同一时刻最多跑
+# 一次（要开一次真实浏览器扫列表，重复跑除了浪费时间，两次浏览器还会抢同一个登录
+# profile 的独占锁，后一次必然报错）。多存一个 result 是因为这个操作没有像题库/体检
+# 那样落库的地方，前端只能靠这里拿到"抓到几条/入库几条"的汇总数字，不像 add_by_url
+# 那样能在同一次HTTP请求里同步拿到结果。
 #
-# 按 stage（"saved"/"applied"）分开存一份，而不是全局共用一份：这两个列表是用户会
-# 分别独立触发的两件事，共用一份状态会导致"正在同步已收藏"时误报"已投递也在同步中"、
-# 或者一个的结果覆盖另一个还没被前端看到的结果。真正的并发互斥交给 Chromium 对
-# profile 目录的独占锁（linkedin_tracker._launch_context 抛 EasyApplyInProgress）—
-# 这里的按 stage 分离只是为了让前端状态展示不串台，不是完整的并发保护。
+# 按 stage（"saved"/"applied"/"interview"）分开存一份，而不是全局共用一份：这几个
+# 列表是用户会分别独立触发的事，共用一份状态会导致"正在同步已收藏"时误报"已投递也
+# 在同步中"、或者一个的结果覆盖另一个还没被前端看到的结果。真正的并发互斥交给
+# Chromium 对 profile 目录的独占锁（linkedin_tracker._launch_context 抛
+# EasyApplyInProgress）——这里的按 stage 分离只是为了让前端状态展示不串台，不是
+# 完整的并发保护。这里的 key 要跟 linkedin_tracker.SUPPORTED_STAGES 保持一致，加新
+# stage 时两边都要改。
 _tracker_sync = {
     "saved": {"syncing": False, "result": None, "error": None},
     "applied": {"syncing": False, "result": None, "error": None},
+    "interview": {"syncing": False, "result": None, "error": None},
 }
 
 
@@ -562,3 +566,64 @@ def how_you_fit_batch_result():
 def how_you_fit_batch_error():
     with _lock:
         return _how_you_fit_batch["error"]
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn 登录态熔断器（2026-08-29，见 spec/roadmap.md「职位收集链路的错误处理生产级
+# 加固」缺口5）
+#
+# 无人值守路径（tracker/how_you_fit 同步，尤其是每日定时任务）撞上"登录态确定已失效"
+# 时，原来的行为是继续尝试下一条搜索——8 条搜索 × 2 次会话（无头 + 撞墙后带界面重试）
+# = 在账号已经被风控盯上的时候再撞 16 次。这里加一层熔断：连续 N 次判定为真正的登录态
+# 失效就打开熔断，M 分钟内所有登录态路径直接快速失败，不再继续尝试——账号风险不会因为
+# 多试几次就消失，只会因为多试几次而变大。
+#
+# 只认 LinkedInAuthRequired 这一种确定性信号（"无头+带界面都撞上登录墙"/"从没保存过
+# 登录态"），不认 EasyApplyInProgress（profile 被别的窗口占用，跟账号本身没关系，
+# 继续撞不会有额外风险）——两者是完全不同的失败原因，不能共用同一个计数器。
+class LinkedInAuthRequired(Exception):
+    """登录态已失效或未登录。是熔断器唯一认的信号——各模块自己的 XxxSyncError/
+    EasyApplyError 在判定为这一类失败时应该额外继承这个类（多重继承），而不是让熔断器
+    反过来解析错误消息字符串去猜是不是登录问题。"""
+
+
+_linkedin_auth_lock = threading.Lock()
+_linkedin_auth = {"consecutive_failures": 0, "opened_until": None}
+
+LINKEDIN_AUTH_BREAKER_THRESHOLD = 2                # 连续几次判定登录态失效就熔断
+LINKEDIN_AUTH_BREAKER_COOLDOWN_SECONDS = 30 * 60   # 熔断期多长
+
+
+def record_linkedin_auth_failure():
+    """登录态路径判定为真正的登录态失效（发出过真实请求、确认撞上登录墙）时调用一次。
+    "从没保存过登录态"这种没发出任何请求的配置缺失不算，不要在那种分支调用这个。"""
+    with _linkedin_auth_lock:
+        _linkedin_auth["consecutive_failures"] += 1
+        if _linkedin_auth["consecutive_failures"] >= LINKEDIN_AUTH_BREAKER_THRESHOLD:
+            _linkedin_auth["opened_until"] = time.time() + LINKEDIN_AUTH_BREAKER_COOLDOWN_SECONDS
+
+
+def record_linkedin_auth_success():
+    """登录态路径成功跑完（不管有没有抓到数据，只要没撞上登录墙）时调用一次，清零计数
+    ——避免偶发的一两次真实抖动被当成"账号已经出问题"长期误伤后面的同步。"""
+    with _linkedin_auth_lock:
+        _linkedin_auth["consecutive_failures"] = 0
+        _linkedin_auth["opened_until"] = None
+
+
+def linkedin_auth_breaker_open():
+    """当前是否处于熔断期。熔断期内各登录态路径入口直接快速失败、不会真的发请求，
+    所以只能靠熔断期自然过期恢复，不会因为"其实已经重新登录了"提前自愈——这是刻意的
+    取舍：换成"仍然放一次请求去探测"会失去熔断本身要避免的那次撞墙。真正等不及的话，
+    用户可以重启一次 Flask 进程（进程内状态，重启即清零）。"""
+    with _linkedin_auth_lock:
+        opened_until = _linkedin_auth["opened_until"]
+        return opened_until is not None and time.time() < opened_until
+
+
+def linkedin_auth_breaker_remaining_seconds():
+    with _linkedin_auth_lock:
+        opened_until = _linkedin_auth["opened_until"]
+        if opened_until is None:
+            return 0
+        return max(0, int(opened_until - time.time()))

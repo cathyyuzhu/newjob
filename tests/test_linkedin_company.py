@@ -84,6 +84,7 @@ print("resolve_company_ids() guest-first + batched browser fallback ok")
 
 # ---- 3. /api/config 保存：只重新解析新增/失败的名字，已解析成功的直接复用缓存
 import app as flask_app
+import routes_core
 
 flask_app.app.config["TESTING"] = True
 c = flask_app.app.test_client()
@@ -101,7 +102,9 @@ def fake_resolve_company_ids(names, delay=1.0):
     return result
 
 
-flask_app.resolve_company_ids = fake_resolve_company_ids
+# /api/config 路由现在住在 routes_core.py 里，patch 要打在它实际引用 resolve_company_ids
+# 的那个模块上（app.py 已经不再直接定义任何路由）。
+routes_core.resolve_company_ids = fake_resolve_company_ids
 
 r = c.post("/api/config", json={"linkedin_target_companies": ["Amazon", "Bad Co"]})
 assert r.status_code == 200, r.get_json()

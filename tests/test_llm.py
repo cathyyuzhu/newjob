@@ -190,6 +190,48 @@ except RuntimeError as e:
     assert "截断" in str(e), str(e)
 print("anthropic truncation raises actionable error ok")
 
+# ---- 6c. 采样参数按模型开关。Claude Sonnet 5 起 temperature/top_p/top_k 已从 API 移除，
+# 传了直接 400——而它正是本项目的默认模型，所以这几条是防线上事故的回归锁。
+fake_mod.Anthropic = FakeAnthropic
+SAMPLING_CFG = {"llm_provider": "anthropic", "anthropic_model": "claude-sonnet-5"}
+
+# ★最重要的一条★：sonnet-5 无论什么功能位都不能带 temperature
+llm.resolve_task(SAMPLING_CFG, "analysis")
+llm.ask_json("hi", provider="anthropic", model="claude-sonnet-5")
+assert "temperature" not in captured, f"Sonnet 5 收到 temperature 会 400：{captured.get('temperature')}"
+
+# haiku 支持采样，analysis 功能位配的是 0.0（打分要可复现）
+llm.ask_json("hi", provider="anthropic", model="claude-haiku-4-5")
+assert captured.get("temperature") == 0.0, captured.get("temperature")
+
+# 注册表里没有的模型一律不传——不知道它认不认，宁可不控温也不要冒 400 的风险
+llm.ask_json("hi", provider="anthropic", model="some-other-model")
+assert "temperature" not in captured
+
+# job_chat 刻意不设温度：自由对话降温只会让它更像机器人
+llm.resolve_task(SAMPLING_CFG, "job_chat")
+llm.ask_json("hi", provider="anthropic", model="claude-haiku-4-5")
+assert "temperature" not in captured, captured.get("temperature")
+
+# 创作性任务给高温，跟打分任务不是一档
+llm.resolve_task(SAMPLING_CFG, "interview_bank")
+llm.ask_json("hi", provider="anthropic", model="claude-haiku-4-5")
+assert captured["temperature"] == 0.7, captured["temperature"]
+
+# DeepSeek 侧同理：pro 是推理模型按不支持处理，flash 支持
+urllib.request.urlopen = make_urlopen(OK_PAYLOAD)
+llm.resolve_task(SAMPLING_CFG, "analysis")
+llm.ask_json("hi", provider="deepseek", model="deepseek-v4-pro")
+assert "temperature" not in sent, sent.get("temperature")
+llm.ask_json("hi", provider="deepseek", model="deepseek-v4-flash")
+assert sent["temperature"] == 0.0, sent.get("temperature")
+
+# 温度表只能配 LLM_TASKS 里有的功能位（加上 agent 那个特例），防止写错任务名后
+# 悄悄不生效——这种错没有任何报错，只能靠这条断言拦。
+assert set(llm.TASK_TEMPERATURE) - set(llm.LLM_TASKS) == {"how_you_fit_agent"}, \
+    set(llm.TASK_TEMPERATURE) - set(llm.LLM_TASKS)
+print("sampling params gated by model support ok")
+
 # ---- 7. 未知 provider 的报错文案保持不变
 try:
     llm.chat([{"role": "user", "content": "x"}], provider="bogus")

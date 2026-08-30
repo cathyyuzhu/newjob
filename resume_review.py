@@ -8,9 +8,10 @@
 （{"index": 段落索引, "text": 改写后的整段}），因为两者最终都喂给
 resume_docx.write_tailored_resume() —— 用户勾选哪几条，就把哪几条原样传进去。
 """
-import re
+import logging
 
 import llm
+import resume_edits
 
 REVIEW_PROMPT = """你是一位资深的简历顾问，正在帮一位求职者做简历体检。
 
@@ -71,11 +72,14 @@ DIMENSIONS = ("structure", "impact", "keyword", "clarity")
 SEVERITIES = ("high", "medium", "low")
 
 
-def _clamp01(value, default=0.0):
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except (TypeError, ValueError):
-        return default
+def _valid_index(index, paragraphs):
+    """issues 里的段落锚点：不是合法索引就当"整体性问题"（None）。paragraphs 为空
+    （没传简历原文）时不做判断，原样透传。"""
+    if not paragraphs:
+        return index
+    if not isinstance(index, int) or isinstance(index, bool):
+        return None
+    return index if index in paragraphs else None
 
 
 def review_resume(resume_text, target_roles=None, model=None, provider="anthropic"):
@@ -95,27 +99,19 @@ def review_resume(resume_text, target_roles=None, model=None, provider="anthropi
         target_roles=roles or "（用户没有填写目标岗位方向，请按简历本身体现出的职业方向来判断）",
     )
     result = llm.ask_json(prompt, provider=provider, model=model)
-    return normalize_result(result, max_index=max_paragraph_index(resume_text))
+    return normalize_result(result, resume_text=resume_text)
 
 
-def max_paragraph_index(resume_text):
-    """简历原文里最大的那个 [N] 段落索引。
-
-    不能用行数代替：read_resume_text() 跳过了空段落，所以 [N] 是稀疏的，
-    第 3 行完全可能是 [7]。拿不到就返回 None（表示"不知道，别按索引筛"）。
-    """
-    indexes = [int(m) for m in re.findall(r"^\[(\d+)\]", resume_text or "", re.MULTILINE)]
-    return max(indexes) if indexes else None
-
-
-def normalize_result(result, max_index=None):
+def normalize_result(result, resume_text=None):
     """把 LLM 返回的原始 JSON 收拾成前端可以直接渲染的形状。
 
-    max_index：简历里最大的段落索引。超出它的改写建议会被丢掉——
-    write_tailored_resume() 对越界索引是静默跳过的，留在界面上只会让用户勾了一条
-    什么都不会发生的建议，还以为是生成功能坏了。
+    resume_text：简历原文（带 [N] 索引标记的那份）。传了就会对 paragraph_edits 做
+    确定性核查——把模型声称"照抄"的 original 拿回真实段落比对，见 resume_edits.py。
+    越界的直接丢（write_tailored_resume 对越界索引静默跳过，留在界面上只是一个勾了
+    什么都不会发生的框），指错段/只摘抄一部分的保留但标记成不可应用。
     """
     result = dict(result or {})
+    paragraphs = resume_edits.parse_indexed_paragraphs(resume_text)
 
     raw_scores = result.get("dimension_scores") or {}
     scores = {}
@@ -124,13 +120,13 @@ def normalize_result(result, max_index=None):
         # 有的模型会把 0.72 写成 72，超过 1 的一律按百分制回收
         if isinstance(value, (int, float)) and value > 1:
             value = value / 100.0
-        scores[dim] = _clamp01(value)
+        scores[dim] = llm.clamp(value)
     result["dimension_scores"] = scores
 
     overall = result.get("overall_score")
     if isinstance(overall, (int, float)) and overall > 1:
         overall = overall / 100.0
-    overall = _clamp01(overall, default=-1)
+    overall = llm.clamp(overall, default=-1)
     if overall < 0:
         overall = round(sum(scores.values()) / len(DIMENSIONS), 4)
     result["overall_score"] = round(overall, 4)
@@ -145,34 +141,26 @@ def normalize_result(result, max_index=None):
                 "severity": severity if severity in SEVERITIES else "medium",
                 "title": item.get("title") or "",
                 "detail": item.get("detail") or "",
-                "paragraph_index": item.get("paragraph_index"),
+                # 锚点越界就置 None（当成"整体性问题"），但**不丢整条 issue**——问题描述
+                # 本身仍然有效，只是定位不可信。跟 paragraph_edits 那边"越界就丢"的差别
+                # 在于：那边丢了没有损失（本来就是个不生效的勾选框），这边丢了会损失内容。
+                "paragraph_index": _valid_index(item.get("paragraph_index"), paragraphs),
             }
         )
     # high 在前，方便前端直接顺序渲染（LLM 说了按严重程度排，但不能指望它每次都照做）
     issues.sort(key=lambda i: SEVERITIES.index(i["severity"]))
     result["issues"] = issues
 
-    edits = []
-    for item in result.get("paragraph_edits") or []:
-        if not isinstance(item, dict):
-            continue
-        index = item.get("index")
-        text = item.get("text")
-        # 没有段落索引、索引越界、或没有改写内容的条目直接丢掉：它们没法喂给
-        # write_tailored_resume（越界会被静默跳过），留在列表里只会让用户勾了个不生效的框。
-        if not isinstance(index, int) or index < 0 or not (text or "").strip():
-            continue
-        if max_index is not None and index > max_index:
-            continue
-        edits.append(
-            {
-                "index": index,
-                "original": item.get("original") or "",
-                "text": text,
-                "reason": item.get("reason") or "",
-            }
-        )
+    edits, dropped = resume_edits.annotate_edits(result.get("paragraph_edits"), paragraphs)
     result["paragraph_edits"] = edits
+    if dropped:
+        # 丢弃是静默的降级，不记一笔的话表现出来就是"AI 给的建议怎么这么少"，没法排查。
+        logging.warning("简历体检丢弃了 %s 条改写建议：%s", len(dropped), dropped)
+    result["edit_warnings"] = [
+        {"index": e["index"], "verdict": e["verdict"], "warning": e["warning"]}
+        for e in edits
+        if e.get("verdict")
+    ]
 
     coverage = result.get("keyword_coverage") or {}
     result["keyword_coverage"] = {

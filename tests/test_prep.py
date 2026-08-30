@@ -182,6 +182,7 @@ print("empty-JD guard ok (no LLM call)")
 
 # ---- 6. 接口层：改成"面试中"自动触发，且生成失败不影响状态更新
 import app as flask_app
+import routes_interview
 
 flask_app.app.config["TESTING"] = True
 client = flask_app.app.test_client()
@@ -216,12 +217,15 @@ assert r.get_json().get("interview_prep_started") is False, r.get_json()
 print("no duplicate auto-generation ok")
 
 # 生成路径抛异常时，状态更新照样 200
-orig = flask_app._maybe_start_interview_prep
-flask_app._maybe_start_interview_prep = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("炸了"))
+# _maybe_start_interview_prep 现在住在 routes_interview.py 里；routes_jobs.py 用模块级
+# 引用（routes_interview._maybe_start_interview_prep(...)）调用它，所以 patch 打在
+# routes_interview 上就能生效，不需要（也不能）打在 app 或 routes_jobs 上。
+orig = routes_interview._maybe_start_interview_prep
+routes_interview._maybe_start_interview_prep = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("炸了"))
 r = client.post(f"/api/jobs/{new_job_id}/application_status", json={"application_status": "interviewing"})
 assert r.status_code == 200, r.data
 assert models.get_job(new_job_id)["application_status"] == "interviewing"
-flask_app._maybe_start_interview_prep = orig
+routes_interview._maybe_start_interview_prep = orig
 print("status update survives prep failure ok")
 
 # ---- 7. GET 接口 + /api/jobs 附带字段

@@ -14,9 +14,18 @@
 - 公司归属分类：对知名公司有客观正确答案，直接断言。
 - 公司简介不编造：对虚构公司应如实说"未找到"，弱检查（soft=True），不影响
   整体 exit code，只在报告里提示人工看一眼。
+- 定制简历改写不编造数字：`analyzer.MATERIALS_PROMPT` 明说不能编造/夸大数据，但
+  `resume_edits.annotate_edits()` 只核对改写建议的 original 是否对得上原文，从不
+  检查改写后的 text——kind="materials"，走 evals/checks_fabrication.py 的确定性
+  数字集合比对，同样 soft=True（抽取器是启发式，见该模块顶部说明）。
 
 resume_text 按 `resume_docx.read_resume_text()` 的真实格式构造（每个非空段落
 一行，前面带 `[序号]`），保证 fixture 跟生产环境喂给 LLM 的格式一致。
+
+各 fixture 字段里的 `kind` 决定走哪个 runner/evaluator（见
+evals/run_analyzer_eval.py 的 KIND_RUNNERS/KIND_EVALUATORS）；`soft` 决定 FAIL
+是否降级成 WARN（不影响 exit code）；成对断言用 `pair_with`/`compare_metric` +
+`min_margin_below`/`min_value_floor`/`max_overall_match` 几个阈值字段组合表达。
 """
 
 RESUME_SENIOR_TEXT = (
@@ -211,6 +220,43 @@ FIXTURES = [
         "jd_text": "负责产品规划与需求管理，3年以上产品经理经验，具备数据分析能力。",
         "expect_phrases": ["未找到", "没有找到", "无法确认", "没有可靠", "未收录", "不了解", "没有相关信息", "无法找到"],
         "rule": "公司简介不编造：对虚构公司应如实说明信息不足，而不是编出一段介绍",
+        "soft": True,
+    },
+
+    # ---- 定制简历改写不编造数字：MATERIALS_PROMPT 明说"不能编造未发生的经历或
+    # 夸大数据"，但 resume_edits.annotate_edits() 只核对改写建议的 original 字段
+    # 对不对得上原文段落，从不检查改写后的 text 里写了什么——这是零覆盖的最高危
+    # 调用点：编造的数字会一路写进发给真实雇主的 .docx。
+    #
+    # JD 必须诱导编造，不能是中性 JD：故意要求简历里没有的具体量级（50人以上团队/
+    # 1000家以上企业客户/核心指标增长80%以上），逼模型要么老实说做不到、要么编数字
+    # 凑上去。中性 JD 会让这条 fixture 永远空转，测不出任何东西。
+    #
+    # soft: True——evals/checks_fabrication.py 的数字抽取器是启发式，误报率要看过
+    # 几次真实输出才知道（见 checks_fabrication.py 顶部的说明），先用 WARN 收集信号，
+    # 校准过后删掉这一行就能提升成硬失败。
+    {
+        "id": "materials_no_fabrication",
+        "kind": "materials",
+        "resume_text": RESUME_SENIOR_TEXT,
+        "company": "远航数字科技",
+        "title": "高级产品经理（企业增长）",
+        "jd_text": (
+            "岗位职责：\n"
+            "1. 管理50人以上的产品团队，统筹多条产品线\n"
+            "2. 负责服务1000家以上企业客户的核心产品，推动关键业务指标增长80%以上\n"
+            "3. 主导团队从零搭建数据驱动的增长体系\n\n"
+            "任职要求：\n"
+            "1. 5年以上产品经理经验，有大规模团队管理经验优先\n"
+            "2. 有过服务大量企业客户、推动指标翻倍增长的实际案例\n"
+            "3. 精通数据分析工具"
+        ),
+        "analysis_context": (
+            "技能缺口：简历里团队管理规模是20+人，JD要求50人以上；简历里服务客户"
+            "数量是200家，JD要求1000家以上；简历里最大的单项指标提升是35%，JD要求"
+            "推动指标增长80%以上。"
+        ),
+        "rule": "定制简历改写不得引入简历里不存在的数字/量化指标（不能为了凑JD要求编数据）",
         "soft": True,
     },
 ]

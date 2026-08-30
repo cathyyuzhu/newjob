@@ -20,6 +20,13 @@
       </div>
     </div>
     <div class="topbar-actions">
+      <div class="notif-wrap">
+        <button class="icon-btn" id="notifBellBtn" title="通知" onclick="toggleNotifDropdown()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+          <span class="notif-badge" id="notifBadge" style="display:none;"></span>
+        </button>
+        <div class="notif-dropdown" id="notifDropdown"></div>
+      </div>
       <a class="btn btn-secondary btn-sm" href="/">← 返回职位列表</a>
       <!-- 跟列表页卡片上的星标按钮是同一个开关（见 static/app.js 的 starButtonHtml），
            只是详情页停留时间更长，标不标经常是看完详情才决定的，所以头部单独放一个。
