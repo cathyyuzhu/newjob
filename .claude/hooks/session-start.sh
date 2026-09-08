@@ -7,6 +7,11 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
+# 异步模式：session 不等这个脚本跑完就先开始，依赖安装在后台进行。
+# 权衡：session 秒开，但刚进去的头几十秒如果立刻要跑测试/lint 可能会
+# 因为依赖还没装完而失败，等一会儿重试即可。
+echo '{"async": true, "asyncTimeout": 300000}'
+
 cd "$CLAUDE_PROJECT_DIR"
 
 # 用虚拟环境装依赖，不碰系统 Python 的包（Debian 容器里系统自带的
