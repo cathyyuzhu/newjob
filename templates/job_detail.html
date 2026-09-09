@@ -20,29 +20,20 @@
       </div>
     </div>
     <div class="topbar-actions">
-      <div class="notif-wrap">
-        <button class="icon-btn" id="notifBellBtn" title="通知" onclick="toggleNotifDropdown()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
-          <span class="notif-badge" id="notifBadge" style="display:none;"></span>
-        </button>
-        <div class="notif-dropdown" id="notifDropdown"></div>
-      </div>
-      <a class="btn btn-secondary btn-sm" href="/">← 返回职位列表</a>
       <!-- 跟列表页卡片上的星标按钮是同一个开关（见 static/app.js 的 starButtonHtml），
            只是详情页停留时间更长，标不标经常是看完详情才决定的，所以头部单独放一个。
            标签用「重点关注」而不是「收藏」，跟列表页 statCardReviewed 的「已收藏」（那是
-           application_status=reviewed，另一个维度）区分开，避免同名不同义。 -->
-      <button class="btn btn-secondary btn-sm" id="detailStarBtn" onclick="toggleDetailStarred()" title="标记为重点关注">
+           application_status=reviewed，另一个维度）区分开，避免同名不同义；只留图标
+           不写文字，靠 title 提供说明。 -->
+      <button class="btn btn-secondary btn-sm icon-only-btn" id="detailStarBtn" onclick="toggleDetailStarred()" title="标记为重点关注">
         <span id="detailStarIcon"></span>
-        <span id="detailStarLabel">重点关注</span>
       </button>
       <!-- 从"待审核"列表点进详情页的场景本来就没有"标记已收藏"的入口（列表卡片上有，
            详情页原来没有），得先返回列表才能点。跟"忽略"共用同一套"先执行、给撤销、
            自动跳到列表原顺序下一条"的逻辑（见 setStatusFromDetailPage()），已收藏之后
            不再显示这个按钮（跟列表卡片一致，按了也没有意义）。 -->
       <button class="btn btn-secondary btn-sm" id="detailReviewBtn" onclick="reviewFromDetailPage()" title="标记为已收藏（可在提示条上撤销）">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
-        已收藏
+        收藏
       </button>
       <!-- 看完详情决定"不投"是这个页面最常见的出口之一，不用先返回列表再去找那张卡片点忽略。
            走跟列表一样的"先执行、给撤销"，不弹二次确认（见 dismissFromDetailPage()）。 -->
@@ -52,11 +43,8 @@
       </button>
       <a class="btn btn-secondary btn-sm" id="detailPrepLink" href="#">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>
-        面试准备 →
+        准备面试
       </a>
-      <button class="icon-btn" id="themeToggle" title="切换深色模式" onclick="toggleTheme()">
-        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
-      </button>
     </div>
   </header>
 

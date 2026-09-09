@@ -34,7 +34,6 @@ async function loadJobHeader() {
 function renderStarBtn() {
   const starred = !!(currentJob && currentJob.starred);
   document.getElementById('detailStarIcon').innerHTML = starred ? STAR_ICON_FILLED : STAR_ICON;
-  document.getElementById('detailStarLabel').textContent = starred ? '已关注' : '重点关注';
   document.getElementById('detailStarBtn').title = starred ? '取消重点关注' : '标记为重点关注';
 }
 

@@ -541,6 +541,9 @@ textarea:focus, input:focus, select:focus {
 .btn-ghost { background: transparent; color: var(--text-muted); padding: 0.4rem 0.7rem; }
 .btn-ghost:hover:not(:disabled) { background: var(--bg-subtle); color: var(--text); }
 .btn-sm { padding: 0.35rem 0.65rem; font-size: 0.78rem; }
+/* 只有图标、没有文字的按钮（比如详情页顶栏的「重点关注」星标）：撑成正方形，
+   不要跟着 .btn 的左右内边距把图标挤扁 */
+.icon-only-btn { padding: 0.4rem; gap: 0; }
 .btn-danger-ghost { background: transparent; color: var(--text-muted); padding: 0.35rem 0.6rem; }
 .btn-danger-ghost:hover:not(:disabled) { color: var(--danger); background: var(--danger-soft); }
 

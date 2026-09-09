@@ -55,7 +55,10 @@ for name, html, page_js in [
     assert "/static/common.js" in html, f"{name} 没引 common.js"
     assert page_js in html, f"{name} 没引 {page_js}"
     assert html.index("/static/common.js") < html.index(page_js), f"{name}：common.js 必须在前"
-    assert 'id="toastStack"' in html and 'id="themeIcon"' in html, f"{name} 缺 toast 容器或主题图标"
+    assert 'id="toastStack"' in html, f"{name} 缺 toast 容器"
+    # 职位详情页顶栏精简（2026-09-09）去掉了深色模式切换按钮，其余四个页面仍要有
+    if name != "job_detail.html":
+        assert 'id="themeIcon"' in html, f"{name} 缺主题图标"
 print("template script wiring ok")
 
 # 面试准备页要拿到职位 id（后端注入，前端不从 URL 里解析）；职位详情页同理

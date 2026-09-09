@@ -50,7 +50,7 @@ function effectiveIsDark() {
 
 function updateThemeIcon() {
   const icon = document.getElementById('themeIcon');
-  icon.innerHTML = effectiveIsDark() ? SUN_PATHS : MOON_PATHS;
+  if (icon) icon.innerHTML = effectiveIsDark() ? SUN_PATHS : MOON_PATHS;
 }
 
 function initTheme() {
