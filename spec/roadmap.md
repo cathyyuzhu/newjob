@@ -597,7 +597,7 @@ AI 起草只是初稿，改成"我自己的说法"原来全靠手打。涉及 `i
 - 起因：用户反馈顶栏太挤，要求去掉「返回职位列表」「通知铃铛」「深色模式切换」三个按钮，「重点关注」只留星标图标去掉文字，「已收藏」改名「收藏」并去掉对号图标，「面试准备 →」改名「准备面试」并去掉箭头（`templates/job_detail.html`）
 - 「重点关注」按钮去掉文字标签后加 `.icon-only-btn` 类撑成正方形（`static/style.css`），`static/job_detail.js` 的 `renderStarBtn()` 不再更新已删除的 `detailStarLabel`
 - 去掉深色模式切换按钮后，`static/common.js` 的 `updateThemeIcon()` 补了空值判断（原来 `getElementById('themeIcon').innerHTML` 在按钮不存在的页面会直接报错）；`initTheme()` 仍然照常读 `localStorage` 应用主题，只是详情页没有切换入口，深色/浅色由其它页面或系统设置决定
-- 「重点关注」用星标图标容易被理解成「收藏」（`static/common.js` 的 `STAR_ICON`/`STAR_ICON_FILLED` 目前跟列表页共用同一套图标常量），跟用户讨论后建议换成旗帜（flag）类图标区分「优先盯」和「收藏」两个语义，图标本身尚未替换，等用户确认方向
+- 「重点关注」用星标图标容易被理解成「收藏」，跟用户讨论后确认换成旗帜（flag）图标区分「优先盯」和「收藏」两个语义。图形从星星改成旗帜（`static/common.js` 的 `STAR_PATH`），但 `jobs.starred` 字段名/`POST /api/jobs/<id>/starred` 接口/`STAR_ICON`/`.icon-btn.starred` 这些标识符原样保留，不为一次纯视觉改动牵动数据库列名和一串调用点；列表页卡片、职位详情页、「重点关注」分组标题共用同一套图标常量，全部一起换掉
 
 ### 相似职位分组误把「(CN)」地区标记当成区分职位的关键词（修复于 2026-08-22）
 - 起因：用户在真实数据里看到 AlphaLife Sciences 的「Technical Product Manager (CN)」和「Sr. Product Manager (CN)」被 `annotate_similar_groups()` 折叠成一组"相似职位"，但这两个明显是不同职位（技术向 PM vs 高级 PM）
