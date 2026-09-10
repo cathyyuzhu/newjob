@@ -27,6 +27,15 @@ exit code 1（有 FAIL）和 2（没 FAIL 但有 ERROR）刻意分开：**"模�
 
 ## 花钱的事——每次运行前会先打印一条真实调用提示并要求确认（--yes 跳过）
 
+## 质性评审（--judge，可选）
+
+规则断言只能查"有没有遵守明文规则"，查不了"写得好不好"。--judge 会在规则断言
+跑完后，把每条可评审 fixture（analyze/materials）的第 1 次成功输出连同 JD/简历
+原文交给另一个模型按维度打分（1-5）并列关注点，机制见 evals/judge.py。judge 默认
+**跨厂商**选模型（被评是 anthropic 就用 deepseek，反之亦然）以避免自评偏差，缺
+另一家 key 时退回同厂商默认模型。结果是纯信息性的：评审失败/分数低都不影响
+fixture 的规则判定和 exit code，只进报告和 latest.json 供人读。
+
 ## 产出两份东西
 
 1. 每条 fixture 完整的原始 LLM 输出写进 evals/reports/<timestamp>.md（已加入
@@ -67,6 +76,7 @@ sys.path.insert(0, BASE)
 import analyzer  # noqa: E402
 import collect_errors  # noqa: E402
 import config  # noqa: E402
+import judge  # noqa: E402
 import llm  # noqa: E402
 import verdicts as v  # noqa: E402
 from checks_fabrication import allowed_figures, find_new_figures  # noqa: E402
@@ -395,12 +405,49 @@ KIND_EVALUATORS = {
 }
 
 
+# ---------------------------------------------------------------- 质性评审（--judge，信息性）
+
+def run_judge_phase(fixtures, reps_by_id, provider, model, cfg, judge_model_arg):
+    """对可评审 kind 的 fixture 各取第 1 次成功输出，交给 judge 模型打质性分。
+
+    只产信息性结果：judge 调用失败/返回不合规都记成 status=ERROR，不影响 fixture
+    的规则判定和 exit code。评审单次成功输出而不是全部 repeats 是成本取舍——规则
+    层面的噪声过滤已经由 repeats+离散度闸门做了，judge 只做人工报告的预读。"""
+    judge_provider, judge_model = judge.resolve_judge_target(provider, judge_model_arg, cfg)
+    if judge_provider == provider and not judge_model_arg:
+        print(f"（judge 退回同厂商模型 {provider}，存在自评偏差的可能；"
+              f"补另一家 API key 或用 --judge-model 可避免）")
+    print(f"质性评审 judge：provider={judge_provider}, model={judge_model or '(默认)'}")
+    judge_by_id = {}
+    for f in fixtures:
+        if f["kind"] not in judge.JUDGE_KINDS:
+            continue
+        ok_reps = [r for r in reps_by_id.get(f["id"], []) if r.get("ok")]
+        if not ok_reps:
+            continue
+        print(f"  judge {f['id']} ...")
+        try:
+            verdict = collect_errors.with_retry(
+                judge.judge_output, f["kind"],
+                company=f["company"], title=f["title"], jd_text=f["jd_text"],
+                resume_text=f["resume_text"], output=ok_reps[0]["result"],
+                provider=judge_provider, model=judge_model,
+            )
+            judge_by_id[f["id"]] = {"provider": judge_provider, "model": judge_model, **verdict}
+        except Exception as e:
+            judge_by_id[f["id"]] = {
+                "provider": judge_provider, "model": judge_model,
+                "status": "ERROR", "error": str(e)[:200],
+            }
+    return judge_by_id
+
+
 # ---------------------------------------------------------------- 报告输出
 
 STATUS_MARK = {v.PASS: "  ", v.FAIL: "✗ ", v.ERROR: "⚠ ", v.INCONCLUSIVE: "? ", v.WARN: "~ "}
 
 
-def write_report(path, provider, model, repeats, rows, raw_by_fixture, retries):
+def write_report(path, provider, model, repeats, rows, raw_by_fixture, retries, judge_by_id=None):
     lines = [
         "# analyzer.py 打分器 LLM 质量回归报告",
         "",
@@ -441,6 +488,20 @@ def write_report(path, provider, model, repeats, rows, raw_by_fixture, retries):
                 lines.append(str(rep))
             lines.append("```")
             lines.append("</details>")
+
+    judged = judge_by_id or {}
+    if judged:
+        lines.append("")
+        lines.append("## 质性评审（LLM judge，信息性结果，不影响 exit code）")
+        lines.append("")
+        for rid, j in judged.items():
+            if j.get("status") == "ERROR":
+                lines.append(f"- {rid}：评审失败（{j.get('error')}）")
+                continue
+            dims = "；".join(f"{name}={d['score']}" for name, d in (j.get("dimensions") or {}).items())
+            lines.append(f"- {rid}：overall={j.get('overall')}（{dims}）")
+            for c in j.get("concerns") or []:
+                lines.append(f"    - {c}")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
@@ -493,7 +554,7 @@ def write_results_json(path, run_meta, rows):
     模型原文，那份留在 evals/reports/（.gitignore 掉的）里。"""
     fixtures_json = {}
     for row in rows:
-        fixtures_json[row["id"]] = {
+        entry = {
             "kind": row["kind"],
             "rule": row["rule"],
             "soft": row["soft"],
@@ -503,6 +564,10 @@ def write_results_json(path, run_meta, rows):
             "n_error": row["n_error"],
             "detail": row["detail"],
         }
+        # judge 结果是附加字段：没开 --judge 的历史 latest.json 没有它，schema 兼容。
+        if row.get("judge"):
+            entry["judge"] = row["judge"]
+        fixtures_json[row["id"]] = entry
     payload = {
         "schema": 1,
         "run": run_meta,
@@ -555,6 +620,12 @@ def main():
     parser.add_argument("--repeats", type=int, default=2, help="每条 fixture 重复调用几次，用来过滤单次抽样的随机噪声（默认2）")
     parser.add_argument("--only", default=None, help="只跑某一条 fixture 及其配对/锚点（调试用，配合 --repeats 1 少花钱）")
     parser.add_argument("--yes", "-y", action="store_true", help="跳过运行前的真实调用确认提示")
+    parser.add_argument("--judge", action="store_true",
+                        help="规则断言跑完后，用另一个模型对质性质量（分析理由/cover letter/简历改写）"
+                             "做 LLM 评审——额外花钱，只产信息性结果，不影响 exit code")
+    parser.add_argument("--judge-model", default=None,
+                        help="judge 用的模型 id；默认跨厂商（被评是 anthropic 就用 deepseek，反之亦然），"
+                             "缺另一家 key 时退回同厂商默认模型")
     args = parser.parse_args()
 
     previous = load_results_json()
@@ -579,6 +650,11 @@ def main():
     call_count = len(fixtures) * args.repeats
     print(f"即将真实调用 LLM（provider={provider}, model={model or '默认'}），"
           f"共 {len(fixtures)} 条 fixture × {args.repeats} 次 = 约 {call_count} 次调用，会产生真实 API 费用。")
+    if args.judge:
+        n_judgeable = sum(1 for f in fixtures if f["kind"] in judge.JUDGE_KINDS)
+        if n_judgeable:
+            print(f"质性评审（--judge）：额外对 {n_judgeable} 条 fixture 的第 1 次成功输出各做 1 次 LLM 评审"
+                  f"（约 {n_judgeable} 次调用）。")
     if not args.yes:
         answer = input("确认继续吗？输入 yes 继续，其它任意键取消：")
         if answer.strip().lower() != "yes":
@@ -630,11 +706,18 @@ def main():
             print(f"    - {d}")
     print("=" * 70)
 
+    judge_by_id = {}
+    if args.judge:
+        judge_by_id = run_judge_phase(fixtures, reps_by_id, provider, model, cfg, args.judge_model)
+        for row in rows:
+            if row["id"] in judge_by_id:
+                row["judge"] = judge_by_id[row["id"]]
+
     reports_dir = REPORTS_DIR
     os.makedirs(reports_dir, exist_ok=True)
     report_path = os.path.join(reports_dir, datetime.now().strftime("%Y%m%d-%H%M%S") + ".md")
     retries = collect_errors.get_retry_count()
-    write_report(report_path, provider, model, args.repeats, rows, raw_by_fixture, retries)
+    write_report(report_path, provider, model, args.repeats, rows, raw_by_fixture, retries, judge_by_id=judge_by_id)
     print(f"完整报告（含原始 LLM 输出）：{report_path}")
 
     run_meta = {
@@ -648,6 +731,9 @@ def main():
         "prompt_fingerprints": _prompt_fingerprints(),
         "git_rev": _git_rev(),
     }
+    if args.judge and judge_by_id:
+        first = next(iter(judge_by_id.values()))
+        run_meta["judge"] = {"provider": first.get("provider"), "model": first.get("model")}
     write_results_json(RESULTS_PATH, run_meta, rows)
     print(f"结构化结果（已提交进 git，可 diff）：{RESULTS_PATH}")
 
@@ -664,6 +750,18 @@ def main():
         print(f"{len(inconclusive)} 条 INCONCLUSIVE（没测出结果，不影响 exit code，多是离散度太大或没东西可查）。")
     if exit_code == v.EXIT_CLEAN:
         print("\nALL PASS" if not (warns or inconclusive) else "\nALL PASS（含 WARN/INCONCLUSIVE，见上）")
+    if judge_by_id:
+        judged_ok = [j for j in judge_by_id.values() if j.get("status") != "ERROR"]
+        judge_errs = [j for j in judge_by_id.values() if j.get("status") == "ERROR"]
+        with_concerns = [j for j in judged_ok if j.get("concerns")]
+        note = f"质性评审（不影响 exit code）：{len(judged_ok)} 条已评审"
+        if judged_ok:
+            note += f"，overall 均值 {sum(j['overall'] for j in judged_ok) / len(judged_ok):.1f}"
+        if with_concerns:
+            note += f"，{len(with_concerns)} 条有关注点（详见报告）"
+        if judge_errs:
+            note += f"，{len(judge_errs)} 条评审失败"
+        print(note)
     return exit_code
 
 

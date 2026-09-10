@@ -193,7 +193,8 @@ llm.ask_json("hi", provider="deepseek", model="deepseek-v4-pro")
 call = rows()[-1]
 assert call["provider"] == "deepseek" and call["task"] == "materials"
 assert call["input_tokens"] == 2000 and call["output_tokens"] == 800
-assert call["cost_usd"] is None                      # DeepSeek 没配单价
+# deepseek-v4-pro：非高峰 cache-miss 价 $0.66/$1.98 每百万 → 2000/1e6*0.66 + 800/1e6*1.98
+assert abs(call["cost_usd"] - 0.002904) < 1e-9, call["cost_usd"]
 assert json.loads(call["usage_json"])["prompt_tokens"] == 2000
 print("deepseek usage normalized ok")
 
@@ -247,7 +248,69 @@ for m in llm.MODELS:
     assert "$" not in (m.get("note") or ""), f"{m['id']} 的 note 里又写了价格：{m['note']}"
 assert llm.MODELS_BY_ID["claude-sonnet-5"]["price_in"] == 2.0    # 不是 $3——那是 Sonnet 4.6 的价
 assert llm.MODELS_BY_ID["claude-sonnet-5"]["price_out"] == 10.0
-assert llm.estimate_cost("deepseek-v4-pro", 1000, 1000) is None
+# DeepSeek 非高峰 cache-miss 价（2026-09-08 查证官方定价页，见 llm.py MODELS 里的说明）
+assert llm.MODELS_BY_ID["deepseek-v4-pro"]["price_in"] == 0.66
+assert llm.MODELS_BY_ID["deepseek-v4-pro"]["price_out"] == 1.98
+assert llm.MODELS_BY_ID["deepseek-v4-flash"]["price_in"] == 0.22
+assert llm.MODELS_BY_ID["deepseek-v4-flash"]["price_out"] == 0.66
+assert llm.estimate_cost("some-made-up-model-id", 1000, 1000) is None
 print("pricing lives only in the registry ok")
+
+# ---- 12. start_usage_tracking / pop_usage_summary / usage_text：路由层展示"这次操作
+# 花了多少"用的就是这三个函数，见 web_helpers.usage_notification_message() 和
+# routes_jobs.py 的 analyze_job_route()
+assert llm.pop_usage_summary() is None, "没开跟踪时应该返回 None，不是空汇总"
+
+llm.start_usage_tracking()
+llm.resolve_task(CFG, "analysis")
+llm.ask_json("hi", provider="anthropic", model="claude-sonnet-5")
+summary = llm.pop_usage_summary()
+assert summary["calls"] == 1 and summary["ok"] is True
+assert summary["provider"] == "anthropic"
+assert summary["models"] == ["claude-sonnet-5"]
+assert summary["input_tokens"] == 1000 and summary["output_tokens"] == 500
+assert abs(summary["cost_usd"] - 0.007) < 1e-9
+assert llm.usage_text(summary) == "Claude Sonnet 5 · 1,500 tokens · $0.0070", llm.usage_text(summary)
+print("start/pop usage tracking single call ok")
+
+assert llm.pop_usage_summary() is None, "取走之后应该清空，不能重复拿到上一次的"
+print("pop_usage_summary clears the log ok")
+
+# 一次操作里不止一次 LLM 调用（比如分析+分类）：按模型汇总，tokens/成本原样累加
+llm.start_usage_tracking()
+llm.ask("hi there", provider="anthropic", model="claude-haiku-4-5")
+llm.ask_json("hi", provider="anthropic", model="claude-sonnet-5")
+summary = llm.pop_usage_summary()
+assert summary["calls"] == 2
+assert summary["models"] == ["claude-haiku-4-5", "claude-sonnet-5"]
+assert abs(summary["cost_usd"] - (0.0035 + 0.007)) < 1e-9
+assert llm.usage_text(summary) == "claude-haiku-4-5/claude-sonnet-5 · 3,000 tokens · $0.0105", llm.usage_text(summary)
+print("multiple calls accumulate across models ok")
+
+# 只要有一次调用定不了价（注册表外的模型），总成本必须是 None——不能悄悄当 0 元算，
+# 那样用户会以为这次操作免费
+llm.start_usage_tracking()
+llm.ask("hi", provider="anthropic", model="claude-sonnet-5")
+llm.ask("hi", provider="anthropic", model="some-other-model")
+summary = llm.pop_usage_summary()
+assert summary["cost_usd"] is None, summary
+assert llm.usage_text(summary) == "claude-sonnet-5/some-other-model · 3,000 tokens · 成本未知", llm.usage_text(summary)
+print("unknown-price call makes total cost unknown, not zero ok")
+
+# 调用失败也要被跟踪到（ok=False），且不能影响原异常照常往上抛
+llm.start_usage_tracking()
+FakeAnthropic.STOP = "max_tokens"
+try:
+    llm.ask_json("hi", provider="anthropic", model="claude-sonnet-5")
+    raise AssertionError("截断时应该抛错")
+except RuntimeError:
+    pass
+FakeAnthropic.STOP = "end_turn"
+summary = llm.pop_usage_summary()
+assert summary["calls"] == 1 and summary["ok"] is False
+print("failed call is still tracked and marked not ok ok")
+
+assert llm.usage_text(None) is None, "没有可展示的用量时不该拼出 None 字样的文案"
+print("usage_text(None) is None ok")
 
 print("\nALL PASS")

@@ -109,7 +109,7 @@ app.py（组装根，只做 register_blueprint × 7 + 启停时的一次性后�
 | `routes_resume.py` | 「我的简历」模块：上传/下载/体检/优化版/定制简历列表 | 10 |
 | `routes_misc.py` | 运行记录、每日任务清单、通知、追踪表只读接口、LLM 调用流水统计（`/api/llm/stats`）、职位收集运行流水统计（`/api/collect/stats`，2026-08-29）、历史数据回填 | 11 |
 
-共 79 个路由（+ Flask 自动加的 1 个静态文件路由），其中 6 个 `render_template` 返回页面骨架，其余是 JSON API。`app.py` 还多做一件事：启动时 `llm.set_recorder(...)` 把第4层的 `insert_llm_call` 注册给第5层的 `llm.py`（理由见第5层说明）。`web_helpers.py` 放跨这些文件共用的小工具（目前只有 `need_resume_response`）。
+共 79 个路由（+ Flask 自动加的 1 个静态文件路由），其中 6 个 `render_template` 返回页面骨架，其余是 JSON API。`app.py` 还多做一件事：启动时 `llm.set_recorder(...)` 把第4层的 `insert_llm_call` 注册给第5层的 `llm.py`（理由见第5层说明）。`web_helpers.py` 放跨这些文件共用的小工具：`need_resume_response`（还没上传简历时的统一响应）、`usage_notification_message`（把第5层 `llm.py` 算出的单次操作用量拼进后台任务完成通知的文案，2026-09-08）。
 
 **能力**
 - 请求参数校验、错误码封装（400/404/500）
@@ -179,7 +179,7 @@ app.py（组装根，只做 register_blueprint × 7 + 启停时的一次性后�
 **审计能力现状**：不均匀，但 2026-08-29 起有了一条统一的调用流水。
 
 - *业务结果的历史版本*：`interview_preps`/`resume_reviews`/`interview_practice_sets` 三张表是 INSERT 新行、不覆盖旧行，留了历史版本（含 `content_json` 原始结果 + `llm_provider`/`llm_model` + 时间戳，失败也记一行）；但匹配分析这条主线不是这样——`jobs` 表直接覆盖更新分析结果（`update_job_analysis`），xlsx 追踪表也是删旧行插新行，重新分析一次就查不到上一次的结果。这一条没变。
-- *LLM 调用流水*：新增 `llm_calls` 表，每次真实打到 API 的调用记一行——task / provider / model / 成败 / 错误类型 / 耗时 / input+output token / 估算成本 / 本次 max_tokens / prompt 字符数 / 原始 usage。埋点在第5层 `llm.py`（见下节），写入回调由 `app.py` 注册。能直接回答"这个月花了多少钱""哪个任务最容易失败""哪个模型慢"，`GET /api/llm/stats` 是它的聚合视图。
+- *LLM 调用流水*：新增 `llm_calls` 表，每次真实打到 API 的调用记一行——task / provider / model / 成败 / 错误类型 / 耗时 / input+output token / 估算成本 / 本次 max_tokens / prompt 字符数 / 原始 usage。埋点在第5层 `llm.py`（见下节），写入回调由 `app.py` 注册。能直接回答"这个月花了多少钱""哪个任务最容易失败""哪个模型慢"，`GET /api/llm/stats` 是它的聚合视图，顶栏花费小组件（`static/common.js`）和各处 toast/通知里的单次用量文案是这份数据在网页端的展示（2026-09-08）。
 - *仍然刻意不记的*：**prompt 和响应原文**。一次匹配分析的 prompt 是简历全文 + JD 全文（10-20KB），每天几十次调用一年就是几百 MB，而这份数据 99% 的时间没人看；`prompt_chars` 只记长度，足够回答"是不是 prompt 变长导致变贵/被截断"。所以这是"记了 token 和成本、刻意没记原文"，不是完整审计。
 
 ---
@@ -258,7 +258,7 @@ llm.py（第5层地基，全项目唯一直连 API 的适配器）
 
 | 文件 | 能力 |
 |---|---|
-| `llm.py` | Anthropic / DeepSeek 适配器，全项目唯一直连 LLM API 的模块；内含模型路由 / provider 抽象 / 参数配置 / 反幻觉文案 / 输出校验小工具 / 截断工具，见上图 |
+| `llm.py` | Anthropic / DeepSeek 适配器，全项目唯一直连 LLM API 的模块；内含模型路由 / provider 抽象 / 参数配置 / 反幻觉文案 / 输出校验小工具 / 截断工具 / 单次操作用量汇总（`start_usage_tracking`/`pop_usage_summary`/`usage_text`，2026-09-08），见上图 |
 | `analyzer.py` | JD-简历双因子匹配分析、生成定制简历+Cover Letter |
 | `interview.py` | 面试准备材料、题库起草、语音练习出题打分 |
 | `job_chat.py` | 针对单条职位的自由问答，不落库 |

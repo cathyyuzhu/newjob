@@ -84,10 +84,23 @@ MODELS = [
         "id": "deepseek-v4-pro",
         "label": "DeepSeek V4 Pro",
         "provider": "deepseek",
-        "note": "推理模型，最省钱",
+        # 原来这条 note 写"最省钱"是没查过真实定价时的想当然（"推理模型=省钱"的刻板印象）；
+        # 2026-09-08 查了 DeepSeek 官方定价页（下面 price_in/price_out 的说明）后发现
+        # 恰恰相反——Pro 比 Flash 贵 3 倍，改成如实描述，不再误导用户选贵的以为在省钱。
+        "note": "推理模型，质量更好但比 Flash 贵",
         # 推理模型通常忽略甚至拒绝 temperature。没有实测过，先按不支持处理——
         # 宁可控不了温，也不要为了一个收益不确定的参数换来一个 400。
         "supports_sampling": False,
+        # DeepSeek 定价比 Anthropic 复杂：区分 cache hit/miss 输入价，还有 UTC 高峰/非高峰
+        # 两档（高峰 01:00-04:00 + 06:00-10:00，其余是非高峰，官方峰值价是非高峰的 2 倍）。
+        # 这里跟 Anthropic 那几条一样只存一个数，本来就是估算不是账单（见 estimate_cost()
+        # 的说明），选非高峰、cache miss 这一档——非高峰占一天 17/24 小时，是更常见的情况；
+        # cache miss 是没命中缓存时的价格，用它做估算不会把成本算低于实际。命中缓存时
+        # 实际花费会比这个估算数低（Pro 命中价 $0.022/M，只有 miss 价的 1/30）。价格来源：
+        # https://api-docs.deepseek.com/quick_start/pricing/ （2026-09-08 查证，生效于
+        # 2026-08-16 16:00 UTC 的 V4 价目表）。
+        "price_in": 0.66,
+        "price_out": 1.98,
     },
     {
         "id": "deepseek-v4-flash",
@@ -95,6 +108,9 @@ MODELS = [
         "provider": "deepseek",
         "note": "更快更便宜，质量略低",
         "supports_sampling": True,
+        # 同上一条 Pro 的说明：非高峰、cache miss 档，来源同一张官方价目表。
+        "price_in": 0.22,
+        "price_out": 0.66,
     },
 ]
 
@@ -169,6 +185,14 @@ def get_model(model_id):
 _current_task = contextvars.ContextVar("llm_task", default=None)
 _last_call_id = contextvars.ContextVar("llm_last_call_id", default=None)
 
+# 单次用户操作（一次 HTTP 请求/一个后台线程任务）期间发生的调用，供路由层/后台任务
+# 结束时取走汇总，回显给用户"这次操作花了多少钱"（见 start_usage_tracking /
+# pop_usage_summary）。跟上面 _last_call_id 不是一回事：那个只记"最近一次"，用于
+# JSON 解析失败时回填错误；这个是"从开始跟踪以来的全部"，因为一次操作经常不止一次
+# LLM 调用（比如批量分类）。同样用 ContextVar：Flask 每个请求、每个后台线程都是
+# 独立线程/独立 context，天然互不串味，不需要显式清理跨请求状态。
+_usage_log = contextvars.ContextVar("llm_usage_log", default=None)
+
 # 写流水的两个回调，由 app.py 启动时注册。
 # 刻意不在这里 import models：llm.py 是"第5层地基"，全项目唯一不依赖任何项目内模块的
 # LLM 适配器（见 spec/architecture.md），直接 import 会造出第5层反向依赖第4层。
@@ -232,6 +256,60 @@ def estimate_cost(model_id, input_tokens, output_tokens):
     )
 
 
+def start_usage_tracking():
+    """开始收集"从现在起这个 context 里发生的 LLM 调用"，配合 pop_usage_summary() 用，
+    给路由/后台任务结束时回显"这次操作花了多少钱"。
+
+    调用方（路由函数、后台线程的入口函数）在触发业务逻辑之前调一次，业务逻辑内部
+    不管调几次 LLM、经过多少层函数，都会被 _CallRecord.__exit__ 记下来——不需要
+    每个功能模块自己知道"我被谁跟踪了"。忘记配对调用 pop_usage_summary() 没有副作用，
+    只是这次的记录取不出来，不会内存泄漏或串到下一次请求（下一个请求/线程是全新
+    context，默认值天然是 None）。"""
+    _usage_log.set([])
+
+
+def pop_usage_summary():
+    """取走并清空自 start_usage_tracking() 以来记录的调用，按模型/费用汇总返回；
+    没开跟踪、或跟踪期间一次 LLM 都没调用，返回 None（调用方应把 None 当"没有可展示的
+    用量"处理，而不是当成 0 花费——两者含义不同，别混在一起显示成 $0.00）。"""
+    log = _usage_log.get()
+    _usage_log.set(None)
+    if not log:
+        return None
+    input_tokens = sum(c["input_tokens"] or 0 for c in log)
+    output_tokens = sum(c["output_tokens"] or 0 for c in log)
+    costs = [c["cost_usd"] for c in log if c["cost_usd"] is not None]
+    models = sorted({c["model"] for c in log if c["model"]})
+    return {
+        "calls": len(log),
+        "ok": all(c["ok"] for c in log),
+        "provider": log[0]["provider"] if len({c["provider"] for c in log}) == 1 else None,
+        "models": models,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        # 只要有一次调用没定价（比如 DeepSeek），总成本就说不准，宁可报"未知"也不要
+        # 悄悄把那次调用当 0 元算，展示层看到 None 应该显示"成本未知"而不是省略。
+        "cost_usd": round(sum(costs), 6) if len(costs) == len(log) else None,
+    }
+
+
+def usage_text(summary):
+    """把 pop_usage_summary() 的结果拼成一行人类可读文案（模型 + tokens + 成本），
+    给 toast/通知文案直接拼接用。summary 为 None 时返回 None——调用方据此判断
+    "这次操作根本没有可展示的 LLM 用量"，不要拼出"None"字样的文案。"""
+    if not summary:
+        return None
+    if len(summary["models"]) == 1:
+        model_label = MODELS_BY_ID.get(summary["models"][0], {}).get("label", summary["models"][0])
+    elif summary["models"]:
+        model_label = "/".join(summary["models"])
+    else:
+        model_label = "未知模型"
+    tokens = summary["input_tokens"] + summary["output_tokens"]
+    cost = f"${summary['cost_usd']:.4f}" if summary["cost_usd"] is not None else "成本未知"
+    return f"{model_label} · {tokens:,} tokens · {cost}"
+
+
 class _CallRecord:
     """包住一次真实 API 调用，退出时无论成功失败都落一行流水。
 
@@ -255,6 +333,7 @@ class _CallRecord:
             usage = self.usage or {}
             input_tokens = usage.get("input_tokens")
             output_tokens = usage.get("output_tokens")
+            cost_usd = estimate_cost(self.model, input_tokens, output_tokens)
             call_id = None
             if _RECORDER:
                 call_id = _RECORDER(
@@ -267,12 +346,22 @@ class _CallRecord:
                     duration_ms=int((time.monotonic() - self._t0) * 1000),
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
-                    cost_usd=estimate_cost(self.model, input_tokens, output_tokens),
+                    cost_usd=cost_usd,
                     max_tokens=self.max_tokens,
                     prompt_chars=self.prompt_chars,
                     usage_json=json.dumps(usage, ensure_ascii=False) if usage else None,
                 )
             _last_call_id.set(call_id)
+            log = _usage_log.get()
+            if log is not None:
+                log.append({
+                    "provider": self.provider,
+                    "model": self.model,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost_usd": cost_usd,
+                    "ok": not exc_type,
+                })
         except Exception:
             logging.exception("llm_calls 埋点写库失败（不影响本次调用结果）")
         return False  # 绝不吞掉原异常

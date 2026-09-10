@@ -124,9 +124,12 @@ def sync_tracker_stage(stage):
     调用方（app.py）该做的事，这里对 stage 具体含义（"已收藏"还是"已投递"）不敏感，
     只是拿它去拼 URL、过滤 SUPPORTED_STAGES。
 
-    返回 {"results": [...], "added_ids": [...], "total_found": N, "reconciled": R}，
-    results/added_ids 的格式跟 add_jobs_from_urls() 完全一样（前端已有渲染逐条结果的
-    代码，直接复用）。
+    返回 {"results": [...], "added_ids": [...], "total_found": N, "reconciled": R,
+    "reconciled_details": [...]}，results/added_ids 的格式跟 add_jobs_from_urls()
+    完全一样（前端已有渲染逐条结果的代码，直接复用）。reconciled_details 是
+    models.reconcile_application_status_from_linkedin() 原样返回的明细列表，
+    reconciled 是它的条数——调用方（app.py 的通知文案）要报"具体更新了哪几条"就从
+    reconciled_details 里取，只要数量就用 reconciled，两个字段不用各自重新计算。
 
     额外做一步"投递状态核对"（2026-08-26 新增，起因见 models.
     reconcile_application_status_from_linkedin() 的说明）：不管这次同步的是哪个
@@ -183,11 +186,11 @@ def sync_tracker_stage(stage):
             )
             raise
 
-        reconciled = 0
+        reconciled_details = []
         try:
             applied_ids = job_ids if stage == "applied" else fetch_tracker_job_ids("applied")
             interview_ids = job_ids if stage == "interview" else fetch_tracker_job_ids("interview")
-            reconciled = reconcile_application_status_from_linkedin(applied_ids, interview_ids)
+            reconciled_details = reconcile_application_status_from_linkedin(applied_ids, interview_ids)
         except Exception:
             logger.exception("同步 %s 后的投递状态核对失败，不影响本次同步已入库的结果", stage)
 
@@ -204,7 +207,8 @@ def sync_tracker_stage(stage):
         )
         return {
             "results": all_results, "added_ids": all_added, "total_found": len(urls),
-            "reconciled": reconciled, "suspicious": suspicious,
+            "reconciled": len(reconciled_details), "reconciled_details": reconciled_details,
+            "suspicious": suspicious,
         }
     finally:
         collect_errors.clear_run_deadline()

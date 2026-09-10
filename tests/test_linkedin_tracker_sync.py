@@ -325,7 +325,7 @@ def fake_sync_tracker_stage(stage):
 linkedin_tracker.sync_tracker_stage = fake_sync_tracker_stage
 
 status = c.get("/api/jobs/sync_tracker/saved").get_json()
-assert status == {"syncing": False, "result": None, "error": None}, status
+assert status == {"syncing": False, "result": None, "error": None, "queued_behind": None}, status
 
 r = c.post("/api/jobs/sync_tracker/saved")
 assert r.status_code == 200 and r.get_json() == {"started": True}, r.get_json()

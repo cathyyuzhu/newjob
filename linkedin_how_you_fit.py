@@ -22,7 +22,7 @@ import logging
 import os
 import time
 from datetime import datetime
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 _URL_PREFIX = "https://www.linkedin.com/jobs/search-results"
 
 MAX_HOW_YOU_FIT_SEARCHES = 12  # 配置最多允许几条搜索——2026-08-18 决策的具体补偿措施之一，2026-08-29 从8上调
-MAX_AGENT_STEPS = 12           # agent 兜底最多循环几轮才强制判定"卡住"，防止无限调LLM
+MAX_AGENT_STEPS = 3            # agent 兜底最多循环几轮才强制判定"卡住"，防止无限调LLM
 
 # 确定性扫描收集到的职位数低于这个阈值时，也升级给 agent 兜底复核（不再要求"完全
 # 抱空"才升级）。起因：How You Fit 页面左侧职位列表很可能是独立的可滚动容器，
@@ -70,6 +70,19 @@ def _validate_search_url(url):
     的搜索全部失效。"""
     if not (url or "").strip().startswith(_URL_PREFIX):
         raise HowYouFitSyncError(f"链接格式不对，应该是 {_URL_PREFIX} 开头的 LinkedIn 搜索结果页链接")
+
+
+def _extract_keyword(url):
+    """从搜索链接的 keywords= 查询参数里取出用户当初在 LinkedIn 上填的搜索词，供
+    sync_search() 入库前做标题粗筛用（见 job_link.add_jobs_from_urls 的 keyword
+    参数）。没有这个参数（用户贴的链接本身就没带，或者 LinkedIn 以后改了参数名）
+    就返回 None，退化成不筛——跟粗筛在 relevance.py 别处的取舍一致：判断不了就不
+    拦，宁可多留几条可疑结果，也不要因为解析失败而错杀真正相关的职位。"""
+    try:
+        values = parse_qs(urlsplit(url).query).get("keywords")
+    except Exception:
+        return None
+    return (values[0] or "").strip() if values else None
 
 
 # ---------------------------------------------------------------- 确定性优先路径
@@ -500,8 +513,20 @@ def _scan_with_agent(url, headless=False):
 def sync_search(search_id, force_agent=False):
     """完整同步配置里 id=search_id 的这一条 How You Fit 搜索。不检查 enabled 字段
     ——那只管每日批量是否包含它（见 sync_all_enabled_searches），手动触发单条同步
-    应该始终生效。不做标题/地点粗筛，理由跟 tracker 同步一致：LinkedIn 自己判定
-    "符合资格"的结果，不该被关键词粗筛二次质疑。
+    应该始终生效。
+
+    标题粗筛（2026-09-04 恢复，修复原来"完全不筛"的设计缺陷）：原先这里跟 tracker
+    同步一样不做标题/地点粗筛，理由是"LinkedIn 自己判定'符合资格'的结果，不该被
+    关键词粗筛二次质疑"——但 tracker 同步的"已收藏/已投递/面试"列表是用户自己在
+    LinkedIn 上一条条操作过的，How You Fit 是 LinkedIn 算法按 `url` 里的
+    `keywords=` 参数算出来的"可能符合条件"候选，两者信任基础不一样。用户实测发现
+    这个算法并不总是老实按标题匹配，会混进标题跟 keywords 参数完全不沾边的职位
+    （2026-09-04反馈）。所以这里改成从 `url` 解析出 `keywords=` 的值（见
+    `_extract_keyword`），传给 `add_jobs_from_urls` 的 `keyword` 参数，用
+    `relevance.title_looks_relevant` 挡掉标题不沾边的结果（标成
+    skipped_irrelevant，不入库）。地点仍然不筛——`geoId=` 是 LinkedIn 内部数字
+    地理编码，没有现成的映射表可以还原成城市名，跟标题粗筛不是同一个量级的工作，
+    这次先不做。
 
     force_agent=True（设置页"用 agent 测试"按钮，2026-08-29）：跳过
     fetch_search_job_ids 那条确定性扫描，直接强制升级给 _scan_with_agent()
@@ -545,6 +570,7 @@ def sync_search(search_id, force_agent=False):
     if not search:
         raise HowYouFitSyncError(f"配置里找不到这条 LinkedIn 智能匹配推荐搜索：{search_id}")
     url = search["url"]
+    keyword = _extract_keyword(url)
     source = f"hyf_{search_id}"
 
     run_started_iso = datetime.now().isoformat(timespec="seconds")
@@ -600,7 +626,7 @@ def sync_search(search_id, force_agent=False):
             all_added = []
             for i in range(0, len(urls), MAX_URLS):
                 collect_errors.check_deadline(f"同步 LinkedIn 智能匹配推荐搜索超过本次运行的时间上限：{search.get('name')}")
-                batch_result = add_jobs_from_urls(urls[i:i + MAX_URLS])
+                batch_result = add_jobs_from_urls(urls[i:i + MAX_URLS], keyword=keyword)
                 all_results.extend(batch_result["results"])
                 all_added.extend(batch_result["added_ids"])
             result = {"results": all_results, "added_ids": all_added, "total_found": len(urls)}
@@ -619,7 +645,7 @@ def sync_search(search_id, force_agent=False):
             duration_ms=int((time.time() - run_started_at) * 1000),
             found=result["total_found"], added=len(result["added_ids"]),
             skipped_duplicate=len([r for r in result["results"] if r.get("status") == "duplicate"]),
-            skipped_irrelevant=0,
+            skipped_irrelevant=len([r for r in result["results"] if r.get("status") == "skipped_irrelevant"]),
             failed=len([r for r in result["results"] if r.get("status") == "failed"]),
             ok=1, error_kind=error_kind, error_detail=error_detail,
             retries=collect_errors.get_retry_count(), agent_used=int(agent_used), suspicious=int(suspicious),

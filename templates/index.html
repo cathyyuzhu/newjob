@@ -21,6 +21,16 @@
            toast 只有正好停留在发起操作那个页面才能看到，铃铛的未读数是服务端算的，
            跳走/关掉浏览器再回来也不会错过。6 个页面都有，逻辑共用 static/common.js
            的 initNotifications()/toggleNotifDropdown()。 -->
+      <!-- LLM 花费小组件：常驻显示今日累计花费，点开看按任务/按模型的明细，逻辑共用
+           static/common.js 的 initSpendWidget()/toggleSpendDropdown()。跟左边的通知铃
+           是同一档的"顶栏常驻状态"，放在它左边。 -->
+      <div class="spend-wrap">
+        <button class="icon-btn spend-btn" id="spendBtn" title="LLM 调用花费（点击查看明细）" onclick="toggleSpendDropdown()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.2a2.2 2.2 0 0 1 2.2-1.7h.6a2.1 2.1 0 0 1 0 4.2h-.6a2.1 2.1 0 0 0 0 4.2h.6a2.2 2.2 0 0 0 2.2-1.7"/></svg>
+          <span id="spendBadgeText">···</span>
+        </button>
+        <div class="spend-dropdown" id="spendDropdown"></div>
+      </div>
       <div class="notif-wrap">
         <button class="icon-btn" id="notifBellBtn" title="通知" onclick="toggleNotifDropdown()">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
@@ -201,10 +211,11 @@
       </div>
     </div>
 
-    <!-- 每周转化率（讨论于 2026-08-22）：跟「今日待办」并排放右侧，同样是扫一眼就有数
-         的信息。renderWeeklyConversion() 在 loadJobs() 拿到 allJobs 后调用，纯前端算，
-         不额外发请求。「最近一周」用滚动7天，下面周趋势图用自然周分桶——两种口径都用
-         是因为一个要贴近"现在"，一个要能稳定累积成柱子，统一成一种会顾此失彼。 -->
+    <!-- 投递分析（讨论于 2026-08-22，改造为折线图于 2026-09-08，拆成四宫格小图于同日）：
+         跟「今日待办」并排放右侧，同样是扫一眼就有数的信息。renderWeeklyConversion() 在
+         loadJobs() 拿到 allJobs 后调用，纯前端算，不额外发请求。四个指标（新入/收藏/投递/
+         面试中）各画一张独立 Y 轴的迷你趋势图（renderSparklineTile()）——量级差异太大，
+         挤进同一个坐标系会互相压平，不再有文字汇总和规则式建议，只看各自趋势。 -->
     <div class="weekly-conv-card open" id="weeklyConvCard" style="display:none;">
       <div class="wc-head" onclick="toggleWeeklyConv()">
         <div class="wc-head-left">
@@ -214,9 +225,7 @@
       </div>
       <div class="wc-body">
         <div class="wc-body-inner">
-          <div class="wc-summary" id="weeklyConvSummary"></div>
           <div class="wc-chart" id="weeklyConvChart"></div>
-          <div class="wc-suggestion" id="weeklyConvSuggestion"></div>
         </div>
       </div>
     </div>

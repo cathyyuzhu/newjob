@@ -545,7 +545,7 @@ async function submitAnswer() {
     if (!res.ok) throw new Error(data.error || '未知错误');
     answersByQid[q.id] = { question_id: q.id, transcript, score_json: JSON.stringify(data.score) };
     delete draftByQid[q.id];
-    showToast('打分完成', 'success', 2000);
+    showToast(withUsage('打分完成', data), 'success', 4000);
     renderRunner();
   } catch (e) {
     showToast(`打分失败：${e.message}`, 'error', 6000);

@@ -88,6 +88,42 @@ Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Select-Object Proces
 
 另外发现过一次奇怪现象：`.venv\Scripts\python.exe app.py` 启动后，会立刻自己额外 spawn 出一个用系统全局 Python（`AppData\Local\Programs\Python\Python312\python.exe`）跑的子进程，两边命令行都是 `app.py`，父子关系明确（子进程的 `ParentProcessId` 就是那个 venv 进程）。代码里没找到任何主动 `subprocess`/自我重启逻辑，原因还没查清楚，目前观察下来子进程能正常继承父进程的环境变量、不影响功能，先记录一下，以后遇到端口冲突或行为诡异可以从这里查起。
 
+### 开机/登录自动启动（本机计划任务，2026-09-07）
+
+不想每次开机手动敲 `python app.py`，用 Windows 任务计划程序在登录时自动跑。启动脚本 `start_app.ps1`（项目根目录）：
+
+```powershell
+Set-Location "C:\Users\admin\Documents\newjob"
+
+$logDir = "logs"
+if (-not (Test-Path $logDir)) {
+    New-Item -ItemType Directory -Path $logDir | Out-Null
+}
+
+$logFile = Join-Path $logDir "app_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+
+cmd.exe /c "`".venv\Scripts\python.exe`" app.py > `"$logFile`" 2>&1"
+```
+
+**踩过的坑**：最初版本用的是 PowerShell 原生重定向 `& .\.venv\Scripts\python.exe app.py *> $logFile` 加 `$ErrorActionPreference = "Stop"`。Flask 开发服务器的正常启动日志（`Serving Flask app`、`Running on http://...`）是写到 stderr 的，PowerShell 把原生程序的 stderr 输出重定向时会把每一行包装成 `NativeCommandError`，`$ErrorActionPreference = "Stop"` 下第一行 stderr 一冒出来就把整个脚本终止了——表现为计划任务"运行"了但进程秒退、日志文件 0 字节、`schtasks /query .. Last Result` 显示 `1`。改成整行丢给 `cmd.exe /c` 做原生字节重定向，绕开 PowerShell 的流包装，问题消失。
+
+**注册计划任务**（本机账号权限够用，不需要管理员；如果 `schtasks /create` 报"拒绝访问"，改用"以管理员身份运行"的 PowerShell，或者用图形界面 `taskschd.msc` 手动建）：
+
+```powershell
+schtasks /create /tn "newjob-app-autostart" /sc onlogon /tr "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"C:\Users\admin\Documents\newjob\start_app.ps1`"" /f
+```
+
+常用管理命令：
+
+```powershell
+schtasks /run /tn "newjob-app-autostart"      # 手动立即触发一次，不用真的注销/重启
+schtasks /query /tn "newjob-app-autostart" /v /fo list   # 看状态、上次运行结果、运行账号
+schtasks /change /tn "newjob-app-autostart" /disable      # 暂停（保留配置）
+schtasks /delete /tn "newjob-app-autostart" /f            # 彻底删除
+```
+
+任务触发后占用 5050 端口跑着，这时候如果还想在 Cursor/终端里手动再跑一次 `python app.py` 会报端口冲突，先用 `netstat -ano | findstr :5050` 找 PID，`taskkill /PID <pid> /F` 结束。
+
 ## 7. 已知限制 / 边界（重要，别忘了）
 
 - **LinkedIn 是非官方抓取**（用 `python-jobspy` 绕过登录墙），可能违反其服务条款，有账号/IP被限流封禁的风险，这是已经确认接受的方案，不是bug

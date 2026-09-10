@@ -143,7 +143,7 @@ print("fetch_search_job_ids clears the auth breaker counter on success ok")
 
 
 # ---- 4. sync_search()：确定性扫描命中足够多职位时不触发 agent ----
-job_link.add_jobs_from_urls = lambda urls: {
+job_link.add_jobs_from_urls = lambda urls, keyword=None: {
     "results": [{"url": u, "status": "added", "job_id": 1000 + i} for i, u in enumerate(urls)],
     "added_ids": [1000 + i for i in range(len(urls))],
 }
@@ -645,7 +645,7 @@ def fake_sync_search_route(search_id, force_agent=False):
 h.sync_search = fake_sync_search_route
 
 status = c.get("/api/jobs/sync_how_you_fit/s1").get_json()
-assert status == {"syncing": False, "result": None, "error": None}, status
+assert status == {"syncing": False, "result": None, "error": None, "queued_behind": None}, status
 
 r = c.post("/api/jobs/sync_how_you_fit/s1")
 assert r.status_code == 200 and r.get_json() == {"started": True}, r.get_json()
@@ -726,6 +726,34 @@ for _ in range(300):
     time_module.sleep(0.02)
 assert status["error"] is None, status
 print("sync_how_you_fit_all_route starts/blocks-concurrent/reports result ok")
+
+
+# ---- 16b. 某一条搜索整体失败（sync_search 直接抛异常，比如登录 profile 被占用）时，
+# 汇总通知要如实反映——而不是只数 entry["result"]["results"] 里逐条 URL 的 "failed"
+# 状态、把整条搜索都没跑起来的 entry["error"] 漏掉，显示成"失败 0 条 · 成功"
+# （2026-09-08 修的 bug，起因是用户反馈"每次都抓不到内容"但通知一直显示同步成功）。
+def fake_sync_all_locked(delay_seconds=None):
+    return {
+        "s1": {
+            "result": None,
+            "error": "有另一个 LinkedIn 浏览器窗口正在用同一个登录 profile，请等它结束后重试",
+        }
+    }
+
+
+h.sync_all_enabled_searches = fake_sync_all_locked
+r = c.post("/api/jobs/sync_how_you_fit_all")
+assert r.status_code == 200, r.get_json()
+for _ in range(300):
+    status = c.get("/api/jobs/sync_how_you_fit_all").get_json()
+    if not status["syncing"]:
+        break
+    time_module.sleep(0.02)
+assert status["error"] is None, status  # 整个批量流程本身没有抛异常，只是其中一条搜索失败了
+notif = models.list_notifications(limit=1)[0]
+assert notif["level"] == "error", notif
+assert "1 条搜索整体失败" in notif["message"] and "登录 profile" in notif["message"], notif
+print("sync_how_you_fit_all_route surfaces a per-search error in the summary notification ok")
 
 
 # ==================== app.py trigger_search() 顺带触发 How You Fit 批量同步 ====================

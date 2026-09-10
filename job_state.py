@@ -429,15 +429,19 @@ def practice_generation_in_progress(doc_id):
 #
 # 按 stage（"saved"/"applied"/"interview"）分开存一份，而不是全局共用一份：这几个
 # 列表是用户会分别独立触发的事，共用一份状态会导致"正在同步已收藏"时误报"已投递也
-# 在同步中"、或者一个的结果覆盖另一个还没被前端看到的结果。真正的并发互斥交给
-# Chromium 对 profile 目录的独占锁（linkedin_tracker._launch_context 抛
-# EasyApplyInProgress）——这里的按 stage 分离只是为了让前端状态展示不串台，不是
-# 完整的并发保护。这里的 key 要跟 linkedin_tracker.SUPPORTED_STAGES 保持一致，加新
-# stage 时两边都要改。
+# 在同步中"、或者一个的结果覆盖另一个还没被前端看到的结果。这里的 key 要跟
+# linkedin_tracker.SUPPORTED_STAGES 保持一致，加新 stage 时两边都要改。
+#
+# 同一个 stage 内部重复点击靠这里的 syncing 标记挡（409）；不同 stage 之间、以及
+# 跟 How You Fit 单条/批量同步之间的互斥，2026-09-08 之前完全没有协调，全靠 Chromium
+# 对登录 profile 目录的独占锁"谁后 launch 谁失败"（`EasyApplyInProgress`）——用户前后
+# 脚点两个不同类型的同步按钮时，后一个会莫名其妙报错，还得自己发现失败再手动重新点。
+# 改成显式排队（见下面「LinkedIn 登录态浏览器排队」）：`queued_behind` 记录这条同步
+# 正在等谁用完浏览器，为 None 就是"正常同步中或还没开始"。
 _tracker_sync = {
-    "saved": {"syncing": False, "result": None, "error": None},
-    "applied": {"syncing": False, "result": None, "error": None},
-    "interview": {"syncing": False, "result": None, "error": None},
+    "saved": {"syncing": False, "result": None, "error": None, "queued_behind": None},
+    "applied": {"syncing": False, "result": None, "error": None, "queued_behind": None},
+    "interview": {"syncing": False, "result": None, "error": None, "queued_behind": None},
 }
 
 
@@ -448,6 +452,7 @@ def start_tracker_sync(stage):
             return False
         state["syncing"] = True
         state["error"] = None
+        state["queued_behind"] = None
         return True
 
 
@@ -455,6 +460,7 @@ def finish_tracker_sync(stage, result=None, error=None):
     with _lock:
         state = _tracker_sync[stage]
         state["syncing"] = False
+        state["queued_behind"] = None
         if error is None:
             state["result"] = result
         else:
@@ -476,15 +482,28 @@ def tracker_sync_error(stage):
         return _tracker_sync[stage]["error"]
 
 
+def set_tracker_queued_behind(stage, label):
+    with _lock:
+        _tracker_sync[stage]["queued_behind"] = label
+
+
+def tracker_queued_behind(stage):
+    with _lock:
+        return _tracker_sync[stage]["queued_behind"]
+
+
 # LinkedIn "How You Fit" 搜索同步状态——跟 _tracker_sync 同一个"syncing/result/error
 # 三件套+全局锁"模式，区别是 key（search_id）是用户自定义、数量不固定的，没法像
 # _tracker_sync 那样在模块加载时预先列出来，改成第一次访问某个 search_id 时才用
-# setdefault 现建一份默认状态。
+# setdefault 现建一份默认状态。`queued_behind` 含义跟 `_tracker_sync` 里的同名字段
+# 一致，见那边的说明。
 _how_you_fit_sync = {}
 
 
 def _how_you_fit_state(search_id):
-    return _how_you_fit_sync.setdefault(search_id, {"syncing": False, "result": None, "error": None})
+    return _how_you_fit_sync.setdefault(
+        search_id, {"syncing": False, "result": None, "error": None, "queued_behind": None}
+    )
 
 
 def start_how_you_fit_sync(search_id):
@@ -494,6 +513,7 @@ def start_how_you_fit_sync(search_id):
             return False
         state["syncing"] = True
         state["error"] = None
+        state["queued_behind"] = None
         return True
 
 
@@ -501,6 +521,7 @@ def finish_how_you_fit_sync(search_id, result=None, error=None):
     with _lock:
         state = _how_you_fit_state(search_id)
         state["syncing"] = False
+        state["queued_behind"] = None
         if error is None:
             state["result"] = result
         else:
@@ -522,6 +543,16 @@ def how_you_fit_sync_error(search_id):
         return _how_you_fit_state(search_id)["error"]
 
 
+def set_how_you_fit_queued_behind(search_id, label):
+    with _lock:
+        _how_you_fit_state(search_id)["queued_behind"] = label
+
+
+def how_you_fit_queued_behind(search_id):
+    with _lock:
+        return _how_you_fit_state(search_id)["queued_behind"]
+
+
 def discard_how_you_fit_state(search_id):
     """设置页删掉某条搜索配置时调用，清掉对应的状态条目，避免这个内存字典随着
     "新增又删除"的操作无限增长（实际量级不大，属于卫生性清理，不是必须）。"""
@@ -530,9 +561,9 @@ def discard_how_you_fit_state(search_id):
 
 
 # LinkedIn "How You Fit" 批量同步（"立即同步全部"按钮 + 每日定时任务共用同一把锁）
-# ——防止跟单条同步、或另一次批量同步撞车（撞车本身不会数据错乱，但两边都要开登录态
-# 浏览器，同时跑意义不大还加重限流风险）。
-_how_you_fit_batch = {"syncing": False, "result": None, "error": None}
+# ——防止另一次批量同步撞车。跟单条同步、tracker 同步之间的互斥现在交给下面「LinkedIn
+# 登录态浏览器排队」，不再是"完全不管、指望不要撞上"。
+_how_you_fit_batch = {"syncing": False, "result": None, "error": None, "queued_behind": None}
 
 
 def start_how_you_fit_batch():
@@ -541,12 +572,14 @@ def start_how_you_fit_batch():
             return False
         _how_you_fit_batch["syncing"] = True
         _how_you_fit_batch["error"] = None
+        _how_you_fit_batch["queued_behind"] = None
         return True
 
 
 def finish_how_you_fit_batch(result=None, error=None):
     with _lock:
         _how_you_fit_batch["syncing"] = False
+        _how_you_fit_batch["queued_behind"] = None
         if error is None:
             _how_you_fit_batch["result"] = result
         else:
@@ -556,6 +589,16 @@ def finish_how_you_fit_batch(result=None, error=None):
 def how_you_fit_batch_syncing():
     with _lock:
         return _how_you_fit_batch["syncing"]
+
+
+def set_how_you_fit_batch_queued_behind(label):
+    with _lock:
+        _how_you_fit_batch["queued_behind"] = label
+
+
+def how_you_fit_batch_queued_behind():
+    with _lock:
+        return _how_you_fit_batch["queued_behind"]
 
 
 def how_you_fit_batch_result():
@@ -627,3 +670,65 @@ def linkedin_auth_breaker_remaining_seconds():
         if opened_until is None:
             return 0
         return max(0, int(opened_until - time.time()))
+
+
+# ---------------------------------------------------------------------------
+# LinkedIn 登录态浏览器排队（2026-09-08，修「同时点两个同步按钮，后一个莫名其妙失败」）
+#
+# tracker 同步（收藏/已投递/面试）、How You Fit 单条/批量同步共用同一个持久化登录
+# profile（easy_apply.PROFILE_DIR），Chromium 对它是操作系统级独占锁，同一时刻只能有
+# 一个真实浏览器进程用着。之前完全没有跨操作类型的协调：`_tracker_sync`/
+# `_how_you_fit_sync`/`_how_you_fit_batch` 各自的 `syncing` 标记只挡"同一类型重复点"，
+# 不同类型之间（比如「同步收藏」跟「同步全部搜索」）前后脚点，全靠这把 OS 锁"谁后
+# launch 谁失败"，报的是含糊的 `EasyApplyInProgress`，用户还得自己发现失败、手动重新
+# 点一次（2026-09-08 真实反馈的案例）。
+#
+# 改成显式排队：调用方在真正起后台线程跑同步之前，先 `acquire_linkedin_browser(label,
+# start_fn)`。能立刻用就返回 `(True, None)`，调用方自己起线程跑 `start_fn`；正被占用
+# 就把 `(label, start_fn)` 存进队列、返回 `(False, 占用者的label)`，调用方拿这个占用者
+# 标签给用户一个"XX 正在同步，已排队，会自动开始"的提示（写进各自的 `queued_behind`
+# 字段，见 `_tracker_sync`/`_how_you_fit_sync`/`_how_you_fit_batch` 状态里的同名字段），
+# 不需要用户自己想办法重试。占用者跑完调用 `release_linkedin_browser()`：队列里还有人
+# 排着就直接把使用权交给队首那个、在新线程里跑它的 `start_fn`（不需要用户重新点按钮）；
+# 队列空了就清空占用标记。
+#
+# 刻意不包括 Easy Apply：那是"打开浏览器窗口留给用户自己点提交"的半人工流程，没有一个
+# 程序能感知到的"结束"时刻（不会自动 close，等用户自己关窗口），排在它后面的自动同步
+# 会不知道要等多久、甚至可能永远等不到——所以 Easy Apply 仍然用它自己原有的独立锁
+# （`start_easy_apply`/`easy_apply_opening`），不接入这套排队，跟它偶尔撞车的概率维持
+# 2026-09-08 之前的现状，不是这次要解决的场景（用户反馈的是两个全自动同步按钮互撞）。
+# 同理，`job_link.add_jobs_from_urls()` 内部的浏览器兜底（"贴链接"功能）是一次 HTTP
+# 请求内同步等完的，接入排队会让这次请求不知道要挂多久，也不接入。
+_linkedin_browser_lock = threading.Lock()
+_linkedin_browser_occupant = None   # 当前占用者的人类可读标签，没人占用是 None
+_linkedin_browser_queue = []        # [(label, start_fn), ...]，FIFO
+
+
+def acquire_linkedin_browser(label, start_fn):
+    """立刻能用就标记占用并返回 (True, None)——调用方负责真的起线程跑 start_fn（这里
+    不代为起线程，因为"立刻能用"这条分支的调用方本来就要自己控制怎么起线程、传什么
+    kwargs）。占用中就把 (label, start_fn) 存进队列，返回 (False, 当前占用者标签)。"""
+    global _linkedin_browser_occupant
+    with _linkedin_browser_lock:
+        if _linkedin_browser_occupant is None:
+            _linkedin_browser_occupant = label
+            return True, None
+        _linkedin_browser_queue.append((label, start_fn))
+        return False, _linkedin_browser_occupant
+
+
+def release_linkedin_browser():
+    """当前占用者跑完（不管成功失败）后调用一次。队列里还有排队的，直接把占用权交给
+    队首那个并在新线程里跑它的 start_fn——不需要用户重新点按钮；队列空了就清空占用
+    标记。"""
+    global _linkedin_browser_occupant
+    with _linkedin_browser_lock:
+        if _linkedin_browser_queue:
+            label, start_fn = _linkedin_browser_queue.pop(0)
+            _linkedin_browser_occupant = label
+            next_fn = start_fn
+        else:
+            _linkedin_browser_occupant = None
+            next_fn = None
+    if next_fn is not None:
+        threading.Thread(target=next_fn, daemon=True).start()

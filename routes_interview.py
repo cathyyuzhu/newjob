@@ -6,6 +6,7 @@ import threading
 
 from flask import Blueprint, abort, jsonify, render_template, request
 
+import llm
 import resume_store
 from job_state import (
     bank_error,
@@ -44,7 +45,7 @@ from pipeline import (
     score_practice_answer,
 )
 from resume_store import ResumeMissingError
-from web_helpers import need_resume_response
+from web_helpers import need_resume_response, usage_notification_message
 
 interview_bp = Blueprint("interview", __name__)
 
@@ -79,15 +80,22 @@ def job_interview_page(job_id):
 def _interview_prep_background(job_id, round_label=None):
     job = get_job(job_id)
     job_label = f"{job['company']} · {job['title']}" if job else f"职位 #{job_id}"
+    llm.start_usage_tracking()
     try:
         result = generate_interview_prep_safe(job_id, round_label=round_label)
         logging.info("interview prep generated for job %s: %s", job_id, result)
-        add_notification("interview_prep", "面试准备生成完成", job_label, level="success", link=f"/jobs/{job_id}")
+        add_notification(
+            "interview_prep", "面试准备生成完成", usage_notification_message(job_label),
+            level="success", link=f"/jobs/{job_id}",
+        )
     except Exception:
         # 失败原因已经由 generate_interview_prep_safe() 写进 interview_preps 表了，
         # 前端读那一行就能看到，这里只记日志。
         logging.exception("interview prep generation failed for job %s", job_id)
-        add_notification("interview_prep", "面试准备生成失败", job_label, level="error", link=f"/jobs/{job_id}")
+        add_notification(
+            "interview_prep", "面试准备生成失败", usage_notification_message(job_label),
+            level="error", link=f"/jobs/{job_id}",
+        )
 
 
 def _maybe_start_interview_prep(job_id, round_label=None, force=False):
@@ -162,6 +170,7 @@ def get_bank_route():
 
 def _bank_generation_background():
     error = None
+    llm.start_usage_tracking()
     try:
         stats = generate_bank_draft()
         logging.info("interview bank draft done: %s", stats)
@@ -179,7 +188,7 @@ def _bank_generation_background():
         finish_bank_generation(error)
         add_notification(
             "bank", "题库 AI 起草失败" if error else "题库 AI 起草完成",
-            error, level="error" if error else "success",
+            usage_notification_message(error), level="error" if error else "success",
         )
 
 
@@ -259,11 +268,17 @@ def bank_item_chat_route(item_id):
         return jsonify({"error": "lang 只能是 zh 或 en"}), 400
     if not message:
         return jsonify({"error": "说点什么吧"}), 400
+    llm.start_usage_tracking()
     try:
-        return jsonify(chat_bank_answer(item, lang, message, history=data.get("history")))
+        result = chat_bank_answer(item, lang, message, history=data.get("history"))
+        result["llm_usage_text"] = llm.usage_text(llm.pop_usage_summary())
+        return jsonify(result)
     except Exception as e:
         logging.exception("bank item chat failed")
-        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+        return jsonify({
+            "error": str(e) or e.__class__.__name__,
+            "llm_usage_text": llm.usage_text(llm.pop_usage_summary()),
+        }), 500
 
 
 @interview_bp.route("/api/interview/bank/chat", methods=["POST"])
@@ -274,11 +289,17 @@ def bank_assistant_chat_route():
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "说点什么吧"}), 400
+    llm.start_usage_tracking()
     try:
-        return jsonify(chat_bank_assistant(message, history=data.get("history")))
+        result = chat_bank_assistant(message, history=data.get("history"))
+        result["llm_usage_text"] = llm.usage_text(llm.pop_usage_summary())
+        return jsonify(result)
     except Exception as e:
         logging.exception("bank assistant chat failed")
-        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+        return jsonify({
+            "error": str(e) or e.__class__.__name__,
+            "llm_usage_text": llm.usage_text(llm.pop_usage_summary()),
+        }), 500
 
 
 # ---------------------------------------------------------------- 面试语音练习
@@ -321,15 +342,22 @@ def delete_interview_doc_route(doc_id):
 
 
 def _practice_generation_background(doc_id, round_label_hint=None):
+    llm.start_usage_tracking()
     try:
         result = generate_practice_set_for_doc_safe(doc_id, round_label_hint=round_label_hint)
         logging.info("practice set generated for doc %s: %s", doc_id, result)
-        add_notification("practice", "面试语音练习出题完成", level="success", link="/interview/practice")
+        add_notification(
+            "practice", "面试语音练习出题完成", usage_notification_message(None),
+            level="success", link="/interview/practice",
+        )
     except Exception:
         # 失败原因已经由 generate_practice_set_for_doc_safe() 写进
         # interview_practice_sets 表了，前端读那一行就能看到，这里只记日志。
         logging.exception("practice set generation failed for doc %s", doc_id)
-        add_notification("practice", "面试语音练习出题失败", level="error", link="/interview/practice")
+        add_notification(
+            "practice", "面试语音练习出题失败", usage_notification_message(None),
+            level="error", link="/interview/practice",
+        )
 
 
 @interview_bp.route("/api/interview/practice/docs/<int:doc_id>/generate", methods=["POST"])
@@ -380,10 +408,17 @@ def answer_practice_question_route(set_id, question_id):
     transcript = (data.get("transcript") or "").strip()
     if not transcript:
         return jsonify({"error": "还没有作答内容，请先录音或手动输入回答。"}), 400
+    llm.start_usage_tracking()
     try:
-        return jsonify(score_practice_answer(set_id, question_id, transcript))
+        result = score_practice_answer(set_id, question_id, transcript)
+        result["llm_usage_text"] = llm.usage_text(llm.pop_usage_summary())
+        return jsonify(result)
     except ValueError as e:
+        llm.pop_usage_summary()
         return jsonify({"error": str(e)}), 404
     except Exception as e:
         logging.exception("practice answer scoring failed")
-        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+        return jsonify({
+            "error": str(e) or e.__class__.__name__,
+            "llm_usage_text": llm.usage_text(llm.pop_usage_summary()),
+        }), 500

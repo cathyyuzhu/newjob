@@ -1,20 +1,20 @@
 :root {
-  /* 2026-08-17 视觉改版：从"浅紫渐变 + 圆角卡片"换成冷调纸白/近黑 + 单一群青强调色的
-     编辑感设计语言，理由和取舍见 spec/roadmap.md「首页视觉改版」条目。--primary-gradient
-     保留这个变量名（很多组件还在引用它），但值改成纯色——不想为了去掉渐变去逐个组件改名。 */
-  --bg: #EDEEF0;
-  --bg-elevated: #F7F8F9;
-  --bg-subtle: #E4E5E9;
-  --border: #D7DADE;
-  --text: #14161A;
-  --text-muted: #6B7078;
+  /* 2026-09-08 配色改版：跟宣传落地页统一成墨绿+近黑的"信号/噪音"视觉语言，
+     强调色从群青换成墨绿，中性色也从冷灰调成带一点绿灰的纸白/近黑。
+     --primary-gradient 保留这个变量名（很多组件还在引用它），但值一直是纯色。 */
+  --bg: #EEF1EA;
+  --bg-elevated: #F8FAF5;
+  --bg-subtle: #E4E8DF;
+  --border: #D2D9CD;
+  --text: #151A16;
+  --text-muted: #58635B;
   /* 同上面旧注释的道理：faint 专门给小字用，对比度要比 muted 更高，不是更低 */
-  --text-faint: #52565D;
-  --primary: #2B3AF0;
-  --primary-hover: #1F2BD1;
-  --primary-soft: #E4E6FD;
+  --text-faint: #3E4740;
+  --primary: #1D6E4F;
+  --primary-hover: #155940;
+  --primary-soft: #DEEAE2;
   --primary-gradient: var(--primary);
-  --primary-glow: rgba(43, 58, 240, 0.18);
+  --primary-glow: rgba(29, 110, 79, 0.18);
   --success: #16a34a;
   --success-soft: #e9f9ef;
   --warning: #d97706;
@@ -23,6 +23,13 @@
   --danger-soft: #fdecec;
   --success-strong: #15803d;
   --warning-strong: #b45309;
+  /* 投递分析折线图的四条系列色——独立于上面的语义色（primary/success/warning），
+     走 dataviz 技能的分类配色方案（固定色相顺序，经 validate_palette.js 校验过
+     CVD 可辨识度），不能用 primary/success 顶替：那两个色相太接近，四条线放一起会混。 */
+  --chart-new: #2a78d6;
+  --chart-starred: #eda100;
+  --chart-applied: #eb6834;
+  --chart-interviewing: #1baf7a;
   /* 编辑感设计几乎不用圆角，用分割线表达层次，阴影也大幅收窄 */
   --radius: 4px;
   --radius-sm: 3px;
@@ -44,18 +51,18 @@
    纯 CSS 里没有把两个选择器合进一条规则的写法——@media 包不住选择器列表的一半。
    改深色颜色时两处都要改。 */
 :root[data-theme="dark"] {
-  --bg: #0F1114;
-  --bg-elevated: #171A1F;
-  --bg-subtle: #1B1E24;
-  --border: #272B31;
-  --text: #E9EBEE;
-  --text-muted: #878D96;
-  --text-faint: #ADB3BB;
-  --primary: #7C88FF;
-  --primary-hover: #96A0FF;
-  --primary-soft: #23274A;
+  --bg: #10140F;
+  --bg-elevated: #171C15;
+  --bg-subtle: #1B211A;
+  --border: #26302A;
+  --text: #E7ECE1;
+  --text-muted: #94A091;
+  --text-faint: #B7C2B3;
+  --primary: #4FBE93;
+  --primary-hover: #6FD1AA;
+  --primary-soft: #1B3327;
   --primary-gradient: var(--primary);
-  --primary-glow: rgba(124, 136, 255, 0.22);
+  --primary-glow: rgba(79, 190, 147, 0.22);
   --success: #4ade80;
   --success-soft: #163627;
   --warning: #fbbf24;
@@ -64,6 +71,10 @@
   --danger-soft: #3a1e1e;
   --success-strong: #4ade80;
   --warning-strong: #fbbf24;
+  --chart-new: #3987e5;
+  --chart-starred: #c98500;
+  --chart-applied: #d95926;
+  --chart-interviewing: #199e70;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.45);
   --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.55);
@@ -71,18 +82,18 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0F1114;
-    --bg-elevated: #171A1F;
-    --bg-subtle: #1B1E24;
-    --border: #272B31;
-    --text: #E9EBEE;
-    --text-muted: #878D96;
-    --text-faint: #ADB3BB;
-    --primary: #7C88FF;
-    --primary-hover: #96A0FF;
-    --primary-soft: #23274A;
+    --bg: #10140F;
+    --bg-elevated: #171C15;
+    --bg-subtle: #1B211A;
+    --border: #26302A;
+    --text: #E7ECE1;
+    --text-muted: #94A091;
+    --text-faint: #B7C2B3;
+    --primary: #4FBE93;
+    --primary-hover: #6FD1AA;
+    --primary-soft: #1B3327;
     --primary-gradient: var(--primary);
-    --primary-glow: rgba(124, 136, 255, 0.22);
+    --primary-glow: rgba(79, 190, 147, 0.22);
     --success: #4ade80;
     --success-soft: #163627;
     --warning: #fbbf24;
@@ -91,6 +102,10 @@
     --danger-soft: #3a1e1e;
     --success-strong: #4ade80;
     --warning-strong: #fbbf24;
+    --chart-new: #3987e5;
+    --chart-starred: #c98500;
+    --chart-applied: #d95926;
+    --chart-interviewing: #199e70;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 2px 10px rgba(0, 0, 0, 0.45);
     --shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.55);
@@ -262,6 +277,45 @@ a.notif-item { cursor: pointer; }
 .notif-message { font-size: 0.78rem; color: var(--text-muted); word-break: break-word; }
 .notif-time { font-size: 0.7rem; color: var(--text-faint); }
 
+/* ---------- LLM 花费小组件 ---------- */
+.spend-wrap { position: relative; }
+.spend-btn {
+  width: auto; padding: 0 0.55rem; gap: 0.32rem;
+  font-size: 0.76rem; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.spend-dropdown {
+  display: none; position: absolute; top: calc(100% + 0.35rem); left: 0; z-index: 20;
+  width: 19rem; max-width: min(19rem, 92vw); max-height: 24rem; overflow-y: auto;
+  background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12); padding: 0.7rem 0.8rem;
+}
+.spend-dropdown.active { display: block; }
+.spend-tabs { display: flex; gap: 0.3rem; margin-bottom: 0.6rem; }
+.spend-tab {
+  font-size: 0.72rem; padding: 0.15rem 0.55rem; border-radius: 999px;
+  border: 1px solid var(--border); background: none; color: var(--text-muted); cursor: pointer;
+}
+.spend-tab:hover { color: var(--text); }
+.spend-tab.active { background: var(--primary-soft); color: var(--primary); border-color: transparent; }
+.spend-section-title {
+  font-size: 0.66rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-faint); margin: 0.7rem 0 0.15rem;
+}
+/* 每行标签/数值上下堆叠而不是左右并排——并排在 19rem 宽的下拉里放不下"匹配分析"
+   配"成本未知 · 307,507 tokens · 1 次失败"这种长值，会把模型名（如
+   "deepseek-v4-pro"）从中间的连字符处硬拆成两行，看着很乱（2026-09-08 用户反馈） */
+.spend-row { padding: 0.35rem 0; font-size: 0.8rem; }
+.spend-row + .spend-row { border-top: 1px solid var(--border); }
+.spend-row-label { color: var(--text); font-weight: 500; }
+.spend-row-value {
+  display: block; margin-top: 0.1rem; font-variant-numeric: tabular-nums;
+  color: var(--text-muted); font-size: 0.76rem;
+}
+.spend-row-total { padding-bottom: 0.5rem; margin-bottom: 0.1rem; border-bottom: 1px solid var(--border); }
+.spend-row-total .spend-row-label { font-weight: 700; }
+.spend-row-total .spend-row-value { color: var(--text); font-size: 0.8rem; }
+.spend-empty { font-size: 0.78rem; color: var(--text-faint); text-align: center; padding: 0.5rem 0; }
+
 /* ---------- 今日抓取漏斗 ---------- */
 .funnel {
   font-size: 0.72rem; letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
@@ -368,28 +422,26 @@ a.notif-item { cursor: pointer; }
 .weekly-conv-card.open .wc-body { grid-template-rows: 1fr; }
 .wc-body-inner { overflow: hidden; padding: 0 1.1rem; display: flex; flex-direction: column; gap: 0.6rem; }
 .weekly-conv-card.open .wc-body-inner { padding: 0 1.1rem 0.9rem; }
-.wc-summary { font-size: 0.85rem; line-height: 1.5; font-variant-numeric: tabular-nums; }
-.wc-summary b { font-weight: 700; color: var(--text); }
-.wc-summary .pct { color: var(--primary); font-weight: 600; }
-.wc-summary .sep { opacity: 0.4; padding: 0 0.3rem; }
-.wc-summary .declined { color: var(--warning-strong); }
-.wc-chart { display: flex; flex-direction: column; gap: 0.4rem; }
-.wk-row { display: grid; grid-template-columns: 76px 1fr 46px; align-items: center; gap: 0.5rem; font-size: 0.78rem; font-variant-numeric: tabular-nums; }
-.wk-label { color: var(--text-muted); font-size: 0.72rem; }
-.wk-label small { display: block; font-size: 0.64rem; opacity: 0.85; color: var(--primary); }
-.wk-track { position: relative; height: 16px; background: var(--bg-subtle); border-radius: 4px; overflow: hidden; }
-.wk-fill-total { position: absolute; inset: 0; background: var(--border); border-radius: 4px; }
-.wk-fill-conv { position: absolute; inset: 0; background: var(--primary); border-radius: 4px; }
-.wk-nums { text-align: right; font-size: 0.74rem; color: var(--text-muted); }
-.wc-accumulating {
-  font-size: 0.72rem; color: var(--text-muted); background: var(--bg-subtle);
-  border: 1px dashed var(--border); border-radius: 6px; padding: 0.4rem 0.55rem;
-}
-.wc-suggestion ul { margin: 0; padding-left: 1.05rem; display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.8rem; }
-.wc-suggestion li.caution { color: var(--text-muted); }
+/* 四宫格迷你趋势图（拆分于 2026-09-08）：「新入」量级比其它三个指标大一个数量级，
+   挤进同一个共享坐标系会把后三个压平看不出趋势，改成四张各自独立 Y 轴的小图
+   （small multiples）——每张图只有一个系列，色点+标题文字就是身份标识，不需要
+   共享图例框。系列固定用 --chart-* 分类色（见 :root），线条/色点只用系列色，
+   数值文字统一走 ink 色（--text），不给文字上系列色。 */
+.wc-chart { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.6rem; }
+.wc-chart-empty { font-size: 0.8rem; color: var(--text-muted); padding: 0.4rem 0; }
+.wc-tile { min-width: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.wc-tile-head { display: flex; align-items: center; gap: 0.3rem; font-size: 0.74rem; color: var(--text-muted); }
+.wc-tile-dot-label { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.wc-tile-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wc-tile-value { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.wc-tile-svg { display: block; width: 100%; height: 40px; }
+.wc-tile-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.wc-tile-hit { fill: transparent; }
+.wc-tile-range { display: flex; justify-content: space-between; font-size: 0.66rem; color: var(--text-muted); }
 @media (max-width: 860px) {
   .today-row { flex-direction: column; }
   .today-row .checklist-card, .weekly-conv-card { width: 100%; }
+  .wc-chart { grid-template-columns: repeat(2, 1fr); }
 }
 .checklist-items { display: flex; flex-direction: column; gap: 0.15rem; }
 .checklist-row {
@@ -1211,6 +1263,8 @@ tr:hover td { background: var(--bg-subtle); }
   font-size: 0.82rem; line-height: 1.65;
   background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
+/* 每条 AI 对话回复下面的小字用量说明（模型 + tokens + 成本），跟 .notif-time 同一档次感 */
+.chat-usage { margin-top: 0.35rem; font-size: 0.7rem; color: var(--text-faint); }
 .bank-chat-input { display: flex; gap: 0.4rem; align-items: flex-end; }
 .bank-chat-input textarea {
   flex: 1; padding: 0.45rem 0.6rem; font-size: 0.83rem; font-family: inherit;

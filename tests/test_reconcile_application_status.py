@@ -12,7 +12,10 @@
 的话，改对了的 application_status 根本没地方显示、也没法继续操作。补了"顺带推进
 status"这一半：已经确认投递了，逻辑上不可能还没审核过（见 `_promote_reviewed_for_applied_jobs()`
 的说明，这一步范围是全库的，不局限于本次核对推进的这几条，见测试 4/5/8/9）。
-返回值按"这条职位"去重计数，不按"改了几个字段"计数——见测试 4/5 的更新。
+返回值是被更新职位的明细列表（按"这条职位"去重，不按"改了几个字段"计数——见测试
+4/5 的更新），2026-09-08 起从纯计数改成明细，好让同步完成通知能报"具体是哪几条、
+从什么状态变成什么状态"，不再只给一个数字；测试里用 len(updated) 取代原来的
+updated == N 比较。
 
 纯本地 sqlite 临时库，不碰真实 jobs.db，不需要 mock 网络/LLM/Playwright——传给
 reconcile_application_status_from_linkedin() 的两个 id 集合是纯 Python 输入，
@@ -78,7 +81,12 @@ def make_job(title, application_status, job_id="1111111111", site="linkedin", st
 j1 = make_job("Job Not Applied To Applied", "not_applied", job_id="1000000001")
 assert models.get_job(j1)["status"] == "new", "新建职位默认待审核，测试前提"
 updated = models.reconcile_application_status_from_linkedin({"1000000001"}, set())
-assert updated == 1, updated
+assert len(updated) == 1, updated
+detail = updated[0]
+assert detail["id"] == j1 and detail["title"] == "Job Not Applied To Applied" and detail["company"] == "Reconcile Co"
+assert detail["application_status_before"] == "not_applied" and detail["application_status_after"] == "applied", (
+    "明细要带上'从什么状态变成什么状态'，同步完成通知靠这个拼文案"
+)
 assert models.get_job(j1)["application_status"] == "applied"
 assert models.get_job(j1)["applied_at"], "推进成已投递要顺带记 applied_at"
 assert models.get_job(j1)["status"] == "reviewed", "已经投递了，status 不能还停在待审核"
@@ -88,7 +96,7 @@ print("not_applied -> applied when id is in applied_ids (and status advances new
 # ---- 2. "待投" -> "面试中"，直接跳过"已投递"这一档 ----
 j2 = make_job("Job Not Applied To Interviewing", "not_applied", job_id="1000000002")
 updated = models.reconcile_application_status_from_linkedin(set(), {"1000000002"})
-assert updated == 1, updated
+assert len(updated) == 1, updated
 assert models.get_job(j2)["application_status"] == "interviewing"
 print("not_applied -> interviewing when id is in interview_ids (skips applied) ok")
 
@@ -96,7 +104,7 @@ print("not_applied -> interviewing when id is in interview_ids (skips applied) o
 # ---- 3. "已投递" -> "面试中" ----
 j3 = make_job("Job Applied To Interviewing", "applied", job_id="1000000003")
 updated = models.reconcile_application_status_from_linkedin(set(), {"1000000003"})
-assert updated == 1, updated
+assert len(updated) == 1, updated
 assert models.get_job(j3)["application_status"] == "interviewing"
 print("applied -> interviewing ok")
 
@@ -106,7 +114,7 @@ print("applied -> interviewing ok")
 # 也意味着"已经审核过"，同样不该停在"待审核"，所以这条职位本身还是算"被更新了 1 条" ----
 j4 = make_job("Job Offer Untouched", "offer", job_id="1000000004")
 updated = models.reconcile_application_status_from_linkedin({"1000000004"}, set())
-assert updated == 1, updated
+assert len(updated) == 1, updated
 assert models.get_job(j4)["application_status"] == "offer", "offer 是最高进度，不该被'已投递'覆盖"
 assert models.get_job(j4)["status"] == "reviewed", "offer 也意味着已经审核过，status 不该停在待审核"
 print("offer application_status stays untouched but status still advances new -> reviewed ok")
@@ -117,7 +125,7 @@ print("offer application_status stays untouched but status still advances new ->
 j5 = make_job("Job Rejected Protected", "rejected", job_id="1000000005")
 j6 = make_job("Job Declined Protected", "declined", job_id="1000000006")
 updated = models.reconcile_application_status_from_linkedin({"1000000005", "1000000006"}, set())
-assert updated == 2, updated
+assert len(updated) == 2, updated
 assert models.get_job(j5)["application_status"] == "rejected", "已拒绝是终态，不该被核对逻辑复活"
 assert models.get_job(j6)["application_status"] == "declined", "已婉拒是终态，不该被核对逻辑复活"
 assert models.get_job(j5)["status"] == "reviewed", "已拒绝也意味着已经审核过，status 不该停在待审核"
@@ -129,21 +137,21 @@ print("rejected/declined application_status stays protected, but status still ad
 j7 = make_job("Job Unmatched Id", "not_applied", job_id="1000000007")
 j8 = make_job("Job Indeed Source", "not_applied", job_id="1000000008", site="indeed")
 updated = models.reconcile_application_status_from_linkedin({"9999999999"}, {"8888888888"})
-assert updated == 0, updated
+assert len(updated) == 0, updated
 assert models.get_job(j7)["application_status"] == "not_applied"
 assert models.get_job(j8)["application_status"] == "not_applied"
 print("unmatched ids and non-linkedin jobs are left alone ok")
 
 
 # ---- 7. 两个集合都为空：直接返回 0，不报错 ----
-assert models.reconcile_application_status_from_linkedin(set(), set()) == 0
+assert models.reconcile_application_status_from_linkedin(set(), set()) == []
 print("empty applied_ids/interview_ids short-circuits to 0 ok")
 
 
 # ---- 8. status 推进：已经是"已收藏"的职位不受影响（本来就是目标状态，不用改） ----
 j9 = make_job("Job Already Reviewed", "not_applied", job_id="1000000009", status="reviewed")
 updated = models.reconcile_application_status_from_linkedin({"1000000009"}, set())
-assert updated == 1, updated
+assert len(updated) == 1, updated
 assert models.get_job(j9)["status"] == "reviewed"
 print("status already 'reviewed' is left as-is when application_status advances ok")
 
@@ -152,7 +160,7 @@ print("status already 'reviewed' is left as-is when application_status advances 
 # "已收藏"——那是用户显式做过的决定，核对逻辑不该覆盖 ----
 j10 = make_job("Job Dismissed Protected", "not_applied", job_id="1000000010", status="dismissed")
 updated = models.reconcile_application_status_from_linkedin({"1000000010"}, set())
-assert updated == 1, updated
+assert len(updated) == 1, updated
 dismissed_job = models.get_job(j10)
 assert dismissed_job["application_status"] == "applied", "投递状态本身还是要推进的"
 assert dismissed_job["status"] == "dismissed", "已忽略是用户的显式决定，不该被核对逻辑撤销"

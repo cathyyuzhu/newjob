@@ -27,6 +27,7 @@ const GLOBE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 const BUILDING_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M9 21v-4h6v4M9 8h.01M9 12h.01M15 8h.01M15 12h.01"/></svg>';
 const INBOX_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/></svg>';
 const CHAT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+const COIN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v10M9.5 9.2a2.2 2.2 0 0 1 2.2-1.7h.6a2.1 2.1 0 0 1 0 4.2h-.6a2.1 2.1 0 0 0 0 4.2h.6a2.2 2.2 0 0 0 2.2-1.7"/></svg>';
 const STAR_PATH = '<path d="m12 3.2 2.7 5.5 6.1.9-4.4 4.3 1 6-5.4-2.9-5.4 2.9 1-6-4.4-4.3 6.1-.9L12 3.2z"/>';
 const STAR_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAR_PATH}</svg>`;
 const STAR_ICON_FILLED = `<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${STAR_PATH}</svg>`;
@@ -64,6 +65,16 @@ function toggleTheme() {
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('theme', next);
   updateThemeIcon();
+}
+
+// ---------- LLM 用量展示 ----------
+// 同步返回的 LLM 调用（分析、题库对话、语音练习打分…）在响应 JSON 里附带
+// llm_usage_text（见 llm.usage_text()，形如"Claude Sonnet 5 · 1,234 tokens · $0.0031"）。
+// 没有可展示的用量（比如这次操作根本没调 LLM）时该字段是 null/undefined，原样返回
+// message，不拼出"undefined"之类的尾巴。异步（后台线程+通知铃）的那些不走这个函数——
+// 用量已经由后端直接拼进通知文案里了，见 web_helpers.usage_notification_message()。
+function withUsage(message, data) {
+  return data && data.llm_usage_text ? `${message}（${data.llm_usage_text}）` : message;
 }
 
 // ---------- toasts ----------
@@ -202,6 +213,137 @@ function renderNotifDropdown(items) {
 }
 
 document.addEventListener('DOMContentLoaded', initNotifications);
+
+// ---------- LLM 花费小组件 ----------
+// 通知铃旁边的小组件：常驻显示"今日"累计花费，点开看按任务/按模型的明细（今日/7天/
+// 30天/全部四档），数据读现成的 /api/llm/stats（llm.py 的 _CallRecord 埋点聚合，
+// 见 models.llm_call_stats/llm_call_totals），这里只管渲染。
+//
+// 跟 toast/通知里逐次显示的 llm_usage_text 是互补关系，不是重复：那边回答"刚才这一下
+// 花了多少"，这里回答"我这段时间一共花了多少"——单次金额通常几厘钱，只看逐次提示很难
+// 建立"攒起来到底花了多少"的感觉。
+const LLM_TASK_LABELS = {
+  analysis: '匹配分析', materials: '定制材料', interview_prep: '面试准备',
+  interview_bank: '题库起草/对话', resume_review: '简历体检', job_chat: '职位问答',
+  preference_profile: '偏好档案', interview_practice: '语音练习打分',
+  how_you_fit_agent: 'LinkedIn 智能匹配',
+};
+const SPEND_TABS = [
+  { key: '1', label: '今日', days: 1 },
+  { key: '7', label: '7天', days: 7 },
+  { key: '30', label: '30天', days: 30 },
+  { key: '0', label: '全部', days: 0 },
+];
+let spendTab = '1';
+
+// 成本本来就是估算值（见 llm.estimate_cost 的说明），单次调用常常只有几厘钱——固定两位
+// 小数会把很多非零花费显示成"$0.00"，看着像没花钱。小于 1 分钱时多给两位小数。
+function formatMoney(v) {
+  if (v == null) return '成本未知';
+  if (v === 0) return '$0';
+  return v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`;
+}
+
+// 顶栏这颗徽标是常驻可见的，"成本未知"当成永久文案会显得像坏了——如果单价没配
+// （目前是没进注册表的 DeepSeek 型号），退回显示 token 数，至少是个有意义的数字；
+// 这段时间压根没调用过 LLM 时也不该显示"成本未知"（没调用不等于算不出来），显示 $0。
+// 下拉明细里逐条仍然照实显示"成本未知"，不打这个折扣——那边空间够、且需要精确到
+// "哪一类调用没定价"。
+function formatSpendBadge(totals) {
+  const calls = (totals || {}).calls || 0;
+  if (!calls) return '$0';
+  if (totals.cost_usd != null) return formatMoney(totals.cost_usd);
+  const tokens = (totals.input_tokens || 0) + (totals.output_tokens || 0);
+  const compact = tokens >= 1e6 ? `${(tokens / 1e6).toFixed(1)}M` : tokens >= 1e4 ? `${Math.round(tokens / 1000)}K` : tokens >= 1e3 ? `${(tokens / 1000).toFixed(1)}K` : String(tokens);
+  return `${compact} tok`;
+}
+
+function initSpendWidget() {
+  const btn = document.getElementById('spendBtn');
+  if (!btn) return; // 极少数不带顶栏的页面片段，静默跳过（同 initNotifications）
+  refreshSpendBadge();
+  // 跟通知铃同一个轮询节奏（25s，页面在后台就不拉）：今日花费不是紧急信息，没必要
+  // 单独起一个更快的定时器，见 initNotifications 里的同款说明。
+  const poll = () => {
+    setTimeout(() => {
+      if (!document.hidden) refreshSpendBadge();
+      poll();
+    }, 25000);
+  };
+  poll();
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.spend-wrap')) closeSpendDropdown();
+  });
+}
+
+async function refreshSpendBadge() {
+  try {
+    const data = await (await fetch('/api/llm/stats?days=1')).json();
+    const badge = document.getElementById('spendBadgeText');
+    if (badge) badge.textContent = formatSpendBadge(data.totals);
+  } catch (e) {
+    // 静默失败：这只是个锦上添花的徽标，一次网络抖动不该弹错误 toast 打扰用户
+  }
+}
+
+function closeSpendDropdown() {
+  const dropdown = document.getElementById('spendDropdown');
+  if (dropdown) dropdown.classList.remove('active');
+}
+
+async function toggleSpendDropdown() {
+  const dropdown = document.getElementById('spendDropdown');
+  if (dropdown.classList.contains('active')) {
+    closeSpendDropdown();
+    return;
+  }
+  dropdown.classList.add('active');
+  await loadSpendDropdown();
+}
+
+async function setSpendTab(key) {
+  spendTab = key;
+  await loadSpendDropdown();
+}
+
+async function loadSpendDropdown() {
+  const dropdown = document.getElementById('spendDropdown');
+  dropdown.innerHTML = spendTabsHtml() + '<div class="spend-empty">加载中…</div>';
+  try {
+    const days = SPEND_TABS.find((t) => t.key === spendTab).days;
+    const data = await (await fetch(`/api/llm/stats?days=${days}`)).json();
+    dropdown.innerHTML = spendTabsHtml() + spendContentHtml(data);
+  } catch (e) {
+    dropdown.innerHTML = spendTabsHtml() + '<div class="spend-empty">加载失败</div>';
+  }
+}
+
+function spendTabsHtml() {
+  return `<div class="spend-tabs">${SPEND_TABS.map((t) => `
+    <button type="button" class="spend-tab ${t.key === spendTab ? 'active' : ''}" onclick="setSpendTab('${t.key}')">${t.label}</button>
+  `).join('')}</div>`;
+}
+
+// 标签/数值上下堆叠成两行（不是并排），窄下拉里长值（"成本未知 · 307,507 tokens ·
+// 1 次失败"）和长模型名（"deepseek-v4-pro"）才不会挤在一起被迫从连字符处硬拆行。
+function spendContentHtml(data) {
+  const totals = data.totals || {};
+  if (!totals.calls) return '<div class="spend-empty">这段时间还没有 LLM 调用</div>';
+  const row = (label, r, extraClass = '') => `
+    <div class="spend-row ${extraClass}">
+      <div class="spend-row-label">${escapeHtml(label)}</div>
+      <div class="spend-row-value">${formatMoney(r.cost_usd)} · ${((r.input_tokens || 0) + (r.output_tokens || 0)).toLocaleString()} tokens${r.failures ? ` · ${r.failures} 次失败` : ''}</div>
+    </div>`;
+  return `
+    ${row(`合计（${totals.calls} 次调用${totals.failures ? `，${totals.failures} 次失败` : ''}）`, totals, 'spend-row-total')}
+    <div class="spend-section-title">按任务</div>
+    ${(data.by_task || []).map((r) => row(LLM_TASK_LABELS[r.key] || r.key || '其它', r)).join('') || '<div class="spend-empty">无</div>'}
+    <div class="spend-section-title">按模型</div>
+    ${(data.by_model || []).map((r) => row(r.key || '未知模型', r)).join('') || '<div class="spend-empty">无</div>'}
+  `;
+}
+
+document.addEventListener('DOMContentLoaded', initSpendWidget);
 
 // 后端对"还没上传简历"统一回 409 + {need_resume: true}（见 app.py 的 need_resume_response）。
 // 匹配分析、面试准备、题库起草全都依赖简历，三个页面都可能撞上，所以处理放在 common.js。

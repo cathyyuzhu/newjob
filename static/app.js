@@ -293,9 +293,15 @@ async function syncHowYouFitRow(btn, forceAgent = false) {
     const res = await fetch(url, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '未知错误');
-    statusEl.textContent = forceAgent
-      ? 'Agent 测试中…（会开一个可见浏览器窗口，跳过确定性扫描，直接看 AI 怎么操作）'
-      : '同步中…（要开一次登录态浏览器，可能需要一两分钟）';
+    if (data.queued) {
+      // 见 syncTrackerStage() 里同样的排队说明。
+      statusEl.textContent = `排队中…（「${data.queued_behind}」正在使用 LinkedIn 浏览器，结束后自动开始）`;
+      showToast(`「${data.queued_behind}」正在使用 LinkedIn 浏览器，已排队，会在它结束后自动开始`, 'info', 6000);
+    } else {
+      statusEl.textContent = forceAgent
+        ? 'Agent 测试中…（会开一个可见浏览器窗口，跳过确定性扫描，直接看 AI 怎么操作）'
+        : '同步中…（要开一次登录态浏览器，可能需要一两分钟）';
+    }
     pollHowYouFitSync(searchId, btn, statusEl);
   } catch (e) {
     showToast(`同步失败：${e.message}`, 'error');
@@ -346,7 +352,11 @@ async function syncHowYouFitAll() {
     const res = await fetch('/api/jobs/sync_how_you_fit_all', { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '未知错误');
-    showToast('已在后台开始依次同步所有已启用的 LinkedIn 智能匹配推荐搜索，可能需要几分钟', 'info', 6000);
+    if (data.queued) {
+      showToast(`「${data.queued_behind}」正在使用 LinkedIn 浏览器，已排队，会在它结束后自动开始`, 'info', 6000);
+    } else {
+      showToast('已在后台开始依次同步所有已启用的 LinkedIn 智能匹配推荐搜索，可能需要几分钟', 'info', 6000);
+    }
     pollHowYouFitAll(btn);
   } catch (e) {
     showToast(`同步失败：${e.message}`, 'error');
@@ -607,6 +617,26 @@ const TRACKER_STAGE_META = {
   interview: { btnId: 'syncInterviewBtn', label: '面试列表' },
 };
 
+// 跟 routes_search.py 的 _format_reconciled_note() 是同一份文案逻辑的前端版本——
+// 只报"更新 N 条"看不出具体是哪几条、从什么状态变成什么状态（2026-09-08 用户反馈），
+// 摊开成"公司·职位名：旧状态→新状态"；这条职位如果 application_status 这次调用没变
+// （只是被后端 _promote_reviewed_for_applied_jobs() 顺带补了审核状态），标"标记为
+// 已审核"而不是"旧状态→旧状态"，避免看着像没变化。超过 RECONCILED_DETAIL_LIMIT 条
+// 只列前几条，避免同步顺带修了一批历史积压时把 toast 撑得很长。
+const RECONCILED_DETAIL_LIMIT = 5;
+function formatReconciledNote(total, details) {
+  if (!total) return '';
+  const list = details || [];
+  const parts = list.slice(0, RECONCILED_DETAIL_LIMIT).map((d) => {
+    const change = d.application_status_before !== d.application_status_after
+      ? `${APPLICATION_STATUS_LABELS[d.application_status_before] || d.application_status_before}→${APPLICATION_STATUS_LABELS[d.application_status_after] || d.application_status_after}`
+      : '标记为已审核';
+    return `${d.company}·${d.title}：${change}`;
+  });
+  if (list.length > RECONCILED_DETAIL_LIMIT) parts.push(`等 ${total} 条`);
+  return ` · 投递状态核对更新 ${total} 条（${parts.join('；')}）`;
+}
+
 async function syncTrackerStage(stage) {
   const meta = TRACKER_STAGE_META[stage];
   const btn = document.getElementById(meta.btnId);
@@ -615,7 +645,14 @@ async function syncTrackerStage(stage) {
     const res = await fetch(`/api/jobs/sync_tracker/${stage}`, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || '未知错误');
-    showToast(`已在后台开始同步：要打开一次真实浏览器扫描${meta.label}，可能需要一两分钟，完成后会弹出结果`, 'info', 6000);
+    // queued：另一个也要用 LinkedIn 登录态浏览器的同步正占着（比如同时点了这个跟
+    // 「同步全部搜索」），这次请求已经排上队，占用者跑完会自动开始，不需要用户
+    // 自己重新点一次（见 job_state.py「LinkedIn 登录态浏览器排队」）。
+    if (data.queued) {
+      showToast(`「${data.queued_behind}」正在使用 LinkedIn 浏览器，已排队，会在它结束后自动开始`, 'info', 6000);
+    } else {
+      showToast(`已在后台开始同步：要打开一次真实浏览器扫描${meta.label}，可能需要一两分钟，完成后会弹出结果`, 'info', 6000);
+    }
     pollTrackerSync(stage, btn);
   } catch (e) {
     showToast(`同步失败：${e.message}`, 'error');
@@ -653,7 +690,7 @@ async function pollTrackerSync(stage, btn, { intervalMs = 4000, timeoutMs = 2400
     // 是否一致、推进了几条（见 linkedin_tracker.sync_tracker_stage() 的说明），不止
     // 针对这次新入库的——不管点的是哪个同步按钮都会跑这一步，所以只在有实际更新时才
     // 显示，避免每次同步都念叨一遍空话。
-    const reconciledNote = result.reconciled ? ` · 投递状态核对更新 ${result.reconciled} 条` : '';
+    const reconciledNote = formatReconciledNote(result.reconciled, result.reconciled_details);
     showToast(
       `${meta.label}共找到 ${result.total_found} 条 · 新入库 ${added} 条 · 已存在 ${dup} 条 · 失败 ${failed} 条${reconciledNote}`,
       failed ? 'error' : 'success', 8000,
@@ -1262,7 +1299,7 @@ function similarGroupHtml(jobs) {
   const scored = jobs.filter((j) => j.overall_match != null);
   const best = scored.length ? scored.reduce((a, b) => (b.overall_match > a.overall_match ? b : a)) : jobs[0];
   return `
-    <details class="job-similar-group">
+    <details class="job-similar-group" open>
       <summary>
         <span class="job-similar-group-label">${escapeHtml(jobs[0].company)} · ${jobs.length} 个相似职位</span>
         ${matchBadge(best)}
@@ -1313,7 +1350,7 @@ function jobCardHtml(j, opts) {
       <div class="job-actions">
         ${j.status === 'dismissed' ? '' : `
         ${j.status === 'new' ? '' : applicationStatusSelectHtml(j)}
-        ${j.status === 'reviewed' ? '' : analysisStateButtonHtml(j)}
+        ${j.status !== 'reviewed' || j.overall_match == null ? analysisStateButtonHtml(j) : ''}
         ${j.status === 'reviewed' ? easyApplyButtonHtml(j) : ''}
         ${j.status === 'reviewed' ? materialsButtonHtml(j) : ''}
         ${j.status === 'reviewed' ? appliedButtonHtml(j) : ''}
@@ -1341,7 +1378,7 @@ async function analyzeJob(id, btn) {
       showToast('这条职位在分析过程中被标记为忽略，结果不会保留', 'info', 5000);
     } else {
       const pct = Math.round(data.overall_match * 100);
-      showToast(`分析完成：匹配度 ${pct}%`, 'success', 6000);
+      showToast(withUsage(`分析完成：匹配度 ${pct}%`, data), 'success', 6000);
     }
   } catch (e) {
     showToast(`分析失败：${e.message}`, 'error', 6000);
@@ -1814,13 +1851,30 @@ function renderFunnel(runs) {
   el.style.display = 'flex';
 }
 
-// ---------- 每周转化率（讨论于 2026-08-22，从最初的多维度拆分版精简而来）----------
-// 用户反馈：不需要按关键词/公司类型/匹配分拆的细表，只要「最近一周投递到了哪一步」的
-// 一行汇总 + 一张自然周趋势图 + 一段规则式建议。数据直接用已经加载的 allJobs，不发新请求，
-// 也不接 LLM——这里是几条阈值判断，量级跟「偏好档案」那种真正需要语言理解的分析不一样。
-// 「最近一周」用滚动7天（贴近"现在"），趋势图用自然周分桶（周一对齐，能稳定累积成柱子）——
-// 两种口径都用是因为各自服务的目的不一样，统一成一种会顾此失彼。
-const WEEKLY_CONV_MS = 7 * 24 * 3600 * 1000;
+// ---------- 投递分析小图（讨论于 2026-08-22，改造为四线折线图于 2026-09-08，
+// 拆成四宫格小图于同日）----------
+// 用户反馈：不需要文字汇总和规则式建议，只要「新入/收藏/投递/面试中」四条线按自然周
+// 的趋势，自己看数据自己判断。数据直接用已经加载的 allJobs，不发新请求、不接 LLM。
+// 「新入」这条线量级（几十到几百）比其它三条（个位数到十几）大一个数量级，最初做成
+// 共享坐标系的单张折线图时后三条线被压平成直线看不出趋势，改成四张各自独立 Y 轴的
+// 小图（small multiples）——每张图只画一个系列，不需要图例框，标题文字本身就说明了
+// 画的是什么。
+// 「收藏」按 starred_at 分桶——专门为这张图加的时间戳（见 models.py
+// set_job_starred()），只从上线那天起准确累积；上线前就已经存在的历史星标记录做过
+// 一次性回填（见 models.init_db()），之后新发生的仍然走真实时间戳。
+// 「新入」「收藏」「投递」是单周事件（flow）：只在动作发生的那一周算一次，之后职位
+// 状态怎么变都不影响这一周已经记下的数字——收藏了之后投递、投递了之后面试，都不会
+// 从各自发生的那一周里被"扣掉"。「面试中」不是这种一次性事件，是区间状态（讨论于
+// 2026-09-08）：从进入面试到出结果之间，每一周都该算一次（比如第1周进入面试、第3周
+// 还没出结果，第1-3周各加1），所以在 computeWeeklySeries() 里单独处理，不跟其它三个
+// 系列共用同一套"单点分桶"逻辑，也没有单一的 `field`。系列顺序/颜色两处要保持一致，
+// 只在这一个地方改。
+const WEEKLY_SERIES = [
+  { key: 'new', label: '新入', color: 'var(--chart-new)', field: 'first_seen' },
+  { key: 'starred', label: '收藏', color: 'var(--chart-starred)', field: 'starred_at' },
+  { key: 'applied', label: '投递', color: 'var(--chart-applied)', field: 'applied_at' },
+  { key: 'interviewing', label: '面试中', color: 'var(--chart-interviewing)' },
+];
 
 function _weekStartOf(ms) {
   const d = new Date(ms);
@@ -1830,123 +1884,105 @@ function _weekStartOf(ms) {
   return d.getTime();
 }
 
-// 投递时间用 applied_at；没有时间戳的旧记录（投递状态跟踪功能上线前就已标记为「已投递」）
-// 不退回 first_seen——那样会推算出一个比真实投递更早、样本量又只有一两条的虚假周份。
-// 讨论后决定：这类记录直接并入目前已知最早的真实投递周，不单独起一周。
-function computeWeeklyConversion(jobs) {
-  const applied = jobs.filter((j) => j.application_status && j.application_status !== 'not_applied');
-  const dated = applied.filter((j) => j.applied_at);
-  if (!dated.length) return { summary: null, weeks: [], starred: null };
+// 按自然周（周一对齐）给四条线分桶，范围从全部职位里最早的 first_seen 所在周到当前
+// 自然周（含"进行中"这一周）。first_seen 必填，能兜底出下限；「新入/收藏/投递」三个
+// 单周事件的时间戳可能是 null（历史数据/还没发生这件事），null 的记录不计入对应那
+// 条线，不是分桶失败。
+function computeWeeklySeries(jobs) {
+  if (!jobs.length) return [];
+  const weekMs = 7 * 24 * 3600 * 1000;
+  const earliestWeekStart = Math.min(...jobs.map((j) => _weekStartOf(new Date(j.first_seen).getTime())));
+  const currentWeekStart = _weekStartOf(Date.now());
 
-  const earliestWeekStart = Math.min(...dated.map((j) => _weekStartOf(new Date(j.applied_at).getTime())));
   const byWeek = new Map();
-  applied.forEach((j) => {
-    const weekStart = j.applied_at ? Math.max(_weekStartOf(new Date(j.applied_at).getTime()), earliestWeekStart) : earliestWeekStart;
-    if (!byWeek.has(weekStart)) byWeek.set(weekStart, []);
-    byWeek.get(weekStart).push(j);
-  });
-  const weeks = [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(([weekStart, weekJobs]) => ({
-    weekStart,
-    total: weekJobs.length,
-    advanced: weekJobs.filter((j) => j.application_status === 'interviewing' || j.application_status === 'offer').length,
-  }));
-
-  // 「最近一周」按当前状态计数（schema 不记历史轨迹，「已拒绝/已婉拒」分不清是投完直接
-  // 被拒还是面试后被拒，跟前端其它地方一致地接受这个局限，不单独处理）。
-  const cutoff = Date.now() - WEEKLY_CONV_MS;
-  const recent = applied.filter((j) => {
-    const ms = j.applied_at ? new Date(j.applied_at).getTime() : null;
-    return ms ? ms >= cutoff : true; // 没有时间戳的旧记录一律计入，避免漏统计
-  });
-  const countBy = (status) => recent.filter((j) => j.application_status === status).length;
-  const interviewing = countBy('interviewing');
-  const summary = {
-    total: recent.length,
-    interviewing,
-    interviewingPct: recent.length ? Math.round((interviewing / recent.length) * 1000) / 10 : 0,
-    offer: countBy('offer'),
-    rejected: countBy('rejected'),
-    declined: countBy('declined'),
-  };
-
-  const rateOf = (list) => {
-    const adv = list.filter((j) => j.application_status === 'interviewing' || j.application_status === 'offer').length;
-    return { n: list.length, adv, rate: list.length ? adv / list.length : null };
-  };
-  const starred = {
-    starred: rateOf(recent.filter((j) => j.starred)),
-    unstarred: rateOf(recent.filter((j) => !j.starred)),
-  };
-
-  return { summary, weeks, starred };
+  for (let ws = earliestWeekStart; ws <= currentWeekStart; ws += weekMs) {
+    byWeek.set(ws, { weekStart: ws, new: 0, starred: 0, applied: 0, interviewing: 0 });
+  }
+  const pointSeries = WEEKLY_SERIES.filter((s) => s.key !== 'interviewing');
+  for (const j of jobs) {
+    for (const s of pointSeries) {
+      const raw = j[s.field];
+      if (!raw) continue;
+      const bucket = byWeek.get(_weekStartOf(new Date(raw).getTime()));
+      if (bucket) bucket[s.key] += 1; // 理论上时间戳都落在范围内，查不到桶就跳过，不硬造一周
+    }
+    // 「面试中」是区间状态：从 interview_started_at 所在周一直加到"出结果"那一周（含）；
+    // 还没出结果（当前仍是 interviewing）就一直加到当前这周。interview_resolved_at
+    // 上线前就已经解决的历史面试没有这个时间戳（不知道具体哪周出的结果），保守地只
+    // 计入进入那一周，不外推——这是加这两个字段时就接受的历史数据局限，跟 starred_at/
+    // applied_at 同一个道理。
+    if (j.interview_started_at) {
+      const startWs = _weekStartOf(new Date(j.interview_started_at).getTime());
+      let endWs;
+      if (j.application_status === 'interviewing') {
+        endWs = currentWeekStart;
+      } else if (j.interview_resolved_at) {
+        endWs = _weekStartOf(new Date(j.interview_resolved_at).getTime());
+      } else {
+        endWs = startWs;
+      }
+      for (let ws = startWs; ws <= endWs; ws += weekMs) {
+        const bucket = byWeek.get(ws);
+        if (bucket) bucket.interviewing += 1;
+      }
+    }
+  }
+  return [...byWeek.values()].sort((a, b) => a.weekStart - b.weekStart);
 }
 
-function generateWeeklySuggestion(data) {
-  if (!data.summary) return [];
-  const notes = [];
-  let hasSignal = false;
+// 单个系列的迷你趋势图（small multiple）：Y 轴范围只用这一个系列自己的 [0, 自己的最大值]，
+// 不跟其它系列共享——这样"新入"的大数字不会把"收藏"这种个位数系列压成一条直线。
+// 固定小尺寸 viewBox，响应式撑满 tile 宽度；每个数据点一个可见小圆点 + 一个更大的
+// 透明命中圆（原生 title 做悬浮提示，不用额外写 JS tooltip 逻辑）。
+function renderSparklineTile(series, weeks) {
+  const svgW = 120, svgH = 40, padY = 4;
+  const lastIdx = weeks.length - 1;
+  const maxVal = Math.max(1, ...weeks.map((w) => w[series.key]));
+  const x = (i) => (weeks.length > 1 ? (i / (weeks.length - 1)) * svgW : svgW / 2);
+  const y = (v) => svgH - padY - (v / maxVal) * (svgH - padY * 2);
 
-  if (data.summary.total < 20) {
-    notes.push({ cls: 'caution', text: '样本还小（累计投递不到20条），下面几条先记着，别急着据此大改策略。' });
-  }
-  const { starred, unstarred } = data.starred;
-  if (starred.n >= 3 && unstarred.n >= 3 && starred.rate !== null && unstarred.rate !== null && starred.rate - unstarred.rate >= 0.1) {
-    const sp = Math.round(starred.rate * 1000) / 10;
-    const up = Math.round(unstarred.rate * 1000) / 10;
-    notes.push({ text: `已标星职位的面试转化率明显更高（标星 ${sp}% vs 未标星 ${up}%）——优先把时间花在标星的职位上，减少"顺手投投看"的凑数投递。` });
-    hasSignal = true;
-  }
-  if (data.summary.declined > 0) {
-    notes.push({ text: `本周出现 ${data.summary.declined} 次因个人原因（如薪资不达预期）婉拒——同量级公司投递前，可以先摸一下这个职能的薪资范围，别等电话沟通才发现不匹配。` });
-    hasSignal = true;
-  }
-  if (!hasSignal) {
-    notes.push({ cls: 'caution', text: '目前数据没有明显信号，继续观察，暂不需要调整。' });
-  }
-  return notes;
+  const line = weeks.length > 1
+    ? `<polyline class="wc-tile-line" points="${weeks.map((w, i) => `${x(i)},${y(w[series.key])}`).join(' ')}" stroke="${series.color}"/>`
+    : '';
+
+  const dots = weeks.map((w, i) => {
+    const d = new Date(w.weekStart);
+    const tip = `${d.getMonth() + 1}/${d.getDate()} 那周 · ${series.label} ${w[series.key]}`;
+    const cx = x(i), cy = y(w[series.key]);
+    return `<circle class="wc-tile-hit" cx="${cx}" cy="${cy}" r="6"><title>${escapeHtml(tip)}</title></circle>
+      <circle class="wc-tile-dot" cx="${cx}" cy="${cy}" r="2.5" fill="${series.color}"/>`;
+  }).join('');
+
+  const fmt = (ws) => { const d = new Date(ws); return `${d.getMonth() + 1}/${d.getDate()}`; };
+  const isCurrent = weeks[lastIdx].weekStart === _weekStartOf(Date.now());
+
+  return `<div class="wc-tile">
+    <div class="wc-tile-head">
+      <span class="wc-tile-dot-label" style="background:${series.color}"></span>
+      <span class="wc-tile-name">${series.label}</span>
+      <span class="wc-tile-value">${weeks[lastIdx][series.key]}</span>
+    </div>
+    <svg class="wc-tile-svg" viewBox="0 0 ${svgW} ${svgH}" preserveAspectRatio="none">${line}${dots}</svg>
+    <div class="wc-tile-range">
+      <span>${fmt(weeks[0].weekStart)}</span>
+      <span>${fmt(weeks[lastIdx].weekStart)}${isCurrent ? ' 进行中' : ''}</span>
+    </div>
+  </div>`;
 }
 
 function renderWeeklyConversion() {
   const card = document.getElementById('weeklyConvCard');
   if (!card) return;
-  const data = computeWeeklyConversion(allJobs);
-  if (!data.summary || !data.summary.total) {
+  if (!allJobs.length) {
     card.style.display = 'none';
     return;
   }
   card.style.display = 'block';
 
-  const s = data.summary;
-  document.getElementById('weeklyConvSummary').innerHTML =
-    `最近一周投递 <b>${s.total}</b> 条<span class="sep">·</span>面试中 <b>${s.interviewing}</b> <span class="pct">(${s.interviewingPct}%)</span>` +
-    `<span class="sep">·</span>offer <b>${s.offer}</b><span class="sep">·</span>已拒绝 <b>${s.rejected}</b>` +
-    (s.declined ? `<span class="sep">·</span><span class="declined">被本人婉拒 <b>${s.declined}</b></span>` : '');
-
-  const maxTotal = Math.max(...data.weeks.map((w) => w.total), 1);
-  const currentWeekStart = _weekStartOf(Date.now());
-  const rowsHtml = data.weeks.map((w) => {
-    const d = new Date(w.weekStart);
-    const label = `${d.getMonth() + 1}/${d.getDate()}`;
-    const isCurrent = w.weekStart === currentWeekStart;
-    const totalPct = Math.round((w.total / maxTotal) * 100);
-    const advPct = Math.round((w.advanced / maxTotal) * 100);
-    return `<div class="wk-row">
-      <span class="wk-label">${label} 那周${isCurrent ? '<small>进行中</small>' : ''}</span>
-      <div class="wk-track">
-        <div class="wk-fill-total" style="width:${totalPct}%;"></div>
-        <div class="wk-fill-conv" style="width:${advPct}%;"></div>
-      </div>
-      <span class="wk-nums">${w.total} 条</span>
-    </div>`;
-  }).join('');
-  const accumulatingNote = data.weeks.length < 3
-    ? `<div class="wc-accumulating">数据积累中：目前只有 ${data.weeks.length} 周记录，趋势要再攒 2-3 周才看得出来。</div>`
-    : '';
-  document.getElementById('weeklyConvChart').innerHTML = rowsHtml + accumulatingNote;
-
-  const suggestions = generateWeeklySuggestion(data);
-  document.getElementById('weeklyConvSuggestion').innerHTML =
-    `<ul>${suggestions.map((n) => `<li class="${n.cls || ''}">${n.text}</li>`).join('')}</ul>`;
+  const weeks = computeWeeklySeries(allJobs);
+  document.getElementById('weeklyConvChart').innerHTML = weeks.length
+    ? WEEKLY_SERIES.map((s) => renderSparklineTile(s, weeks)).join('')
+    : '<div class="wc-chart-empty">暂无数据</div>';
 }
 
 // reqListHtml 搬进了 common.js（跟职位详情页共用）。

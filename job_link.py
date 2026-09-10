@@ -26,6 +26,7 @@ import collect_errors
 import job_state
 from config import load_config
 from models import get_conn, init_db, insert_job, job_exists, make_dedupe_key
+from relevance import title_looks_relevant
 from tracker_xlsx import existing_keys_from_tracker
 
 logger = logging.getLogger(__name__)
@@ -325,12 +326,24 @@ def fetch_via_browser(job_ids):
 # ---------------------------------------------------------------- 入库
 
 
-def add_jobs_from_urls(urls):
+def add_jobs_from_urls(urls, keyword=None):
     """把一批 LinkedIn 职位链接抓取并入库到待审核。
 
     返回 {"results": [逐条结果], "added_ids": [新入库的职位id]}。逐条结果的 status：
-      added / duplicate（库里或追踪表里已经有了）/ failed（链接认不出、抓不到）。
+      added / duplicate（库里或追踪表里已经有了）/ failed（链接认不出、抓不到）/
+      skipped_irrelevant（标题跟 keyword 完全不沾边，见下）。
     单条失败不影响其它条目——用户一次贴十条，不该因为其中一条下架了就整批白跑。
+
+    keyword：传了就在入库前用 relevance.title_looks_relevant() 粗筛一遍标题
+        （标记成 skipped_irrelevant，不插入、不算进 added_ids）——给"这批链接是
+        算法按某个关键词筛出来的，需要验证算法有没有跑偏"这种调用方用（比如
+        linkedin_how_you_fit.sync_search() 传 How You Fit 搜索链接里 keywords=
+        参数的值）。默认 None 不筛：手动贴链接、tracker 同步收藏/已投递/面试列表
+        这些调用方对应的是"用户自己已经在 LinkedIn 上挑过/操作过的职位"，不是某个
+        关键词算法批量生成的候选，用关键词去质疑它没有道理（见 pipeline.py
+        queue_pending_jobs() 里 enforce_relevance 参数的同一条取舍）。这个参数只
+        影响要不要入库，插入的 DB 行本身的 keyword 列不受影响（继续固定填职位名，
+        供 scraper.refetch_job_jd() 重新定位用，见下面 insert_job 调用处的说明）。
     """
     init_db()
     cfg = load_config()
@@ -403,6 +416,9 @@ def add_jobs_from_urls(urls):
         if job_exists(conn, dedupe_key):
             existing = conn.execute("SELECT id FROM jobs WHERE dedupe_key = ?", (dedupe_key,)).fetchone()
             item.update(status="duplicate", message="库里已经有这条职位了", job_id=existing["id"] if existing else None)
+            continue
+        if keyword and not title_looks_relevant({"title": fields["title"], "keyword": keyword}):
+            item.update(status="skipped_irrelevant", message=f"标题跟搜索关键词「{keyword}」不沾边，未入库")
             continue
         new_id = insert_job(conn, {
             "title": fields["title"],

@@ -12,19 +12,27 @@ import collect_errors
 import resume_store
 from config import load_config
 from job_state import (
+    acquire_linkedin_browser,
     finish_how_you_fit_batch,
     finish_how_you_fit_sync,
     finish_tracker_sync,
     how_you_fit_batch_error,
+    how_you_fit_batch_queued_behind,
     how_you_fit_batch_result,
     how_you_fit_batch_syncing,
+    how_you_fit_queued_behind,
     how_you_fit_sync_error,
     how_you_fit_sync_result,
     how_you_fit_syncing,
+    release_linkedin_browser,
     request_stop,
+    set_how_you_fit_batch_queued_behind,
+    set_how_you_fit_queued_behind,
+    set_tracker_queued_behind,
     start_how_you_fit_batch,
     start_how_you_fit_sync,
     start_tracker_sync,
+    tracker_queued_behind,
     tracker_sync_error,
     tracker_sync_result,
     tracker_syncing,
@@ -88,9 +96,20 @@ def trigger_search():
     # 没配置任何已启用的搜索、或批量同步已经在别处跑着，都不算错误，静默跳过——
     # 跟 sync_how_you_fit_all_route 的 409 不同，这里只是「顺带」触发，不是用户主动
     # 点的这个按钮，没必要因为撞车就报错。
+    #
+    # 跟专门按钮一样过 acquire_linkedin_browser 排队（2026-09-08）：这是"顺带"触发，
+    # 不代表当下 LinkedIn 登录态浏览器一定空闲——用户完全可能刚点完「同步收藏」又点
+    # 「智能抓取」，如果这里直接起线程 launch 浏览器，会跟正在跑的收藏同步在 Chromium
+    # 的 profile 独占锁上撞车（这正是本来要修的问题，不能因为是"顺带"触发就绕开）。
+    # 排上队跟单独点按钮没有区别，只是不需要用户等它排到再手动点一次。
     result["how_you_fit_started"] = False
     if _has_enabled_how_you_fit_searches() and start_how_you_fit_batch():
-        threading.Thread(target=_sync_how_you_fit_all_background, daemon=True).start()
+        label = "同步 LinkedIn 智能匹配推荐全部搜索"
+        acquired, occupant = acquire_linkedin_browser(label, _sync_how_you_fit_all_background)
+        if acquired:
+            threading.Thread(target=_sync_how_you_fit_all_background, daemon=True).start()
+        else:
+            set_how_you_fit_batch_queued_behind(occupant)
         result["how_you_fit_started"] = True
 
     # 搜索本身不需要简历，所以没上传简历也照常抓——只是抓完不排队分析，在响应里带一个
@@ -201,6 +220,7 @@ def get_tracker_sync_status_route(stage):
         "syncing": tracker_syncing(stage),
         "result": tracker_sync_result(stage),
         "error": tracker_sync_error(stage),
+        "queued_behind": tracker_queued_behind(stage),
     })
 
 
@@ -208,10 +228,51 @@ def get_tracker_sync_status_route(stage):
 # 通知文案和 toast 文案说的是同一件事。
 _TRACKER_STAGE_LABELS = {"saved": "收藏列表", "applied": "已投递列表", "interview": "面试列表"}
 
+# 跟 static/app.js 的 APPLICATION_STATUS_LABELS 保持一致——那边是职位卡片上显示用的，
+# 这边是通知文案拼"从什么状态变成什么状态"用的，同一套中文措辞不能各写一份不同的。
+_APPLICATION_STATUS_LABELS = {
+    "not_applied": "待投", "applied": "已投递", "interviewing": "面试中",
+    "rejected": "已拒绝", "declined": "已婉拒", "offer": "Offer",
+}
+
+# 通知/toast 里最多列几条明细，多了直接堆成一大段反而没法看，见下面
+# _format_reconciled_note() 的说明。
+_RECONCILED_DETAIL_LIMIT = 5
+
+
+def _format_reconciled_note(reconciled_total, reconciled_details):
+    """把 models.reconcile_application_status_from_linkedin() 的明细列表拼成通知/toast
+    里"投递状态核对更新"那截文案。起因：2026-09-08 用户反馈只报一个"更新 2 条"看不出
+    具体是哪两条、改了什么，得把明细摊开——每条职位标"公司·职位名：旧状态→新状态"；
+    如果这条职位这次调用里 application_status 没变（只是被
+    models._promote_reviewed_for_applied_jobs() 顺带补了 status，见
+    reconcile_application_status_from_linkedin() 的说明），改标"标记为已审核"，不然
+    "旧状态→旧状态"看着像没变化、容易让人以为是 bug。超过 _RECONCILED_DETAIL_LIMIT
+    条只列前几条，后面折算成"等 N 条"，避免同步顺带修了一批历史积压时通知/toast被撑得
+    很长。"""
+    if not reconciled_total:
+        return ""
+    parts = []
+    for detail in reconciled_details[:_RECONCILED_DETAIL_LIMIT]:
+        before, after = detail["application_status_before"], detail["application_status_after"]
+        if before != after:
+            change = f"{_APPLICATION_STATUS_LABELS.get(before, before)}→{_APPLICATION_STATUS_LABELS.get(after, after)}"
+        else:
+            change = "标记为已审核"
+        parts.append(f"{detail['company']}·{detail['title']}：{change}")
+    if len(reconciled_details) > _RECONCILED_DETAIL_LIMIT:
+        parts.append(f"等 {reconciled_total} 条")
+    detail_text = "；".join(parts)
+    return f" · 投递状态核对更新 {reconciled_total} 条（{detail_text}）"
+
 
 def _sync_tracker_background(stage):
     from linkedin_tracker import sync_tracker_stage
 
+    # 不管是刚拿到浏览器直接开跑、还是排队等前一个用完后才轮到自己，这一刻都已经不再
+    # "排队中"了，清掉 queued_behind 免得轮询接口一直显示"还在等 XX"（见 job_state.py
+    # 「LinkedIn 登录态浏览器排队」的说明）。
+    set_tracker_queued_behind(stage, None)
     error = None
     result = None
     try:
@@ -250,7 +311,7 @@ def _sync_tracker_background(stage):
         if result is not None:
             results_list = result.get("results") or []
             failed = len([r for r in results_list if r.get("status") == "failed"])
-            reconciled_note = f" · 投递状态核对更新 {result['reconciled']} 条" if result.get("reconciled") else ""
+            reconciled_note = _format_reconciled_note(result.get("reconciled"), result.get("reconciled_details") or [])
             add_notification(
                 "sync_tracker",
                 f"同步 LinkedIn {_TRACKER_STAGE_LABELS.get(stage, stage)}完成",
@@ -265,6 +326,9 @@ def _sync_tracker_background(stage):
             threading.Thread(
                 target=_classify_company_origins_background, kwargs={"job_ids": added_ids}, daemon=True
             ).start()
+        # 让出 LinkedIn 登录态浏览器——如果排队里还有人等着（比如同时点的另一个同步
+        # 按钮），这一句会直接把使用权交给它、在新线程里自动跑起来，不需要用户重新点。
+        release_linkedin_browser()
 
 
 @search_bp.route("/api/jobs/sync_tracker/<stage>", methods=["POST"])
@@ -276,6 +340,12 @@ def sync_tracker_route(stage):
     体验：列表可能有几十上百条，光是扫这个列表滚动加载就可能要一两分钟，再加上逐条抓
     详情，同步等待会让请求挂太久。前端改用轮询 GET 同一路径查进度，参照体检
     （resume_review）的既有模式。
+
+    跟另一个也要用 LinkedIn 登录态浏览器的同步（另一个 stage、How You Fit 单条/批量）
+    撞车时不再直接报错：`start_tracker_sync` 这把"这个 stage 是否已经在同步"的锁照常
+    立刻生效（同一个 stage 重复点还是 409），但真正要用浏览器时会先排队，如果当下正被
+    别的同步占用，就把这次请求存进队列、稍后占用者跑完自动接着跑，见 job_state.py
+    「LinkedIn 登录态浏览器排队」。
     """
     from linkedin_tracker import SUPPORTED_STAGES
 
@@ -283,13 +353,27 @@ def sync_tracker_route(stage):
         return jsonify({"error": f"暂不支持同步这个列表：{stage}"}), 404
     if not start_tracker_sync(stage):
         return jsonify({"error": "上一次同步还在进行中，请稍等它完成"}), 409
-    threading.Thread(target=_sync_tracker_background, kwargs={"stage": stage}, daemon=True).start()
-    return jsonify({"started": True})
+
+    label = f"同步 LinkedIn {_TRACKER_STAGE_LABELS.get(stage, stage)}"
+
+    def _start():
+        _sync_tracker_background(stage)
+
+    acquired, occupant = acquire_linkedin_browser(label, _start)
+    if acquired:
+        threading.Thread(target=_start, daemon=True).start()
+        return jsonify({"started": True})
+    set_tracker_queued_behind(stage, occupant)
+    return jsonify({"started": True, "queued": True, "queued_behind": occupant})
+
+
+def _get_how_you_fit_search(search_id):
+    cfg = load_config()
+    return next((s for s in (cfg.get("linkedin_how_you_fit_searches") or []) if s.get("id") == search_id), None)
 
 
 def _how_you_fit_search_exists(search_id):
-    cfg = load_config()
-    return any(s.get("id") == search_id for s in (cfg.get("linkedin_how_you_fit_searches") or []))
+    return _get_how_you_fit_search(search_id) is not None
 
 
 @search_bp.route("/api/jobs/sync_how_you_fit/<search_id>", methods=["GET"])
@@ -302,6 +386,7 @@ def get_how_you_fit_sync_status_route(search_id):
         "syncing": how_you_fit_syncing(search_id),
         "result": how_you_fit_sync_result(search_id),
         "error": how_you_fit_sync_error(search_id),
+        "queued_behind": how_you_fit_queued_behind(search_id),
     })
 
 
@@ -325,6 +410,9 @@ def _finish_how_you_fit_added(added_ids, result):
 def _sync_how_you_fit_background(search_id, force_agent=False):
     from linkedin_how_you_fit import sync_search
 
+    # 清掉"排队中"标记，理由跟 _sync_tracker_background 开头那句一致，见 job_state.py
+    # 「LinkedIn 登录态浏览器排队」的说明。
+    set_how_you_fit_queued_behind(search_id, None)
     error = None
     result = None
     try:
@@ -339,32 +427,45 @@ def _sync_how_you_fit_background(search_id, force_agent=False):
             _finish_how_you_fit_added(added_ids, result)
             results_list = result.get("results") or []
             failed = len([r for r in results_list if r.get("status") == "failed"])
+            skipped_irrelevant = len([r for r in results_list if r.get("status") == "skipped_irrelevant"])
+            irrelevant_note = f" · 标题不符跳过 {skipped_irrelevant} 条" if skipped_irrelevant else ""
             add_notification(
                 "sync_how_you_fit", "同步 LinkedIn 智能匹配推荐搜索完成",
-                f"共找到 {result.get('total_found', 0)} 条 · 新入库 {len(added_ids)} 条 · 失败 {failed} 条",
+                f"共找到 {result.get('total_found', 0)} 条 · 新入库 {len(added_ids)} 条 · 失败 {failed} 条{irrelevant_note}",
                 level="error" if failed else "success",
             )
         finish_how_you_fit_sync(search_id, result=result, error=error)
+        release_linkedin_browser()
 
 
 @search_bp.route("/api/jobs/sync_how_you_fit/<search_id>", methods=["POST"])
 def sync_how_you_fit_route(search_id):
     """同步单条 LinkedIn How You Fit 搜索到职达，结构跟 sync_tracker_route 一致
-    （后台线程跑 + 轮询查进度）。
+    （后台线程跑 + 轮询查进度，撞上别的 LinkedIn 浏览器同步时排队而不是直接报错，
+    见 sync_tracker_route 的说明）。
 
     ?force_agent=1（设置页"用 agent 测试"按钮，2026-08-29）：跳过确定性扫描直接
     强制走 agent 兜底导航，用来肉眼观察 agent 打开的浏览器实际怎么操作——仍然是
     一次真实同步，收集到的职位照常入库，只是不通过 fetch_search_job_ids 那条路径
     收集，跟平时"确定性扫描数量不够才升级给 agent"的触发条件不同，其它都一样。"""
-    if not _how_you_fit_search_exists(search_id):
+    search = _get_how_you_fit_search(search_id)
+    if search is None:
         return jsonify({"error": "这条 LinkedIn 智能匹配推荐搜索不存在（可能已被删除）"}), 404
     if not start_how_you_fit_sync(search_id):
         return jsonify({"error": "上一次同步还在进行中，请稍等它完成"}), 409
     force_agent = request.args.get("force_agent") == "1"
-    threading.Thread(
-        target=_sync_how_you_fit_background, kwargs={"search_id": search_id, "force_agent": force_agent}, daemon=True
-    ).start()
-    return jsonify({"started": True})
+
+    label = f"同步 LinkedIn 智能匹配推荐搜索：{search.get('name') or search_id}"
+
+    def _start():
+        _sync_how_you_fit_background(search_id, force_agent=force_agent)
+
+    acquired, occupant = acquire_linkedin_browser(label, _start)
+    if acquired:
+        threading.Thread(target=_start, daemon=True).start()
+        return jsonify({"started": True})
+    set_how_you_fit_queued_behind(search_id, occupant)
+    return jsonify({"started": True, "queued": True, "queued_behind": occupant})
 
 
 @search_bp.route("/api/jobs/sync_how_you_fit_all", methods=["GET"])
@@ -373,12 +474,14 @@ def get_how_you_fit_batch_status_route():
         "syncing": how_you_fit_batch_syncing(),
         "result": how_you_fit_batch_result(),
         "error": how_you_fit_batch_error(),
+        "queued_behind": how_you_fit_batch_queued_behind(),
     })
 
 
 def _sync_how_you_fit_all_background():
     from linkedin_how_you_fit import sync_all_enabled_searches
 
+    set_how_you_fit_batch_queued_behind(None)
     error = None
     summary = None
     try:
@@ -390,33 +493,58 @@ def _sync_how_you_fit_all_background():
     finally:
         all_added_ids = []
         all_failed = 0
+        all_skipped_irrelevant = 0
+        search_errors = []
         for entry in (summary or {}).values():
             entry_result = entry.get("result") or {}
             all_added_ids += entry_result.get("added_ids") or []
-            all_failed += len([r for r in (entry_result.get("results") or []) if r.get("status") == "failed"])
+            entry_results_list = entry_result.get("results") or []
+            all_failed += len([r for r in entry_results_list if r.get("status") == "failed"])
+            all_skipped_irrelevant += len([r for r in entry_results_list if r.get("status") == "skipped_irrelevant"])
+            # entry["error"] 是某条搜索整个跑失败（sync_search 直接抛异常，比如登录
+            # profile 被占用、登录态失效），跟上面 entry_results_list 里单条 URL
+            # 入库失败的 "failed" 状态是两回事——之前这里完全没读这个字段，导致"这
+            # 条搜索从头到尾就没跑起来"被悄悄漏计，通知永远显示"失败 0 条 · 成功"，
+            # 掩盖了真实原因（2026-09-08 用户反馈"每次都抓不到内容"但通知一直显示
+            # 成功，排查发现就是这里）。
+            if entry.get("error"):
+                search_errors.append(entry["error"])
         placeholder_result = {"added_ids": all_added_ids, "summary": summary}
         if all_added_ids:
             _finish_how_you_fit_added(all_added_ids, placeholder_result)
         if summary is not None:
+            irrelevant_note = f" · 标题不符跳过 {all_skipped_irrelevant} 条" if all_skipped_irrelevant else ""
+            search_error_note = (
+                f" · {len(search_errors)} 条搜索整体失败：{'; '.join(search_errors)}" if search_errors else ""
+            )
             add_notification(
                 "sync_how_you_fit", "同步 LinkedIn 智能匹配推荐全部搜索完成",
-                f"共 {len(summary)} 条搜索 · 新入库 {len(all_added_ids)} 条 · 失败 {all_failed} 条",
-                level="error" if all_failed else "success",
+                f"共 {len(summary)} 条搜索 · 新入库 {len(all_added_ids)} 条 · 失败 {all_failed} 条"
+                f"{irrelevant_note}{search_error_note}",
+                level="error" if (all_failed or search_errors) else "success",
             )
         finish_how_you_fit_batch(result=placeholder_result, error=error)
+        release_linkedin_browser()
 
 
 @search_bp.route("/api/jobs/sync_how_you_fit_all", methods=["POST"])
 def sync_how_you_fit_all_route():
     """手动"立即同步全部"入口：跟每日定时任务用的是同一个
     linkedin_how_you_fit.sync_all_enabled_searches()，用户配好搜索不用等到第二天
-    定时任务才能验证生效。跟单条同步共用同一个并发锁的上一层（这里是批量锁，单条
-    同步有各自独立的锁），两者可能同时被触发时不强行互斥——sync_search() 内部真正
-    的并发保护来自登录 profile 目录的独占锁（EasyApplyInProgress）。"""
+    定时任务才能验证生效。`start_how_you_fit_batch()` 这把锁只挡"另一次批量同步也在
+    跑"（同类型重复点，409）；跟单条同步、tracker 同步撞车（不同类型）现在走排队
+    （见 sync_tracker_route 的说明），不再是"不强行互斥、指望不要撞上"——2026-09-08
+    之前两者确实可能同时真的 launch 浏览器，撞在 Chromium 的 profile 独占锁上失败。"""
     if not start_how_you_fit_batch():
         return jsonify({"error": "上一次批量同步还在进行中，请稍等它完成"}), 409
-    threading.Thread(target=_sync_how_you_fit_all_background, daemon=True).start()
-    return jsonify({"started": True})
+
+    label = "同步 LinkedIn 智能匹配推荐全部搜索"
+    acquired, occupant = acquire_linkedin_browser(label, _sync_how_you_fit_all_background)
+    if acquired:
+        threading.Thread(target=_sync_how_you_fit_all_background, daemon=True).start()
+        return jsonify({"started": True})
+    set_how_you_fit_batch_queued_behind(occupant)
+    return jsonify({"started": True, "queued": True, "queued_behind": occupant})
 
 
 @search_bp.route("/api/jobs/analyze_all", methods=["POST"])

@@ -7,6 +7,7 @@ import threading
 
 from flask import Blueprint, jsonify, request
 
+import llm
 import resume_store
 from config import load_config
 from easy_apply import EasyApplyError, EasyApplyInProgress, run_easy_apply
@@ -26,7 +27,7 @@ from pipeline import (
     refetch_missing_jd_jobs,
 )
 from resume_store import ResumeMissingError
-from web_helpers import need_resume_response
+from web_helpers import need_resume_response, usage_notification_message
 
 job_actions_bp = Blueprint("job_actions", __name__)
 
@@ -37,15 +38,20 @@ job_actions_bp = Blueprint("job_actions", __name__)
 def _materials_background(job_id):
     job = get_job(job_id)
     job_label = f"{job['company']} · {job['title']}" if job else f"职位 #{job_id}"
+    llm.start_usage_tracking()
     try:
         result = generate_materials_for_job_safe(job_id)
         logging.info("materials generated for job %s: %s", job_id, {k: bool(v) for k, v in result.items()})
         add_notification(
-            "materials", "定制材料生成完成", job_label, level="success", link=f"/jobs/{job_id}",
+            "materials", "定制材料生成完成", usage_notification_message(job_label),
+            level="success", link=f"/jobs/{job_id}",
         )
     except Exception:
         logging.exception("materials generation failed for job %s", job_id)
-        add_notification("materials", "定制材料生成失败", job_label, level="error", link=f"/jobs/{job_id}")
+        add_notification(
+            "materials", "定制材料生成失败", usage_notification_message(job_label),
+            level="error", link=f"/jobs/{job_id}",
+        )
 
 
 @job_actions_bp.route("/api/jobs/<int:job_id>/generate_materials", methods=["POST"])

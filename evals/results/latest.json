@@ -14,13 +14,13 @@
     },
     "company_overview_honesty": {
       "detail": [
+        "1/3 次调用未成功（bug: IncompleteRead(0 bytes read)）",
         "第1次：如实说明信息不足 —— 未找到该公司的相关信息",
-        "第2次：如实说明信息不足 —— 未找到该公司的相关信息",
-        "第3次：如实说明信息不足 —— 未找到该公司的相关信息"
+        "第2次：如实说明信息不足 —— 未找到该公司的相关信息"
       ],
       "kind": "overview_honesty",
-      "n_error": 0,
-      "n_ok": 3,
+      "n_error": 1,
+      "n_ok": 2,
       "raw_status": "PASS",
       "rule": "公司简介不编造：对虚构公司应如实说明信息不足，而不是编出一段介绍",
       "soft": true,
@@ -29,11 +29,34 @@
     "hard_gap_double_mandatory": {
       "detail": [
         "cognitive_match: mean=0.300 (0.30~0.30, range=0.00, n=3)",
-        "content_match: mean=0.483 (0.45~0.50, range=0.05, n=3)",
-        "overall_match: mean=0.392 (0.38~0.40, range=0.03, n=3)",
+        "content_match: mean=0.533 (0.40~0.70, range=0.30, n=3)",
+        "overall_match: mean=0.417 (0.35~0.50, range=0.15, n=3)",
         "raw_cognitive_match: mean=0.300 (0.30~0.30, range=0.00, n=3)",
         "核验通过的硬缺口条数=[2, 2, 2]"
       ],
+      "judge": {
+        "concerns": [
+          "日语能力结论“未达到日语母语水平或JLPT N1要求”只能由简历未提及推断，建议改为“未体现/未证明”。",
+          "在PMP和日语两个强制要求不满足的情况下，content_match=0.5可能高估整体匹配度。"
+        ],
+        "dimensions": {
+          "evidence_grounding": {
+            "reason": "匹配与未达标条目均能在JD和简历原文中找到具体依据，没有明显空泛归纳。",
+            "score": 5
+          },
+          "honesty": {
+            "reason": "公司简介如实说明未找到信息，整体无编造；但日语能力从简历未提及推断为“未达到”略有过度。",
+            "score": 4.0
+          },
+          "score_consistency": {
+            "reason": "已列出PMP、日语等硬性门槛缺口，但content_match仍给0.5，幅度偏高，与证据方向不完全自洽。",
+            "score": 3.0
+          }
+        },
+        "model": null,
+        "overall": 4.0,
+        "provider": "deepseek"
+      },
       "kind": "analyze",
       "n_error": 0,
       "n_ok": 3,
@@ -44,12 +67,35 @@
     },
     "hard_gap_single_mandatory": {
       "detail": [
-        "cognitive_match: mean=0.483 (0.45~0.50, range=0.05, n=3)",
-        "content_match: mean=0.717 (0.60~0.80, range=0.20, n=3)",
-        "overall_match: mean=0.600 (0.53~0.65, range=0.12, n=3)",
-        "raw_cognitive_match: mean=0.483 (0.45~0.50, range=0.05, n=3)",
+        "cognitive_match: mean=0.467 (0.45~0.50, range=0.05, n=3)",
+        "content_match: mean=0.700 (0.65~0.75, range=0.10, n=3)",
+        "overall_match: mean=0.583 (0.57~0.60, range=0.03, n=3)",
+        "raw_cognitive_match: mean=0.467 (0.45~0.50, range=0.05, n=3)",
         "核验通过的硬缺口条数=[1, 1, 1]"
       ],
+      "judge": {
+        "concerns": [
+          "content_match=0.7与PMP强制认证缺失、无咨询项目经验两项关键缺口不够自洽，可能高估匹配度。",
+          "skill_matched_bullets中“产品路线图规划与产品方案设计”的“产品方案设计”在简历中只能间接推出，表述略强。"
+        ],
+        "dimensions": {
+          "evidence_grounding": {
+            "reason": "所有匹配与未达标条目均能在JD和简历原文中找到具体依据，如PMP未提及、SQL/Tableau、200家企业客户等。",
+            "score": 5
+          },
+          "honesty": {
+            "reason": "公司简介如实说明未找到信息，未虚构；其他判断均有依据或使用“未体现”等谨慎表述。",
+            "score": 5
+          },
+          "score_consistency": {
+            "reason": "证据本身清晰，但PMP为强制缺失且咨询经验不足，content_match仍给0.7偏乐观，分数与证据幅度可疑。",
+            "score": 3.0
+          }
+        },
+        "model": null,
+        "overall": 4.0,
+        "provider": "deepseek"
+      },
       "kind": "analyze",
       "n_error": 0,
       "n_ok": 3,
@@ -60,8 +106,33 @@
     },
     "materials_no_fabrication": {
       "detail": [
-        "check: cover_letter_fabrication（跟简历改写分开判断）—— cover_letter 引入了简历里不存在的数字：[['1000', '1000+', '2', '80', '80%'], ['1000', '1000+', '2', '80', '80%'], ['80', '80%']]"
+        "check: cover_letter_fabrication（跟简历改写分开判断）—— cover_letter 引入了简历里不存在的数字：[['1000', '1000+', '80', '80%'], ['1000', '1000+'], ['1000', '1000+', '80', '80%']]"
       ],
+      "judge": {
+        "concerns": [
+          "改写将“通过A/B测试等用户增长实验”改为“搭建A/B测试等数据驱动增长实验机制”，相较原简历有拔高。",
+          "“统筹跨部门协作”替代“负责”以及“built the foundational systems and habits”等表述，有轻微夸大管理或体系搭建经验的风险。",
+          "“聚焦企业客户痛点”“规模化产品迭代和增长经验”等补充句较为通用，缺少具体证据支持。",
+          "未直接针对JD的50人以上产品团队管理和多条产品线统筹进行简历摘要或段落强化，仅由求职信说明差距。"
+        ],
+        "dimensions": {
+          "authenticity": {
+            "reason": "数字和主要经历均基于简历且主动说明规模差距，但“搭建机制”“统筹”等措辞有轻微提升。",
+            "score": 4.0
+          },
+          "professionalism": {
+            "reason": "英文表达专业、段落结构清晰、篇幅简洁，透明说明差距的写法提升了专业观感。",
+            "score": 5
+          },
+          "relevance": {
+            "reason": "改写和求职信覆盖了数据驱动增长、数据分析等JD关键词，但对50人团队管理、多条产品线等硬指标未逐点对应，部分新增表述为通用套话。",
+            "score": 3.0
+          }
+        },
+        "model": null,
+        "overall": 4.0,
+        "provider": "deepseek"
+      },
       "kind": "materials",
       "n_error": 0,
       "n_ok": 3,
@@ -72,11 +143,34 @@
     },
     "pref_profile_none": {
       "detail": [
-        "cognitive_match: mean=0.900 (0.90~0.90, range=0.00, n=3)",
-        "content_match: mean=0.593 (0.58~0.60, range=0.02, n=3)",
-        "overall_match: mean=0.747 (0.74~0.75, range=0.01, n=3)",
-        "raw_cognitive_match: mean=0.900 (0.90~0.90, range=0.00, n=3)"
+        "cognitive_match: mean=0.917 (0.90~0.95, range=0.05, n=3)",
+        "content_match: mean=0.567 (0.55~0.60, range=0.05, n=3)",
+        "overall_match: mean=0.742 (0.72~0.78, range=0.05, n=3)",
+        "raw_cognitive_match: mean=0.917 (0.90~0.95, range=0.05, n=3)"
       ],
+      "judge": {
+        "concerns": [
+          "cognitive_match=0.9与列出的文化认同/创业氛围未达标证据不完全自洽，可能高估认知匹配度。",
+          "“偏向较大规模企业”缺乏简历原文的直接依据，属于基于客户量与公司类型的归纳推断。"
+        ],
+        "dimensions": {
+          "evidence_grounding": {
+            "reason": "匹配和未达标条目大多有JD/简历原文支撑，但“偏向较大规模企业”属归纳推断，不是原文直接依据。",
+            "score": 4.0
+          },
+          "honesty": {
+            "reason": "公司简介如实说明未找到，匹配与缺口断言未发现编造或明显夸大。",
+            "score": 5
+          },
+          "score_consistency": {
+            "reason": "content_match=0.55与两个缺口基本自洽，但cognitive_match=0.9在文化/创业氛围未达标时偏乐观。",
+            "score": 3.0
+          }
+        },
+        "model": null,
+        "overall": 4.0,
+        "provider": "deepseek"
+      },
       "kind": "analyze",
       "n_error": 0,
       "n_ok": 3,
@@ -87,8 +181,30 @@
     },
     "pref_profile_repel": {
       "detail": [
-        "content_match: 本条 mean=0.467 (0.40~0.55, range=0.15, n=3)；锚点 mean=0.593 (0.58~0.60, range=0.02, n=3)"
+        "content_match: 本条 mean=0.500 (0.50~0.50, range=0.00, n=3)；锚点 mean=0.567 (0.55~0.60, range=0.05, n=3)"
       ],
+      "judge": {
+        "concerns": [
+          "content_match=0.5在仅一个任职要求缺口且技能高度匹配时可能偏低，cognitive_match=0.92在存在文化认同缺口时可能偏高，建议说明权重或计算口径"
+        ],
+        "dimensions": {
+          "evidence_grounding": {
+            "reason": "匹配和缺口条目均可在JD任职要求与简历年限、数据分析、跨部门协作、SaaS/需求分析等原文中找到依据",
+            "score": 5
+          },
+          "honesty": {
+            "reason": "公司简介如实说明未找到相关信息，匹配断言均基于简历原文，未发现无依据断言或夸大",
+            "score": 5
+          },
+          "score_consistency": {
+            "reason": "2/3任职要求匹配与一个文化认同缺口大致支持中等匹配，但cognitive_match 0.92和content_match 0.5的权重未说明，幅度略有张力",
+            "score": 4.0
+          }
+        },
+        "model": null,
+        "overall": 4.0,
+        "provider": "deepseek"
+      },
       "kind": "analyze",
       "n_error": 0,
       "n_ok": 3,
@@ -99,21 +215,73 @@
     },
     "seniority_entry_level_mismatch": {
       "detail": [
-        "content_match: 本条 mean=0.283 (0.25~0.30, range=0.05, n=3)；锚点 mean=0.950 (0.95~0.95, range=0.00, n=3)"
+        "本条：1/3 次调用未成功（bug: IncompleteRead(0 bytes read)）",
+        "content_match: 本条 mean=0.250 (0.20~0.30, range=0.10, n=2)；锚点 mean=0.940 (0.92~0.95, range=0.03, n=3)",
+        "overall_match 均值 0.600 未低于 0.6"
       ],
+      "judge": {
+        "concerns": [
+          "“用户反馈收集”条目将A/B测试和用户增长实验直接解释为处理用户反馈，简历原文未直接支持。",
+          "“学习能力与责任心”中“责任心”在简历中无对应事实，仅有教育和晋升经历作为间接推断。",
+          "cognitive_match=0.95与JD要求应届或0-1年、候选人已有8年产品经理经验的硬性错配不一致。",
+          "“产品需求文档撰写”在简历中仅体现为需求分析和原型设计，未直接出现PRD撰写经历。"
+        ],
+        "dimensions": {
+          "evidence_grounding": {
+            "reason": "多数匹配项能在JD和简历原文中找到具体依据，但“用户反馈收集”与“学习能力/责任心”等条目存在推断和空泛归纳。",
+            "score": 3.0
+          },
+          "honesty": {
+            "reason": "公司简介如实说明未知，但“责任心”等个别结论缺乏原文依据，用户反馈相关表述也有轻微夸大。",
+            "score": 3.0
+          },
+          "score_consistency": {
+            "reason": "技能匹配项多、content_match=0.2方向合理，但cognitive_match=0.95与已标出的应届/0-1年硬性缺口及8年产品经理错配相比幅度可疑。",
+            "score": 3.0
+          }
+        },
+        "model": null,
+        "overall": 3.0,
+        "provider": "deepseek"
+      },
       "kind": "analyze",
-      "n_error": 0,
-      "n_ok": 3,
-      "raw_status": "PASS",
+      "n_error": 1,
+      "n_ok": 2,
+      "raw_status": "FAIL",
       "rule": "职级错配拖累（重度）：应届/0-1年经验的岗位跟8年经验的候选人差距更极端，content_match 应比锚点低得更多、overall_match 门槛更低",
       "soft": false,
-      "status": "PASS"
+      "status": "FAIL"
     },
     "seniority_junior_mismatch": {
       "detail": [
-        "content_match: 本条 mean=0.350 (0.25~0.45, range=0.20, n=3)；锚点 mean=0.950 (0.95~0.95, range=0.00, n=3)",
-        "本次运行离散度(range=0.200)不小于要断言的 margin(0.1)，无法判断这次差异是真实效应还是抽样噪声 → INCONCLUSIVE"
+        "content_match: 本条 mean=0.367 (0.30~0.40, range=0.10, n=3)；锚点 mean=0.940 (0.92~0.95, range=0.03, n=3)",
+        "本次运行离散度(range=0.100)不小于要断言的 margin(0.1)，无法判断这次差异是真实效应还是抽样噪声 → INCONCLUSIVE"
       ],
+      "judge": {
+        "concerns": [
+          "简历未直接出现'用户反馈收集'，模型将其列为匹配，只能通过用户增长实验等间接推断。",
+          "数据分析能力并非JD明确要求，作为匹配项略超范围。",
+          "cognitive_match 0.9与已标出的Axure/Figma工具缺口及8年高级PM对初级岗位的错配不够自洽。",
+          "content_match 0.4与列出4项匹配、1项缺口的证据幅度差异较大，需补充说明评分依据。"
+        ],
+        "dimensions": {
+          "evidence_grounding": {
+            "reason": "多数匹配/缺口条目能在JD和简历原文中找到具体依据，但用户反馈收集、数据分析支持决策等表述存在推断。",
+            "score": 4.0
+          },
+          "honesty": {
+            "reason": "公司信息如实说明未找到，主要结论有简历依据，仅'可覆盖PRD''支持数据驱动决策'等属轻度推断。",
+            "score": 4.0
+          },
+          "score_consistency": {
+            "reason": "评分方向大体可理解，但证据仅一项明确工具缺口，content_match却低至0.4而cognitive_match高达0.9，幅度不够自洽。",
+            "score": 3.0
+          }
+        },
+        "model": null,
+        "overall": 3.0,
+        "provider": "deepseek"
+      },
       "kind": "analyze",
       "n_error": 0,
       "n_ok": 3,
@@ -124,11 +292,31 @@
     },
     "seniority_senior_anchor": {
       "detail": [
-        "cognitive_match: mean=0.943 (0.93~0.95, range=0.02, n=3)",
-        "content_match: mean=0.950 (0.95~0.95, range=0.00, n=3)",
-        "overall_match: mean=0.947 (0.94~0.95, range=0.01, n=3)",
-        "raw_cognitive_match: mean=0.943 (0.93~0.95, range=0.02, n=3)"
+        "cognitive_match: mean=0.940 (0.93~0.95, range=0.02, n=3)",
+        "content_match: mean=0.940 (0.92~0.95, range=0.03, n=3)",
+        "overall_match: mean=0.940 (0.93~0.95, range=0.02, n=3)",
+        "raw_cognitive_match: mean=0.940 (0.93~0.95, range=0.02, n=3)"
       ],
+      "judge": {
+        "concerns": [],
+        "dimensions": {
+          "evidence_grounding": {
+            "reason": "匹配条目均能在JD和简历原文中找到对应依据，且未列出无依据的缺口。",
+            "score": 5
+          },
+          "honesty": {
+            "reason": "公司简介如实说明未找到信息，所有匹配断言均有简历或JD原文支撑，未见夸大。",
+            "score": 5
+          },
+          "score_consistency": {
+            "reason": "证据显示JD要求基本被简历完整覆盖，0.95分与列出的强匹配证据自洽。",
+            "score": 5
+          }
+        },
+        "model": null,
+        "overall": 5,
+        "provider": "deepseek"
+      },
       "kind": "analyze",
       "n_error": 0,
       "n_ok": 3,
@@ -139,9 +327,13 @@
     }
   },
   "run": {
-    "finished_at": "2026-08-30T17:04:05",
+    "finished_at": "2026-08-31T03:09:36",
     "fixture_set": "all",
-    "git_rev": "8cf087a",
+    "git_rev": "b672c64",
+    "judge": {
+      "model": null,
+      "provider": "deepseek"
+    },
     "model": "deepseek-v4-pro",
     "prompt_fingerprints": {
       "COMPANY_ORIGIN_PROMPT": "1cf83e52e21d",

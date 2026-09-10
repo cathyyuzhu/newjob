@@ -169,13 +169,22 @@ def get_llm_stats():
     """LLM 调用流水的聚合视图：花了多少钱、哪个任务最容易失败、哪个模型慢。
 
     埋点见 llm.py 的 _CallRecord。默认看最近 30 天——days=0 表示全部历史。
+
+    days=1（"今日"）刻意按**自然日**算（从本地零点到现在），不是"过去24小时"——
+    2026-09-09 用户拿真实 DeepSeek 后台账单核对时发现两边对不上，根因就是这里原来
+    统一用 `now - timedelta(days=days)` 滚动窗口，"今日"因此会把昨天傍晚以后的调用
+    也算进来。DeepSeek 账单后台跟大多数计费面板一样按自然日展示，这里跟着对齐；
+    days=7/30 保留滚动窗口语义不变——"过去7天/30天"本来就没有"自然7天"这个概念，
+    不存在同样的歧义。
     """
     try:
         days = int(request.args.get("days", 30))
     except ValueError:
         return jsonify({"error": "days 必须是整数"}), 400
     since = None
-    if days > 0:
+    if days == 1:
+        since = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
+    elif days > 0:
         since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
     return jsonify(
         {

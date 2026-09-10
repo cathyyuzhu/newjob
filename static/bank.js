@@ -494,6 +494,7 @@ function chatMsgHtml(msg, itemId, idx) {
         <button class="btn btn-secondary btn-sm" onclick="applyChatAnswer(${itemId}, ${idx})">
           用这版替换${LANG_LABELS[msg.lang]}答案
         </button>` : ''}
+      ${msg.usage ? `<div class="chat-usage">${escapeHtml(msg.usage)}</div>` : ''}
     </div>
   `;
 }
@@ -548,7 +549,10 @@ async function sendItemChat(itemId) {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '未知错误');
-    chat.messages.push({ role: 'assistant', content: data.reply, answer: data.answer || null, lang: chat.lang });
+    chat.messages.push({
+      role: 'assistant', content: data.reply, answer: data.answer || null, lang: chat.lang,
+      usage: data.llm_usage_text,
+    });
   } catch (e) {
     // 错误当成一条气泡插进对话，不打断已经聊出来的内容，用户可以直接再发一次
     chat.messages.push({ role: 'assistant', error: true, content: `出错了：${e.message}` });
@@ -632,7 +636,7 @@ async function sendAssistantChat() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '未知错误');
-    assistantChat.messages.push({ role: 'assistant', content: data.reply });
+    assistantChat.messages.push({ role: 'assistant', content: data.reply, usage: data.llm_usage_text });
   } catch (e) {
     assistantChat.messages.push({ role: 'assistant', error: true, content: `出错了：${e.message}` });
   } finally {

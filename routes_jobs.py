@@ -7,6 +7,7 @@ import threading
 
 from flask import Blueprint, abort, jsonify, render_template, request, send_file
 
+import llm
 import resume_store
 import routes_interview
 from models import (
@@ -38,7 +39,7 @@ from job_state import (
 )
 from pipeline import analyze_and_record_safe, chat_about_job, find_tracker_entry, maybe_refresh_preference_profile
 from resume_store import ResumeMissingError
-from web_helpers import need_resume_response
+from web_helpers import need_resume_response, usage_notification_message
 
 jobs_bp = Blueprint("jobs", __name__)
 
@@ -54,20 +55,28 @@ def job_detail_page(job_id):
 
 
 def _profile_refresh_background(force=False):
+    llm.start_usage_tracking()
     try:
         result = maybe_refresh_preference_profile(force=force)
         # 返回 None 表示没有真的触发生成（攒的新原因还没到阈值），不算一次完成，不发通知；
         # 失败也算"触发过"（返回值非 None，内容里 error 有值），一并落一条错误通知。
         if result is not None:
             if result.get("error"):
-                add_notification("preference_profile", "偏好档案生成失败", result["error"], level="error")
+                add_notification(
+                    "preference_profile", "偏好档案生成失败",
+                    usage_notification_message(result["error"]), level="error",
+                )
             else:
-                add_notification("preference_profile", "偏好档案已更新", level="success")
+                add_notification(
+                    "preference_profile", "偏好档案已更新", usage_notification_message(None), level="success",
+                )
     except Exception:
         # maybe_refresh_preference_profile() 内部已经把"生成失败"落库成 error 行了，
         # 这里兜的是更早的异常（比如攒计数的那次查询本身就出错）。
         logging.exception("background preference profile refresh failed")
-        add_notification("preference_profile", "偏好档案生成失败", level="error")
+        add_notification(
+            "preference_profile", "偏好档案生成失败", usage_notification_message(None), level="error",
+        )
 
 
 @jobs_bp.route("/api/jobs", methods=["GET"])
@@ -261,11 +270,13 @@ def analyze_job_route(job_id):
         # 于是这条职位会一直挂着"分析失败"的红标，哪怕用户马上就传了简历。"还没上传简历"
         # 不是这条职位的问题，不该记在它头上。
         return need_resume_response(e)
+    llm.start_usage_tracking()
     try:
         result = analyze_and_record_safe(job_id)
+        result["llm_usage_text"] = llm.usage_text(llm.pop_usage_summary())
         return jsonify(result)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "llm_usage_text": llm.usage_text(llm.pop_usage_summary())}), 500
 
 
 @jobs_bp.route("/api/jobs/<int:job_id>/resume", methods=["GET"])
@@ -304,12 +315,16 @@ def job_chat_route(job_id):
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify({"error": "说点什么吧"}), 400
+    llm.start_usage_tracking()
     try:
         reply = chat_about_job(job_id, message, history=data.get("history"))
-        return jsonify({"reply": reply})
+        return jsonify({"reply": reply, "llm_usage_text": llm.usage_text(llm.pop_usage_summary())})
     except Exception as e:
         logging.exception("job chat failed")
-        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+        return jsonify({
+            "error": str(e) or e.__class__.__name__,
+            "llm_usage_text": llm.usage_text(llm.pop_usage_summary()),
+        }), 500
 
 
 MAX_NOTE_LENGTH = 4000

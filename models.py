@@ -80,9 +80,32 @@ def init_db():
         # 用于"每日任务清单"里"投了超过7天该跟进"这一项。不是完整的投递自动化（那需要 Easy Apply
         # 走完自动置状态、列表页"我投了"一键按钮，是另一件更大的事，这里只补最小的时间戳）。
         ("applied_at", "ALTER TABLE jobs ADD COLUMN applied_at TEXT"),
+        # 首页「投递分析」折线图用（2026-09-08）：跟 applied_at 同样的取舍，只在"从别的
+        # 状态变成这个状态"那一刻刷新时间戳，改成其它状态不清空——够画"哪一周发生了这件
+        # 事"的趋势线就行，不需要完整的状态变更历史。starred/application_status 本身早
+        # 就有了，这两列只是补时间戳，不影响原有判断逻辑。
+        ("starred_at", "ALTER TABLE jobs ADD COLUMN starred_at TEXT"),
+        ("interview_started_at", "ALTER TABLE jobs ADD COLUMN interview_started_at TEXT"),
+        # 面试区间的结束时间（2026-09-08）：「面试中」在折线图里是区间状态——从进入
+        # 面试到出结果之间每一周都算，不是只算进入那一周（见 set_application_status()
+        # 的说明）。这一列只在真正"离开面试中状态"时才写，仍在面试中或从没进过面试的
+        # 职位这一列是 NULL。
+        ("interview_resolved_at", "ALTER TABLE jobs ADD COLUMN interview_resolved_at TEXT"),
     ):
         if col not in existing_cols:
             conn.execute(ddl)
+    # 一次性历史回填（2026-09-08）：上面两列刚上线时，已经存在的星标/面试中记录不会有
+    # 时间戳（功能上线前发生的事，没法补出真实时间），「投递分析」图表上会一直显示0，
+    # 用户反馈这看起来像是坏的。跟用户确认后回填一次——星标用入库时间兜底，面试中用
+    # 投递时间兜底（没有投递时间的边界情况再退到入库时间）。WHERE ... IS NULL 保证
+    # 天然幂等：回填过一次之后，同样的 UPDATE 在后续每次启动时都是空操作，不需要额外的
+    # "是否已回填过"标记；之后新发生的标星/进入面试依旧走 set_job_starred()/
+    # set_application_status() 里的真实时间戳，这里只补历史缺口，不改变长期统计口径。
+    conn.execute("UPDATE jobs SET starred_at = first_seen WHERE starred = 1 AND starred_at IS NULL")
+    conn.execute(
+        "UPDATE jobs SET interview_started_at = COALESCE(applied_at, first_seen) "
+        "WHERE application_status = 'interviewing' AND interview_started_at IS NULL"
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS search_runs (
@@ -795,7 +818,21 @@ def set_job_status(job_id, status):
 
 def set_job_starred(job_id, starred):
     conn = get_conn()
-    conn.execute("UPDATE jobs SET starred = ? WHERE id = ?", (1 if starred else 0, job_id))
+    if starred:
+        # 只在"从未标星变成标星"（0→1）这一刻刷新 starred_at，给「投递分析」折线图的
+        # 「收藏」那条线用；已经是标星状态时再次调用（没有实际变化）不动它。跟
+        # set_application_status() 对 applied_at/interview_started_at 的处理是
+        # 同一个道理——每次真正"变成"这个状态都刷新时间戳，不是只记第一次。
+        row = conn.execute("SELECT starred FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row and not row["starred"]:
+            conn.execute(
+                "UPDATE jobs SET starred = 1, starred_at = ? WHERE id = ?",
+                (datetime.now().isoformat(timespec="seconds"), job_id),
+            )
+        else:
+            conn.execute("UPDATE jobs SET starred = 1 WHERE id = ?", (job_id,))
+    else:
+        conn.execute("UPDATE jobs SET starred = 0 WHERE id = ?", (job_id,))
     conn.commit()
     conn.close()
 
@@ -877,20 +914,38 @@ def note_counts():
 
 
 def set_application_status(job_id, application_status):
+    """全项目唯一的 application_status 写入口（手动改状态、
+    reconcile_application_status_from_linkedin() 核对推进都走这里），只改这一处
+    就能覆盖所有路径。
+
+    「投递分析」折线图的「面试中」是区间状态而不是单周事件（讨论于 2026-09-08）：
+    一条职位从进入面试到出结果之间，每一周都该算"面试中"，不是只算进入那一周。
+    所以除了 applied_at（进入"已投递"时刷新一次），还要维护面试区间的起止：
+    - interview_started_at：从别的状态第一次变成"面试中"时刷新，同时把
+      interview_resolved_at 清空——这是一段全新的、还没出结果的面试期，不能让
+      上一轮面试遗留的"已出结果"时间戳把这次的区间提前截断。
+    - interview_resolved_at：从"面试中"变成别的状态（拒绝/offer/婉拒/甚至手动
+      改回待投）时刷新，标记这段面试期到这一刻结束。仍然是"面试中"、或者从来
+      没进过面试的职位不碰这个字段。
+    这两个字段只做"哪一周该不该算面试中"这个跟踪用途，不影响 application_status
+    本身的判断逻辑。
+    """
     conn = get_conn()
-    if application_status == "applied":
-        # 只在"变成已投递"这一刻记一次时间，改成其它状态不清空——万一改错又改回来，
-        # 不需要精确记录"第几次投的"，只要"最近一次是什么时候投的"够跟进提醒用就行。
-        row = conn.execute("SELECT application_status FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row and row["application_status"] != "applied":
-            conn.execute(
-                "UPDATE jobs SET application_status = ?, applied_at = ? WHERE id = ?",
-                (application_status, datetime.now().isoformat(timespec="seconds"), job_id),
-            )
-        else:
-            conn.execute("UPDATE jobs SET application_status = ? WHERE id = ?", (application_status, job_id))
-    else:
-        conn.execute("UPDATE jobs SET application_status = ? WHERE id = ?", (application_status, job_id))
+    row = conn.execute("SELECT application_status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    old_status = row["application_status"] if row else None
+    now = datetime.now().isoformat(timespec="seconds")
+
+    updates = {"application_status": application_status}
+    if application_status == "applied" and old_status != "applied":
+        updates["applied_at"] = now
+    if application_status == "interviewing" and old_status != "interviewing":
+        updates["interview_started_at"] = now
+        updates["interview_resolved_at"] = None
+    if old_status == "interviewing" and application_status != "interviewing":
+        updates["interview_resolved_at"] = now
+
+    set_clause = ", ".join(f"{col} = ?" for col in updates)
+    conn.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", (*updates.values(), job_id))
     conn.commit()
     conn.close()
 
@@ -925,18 +980,26 @@ def reconcile_application_status_from_linkedin(applied_ids, interview_ids):
 
     applied_ids/interview_ids 由调用方传入（linkedin_tracker.fetch_tracker_job_ids()
     扫出来的 LinkedIn 职位 id 集合），这里只管拿去核对入库数据，不关心怎么扫出来的。
-    返回被更新的职位数——按"这条职位"去重计数，不是按"改了几个字段"计数：一条职位
-    如果 application_status 和 status 在这次调用里都被推进了，只算一条，不算两条
+    返回被更新的职位明细列表——按"这条职位"去重，不按"改了几个字段"计数：一条职位
+    如果 application_status 和 status 在这次调用里都被推进了，只出现一条，不出现两条
     （下面 _promote_reviewed_for_applied_jobs() 顺带修的 status 卡壳，跟这里的
-    application_status 推进用同一个 id 集合去重合并）。
+    application_status 推进用同一个 id 去重合并）。调用方要拿"这次核对更新了几条"，
+    对返回值 len() 即可。每条明细是 {"id", "title", "company",
+    "application_status_before", "application_status_after"}——同步完成后的通知要
+    报"具体更新了哪几条、从什么状态变成什么状态"，只给一个数字不够用（2026-09-08
+    用户反馈"更新2条"不知道是哪两条、改了什么，见 routes_search.py 里通知文案的
+    拼装）。只在核对逻辑本身推进了 application_status 的条目里 before != after；
+    只被 _promote_reviewed_for_applied_jobs() 推进 status（application_status 本身
+    这次调用没变）的条目，before == after，调用方据此判断该展示"状态推进"还是
+    "标记为已审核"。
     """
     from job_link import parse_linkedin_job_id
 
-    touched_ids = set()
+    touched = {}
     if applied_ids or interview_ids:
         conn = get_conn()
         rows = conn.execute(
-            "SELECT id, job_url, application_status FROM jobs WHERE site = 'linkedin'"
+            "SELECT id, title, company, job_url, application_status FROM jobs WHERE site = 'linkedin'"
         ).fetchall()
         conn.close()
 
@@ -957,10 +1020,23 @@ def reconcile_application_status_from_linkedin(applied_ids, interview_ids):
             if target_rank <= current_rank:
                 continue
             set_application_status(row["id"], target)
-            touched_ids.add(row["id"])
+            touched[row["id"]] = {
+                "id": row["id"], "title": row["title"], "company": row["company"],
+                "application_status_before": row["application_status"],
+                "application_status_after": target,
+            }
 
-    touched_ids |= _promote_reviewed_for_applied_jobs()
-    return len(touched_ids)
+    for job_id in _promote_reviewed_for_applied_jobs():
+        if job_id in touched:
+            continue
+        promoted_row = get_job(job_id)
+        touched[job_id] = {
+            "id": job_id, "title": promoted_row["title"], "company": promoted_row["company"],
+            "application_status_before": promoted_row["application_status"],
+            "application_status_after": promoted_row["application_status"],
+        }
+
+    return list(touched.values())
 
 
 def _promote_reviewed_for_applied_jobs():

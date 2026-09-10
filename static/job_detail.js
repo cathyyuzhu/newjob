@@ -378,6 +378,7 @@ function jobChatMsgHtml(msg, idx) {
   return `
     <div class="bank-chat-msg ai">
       <div>${escapeHtml(msg.content)}</div>
+      ${msg.usage ? `<div class="chat-usage">${escapeHtml(msg.usage)}</div>` : ''}
       <button class="btn btn-secondary btn-sm" style="margin-top:0.4rem;" onclick="saveNoteFromChat(${idx})">📌 记进备注</button>
     </div>
   `;
@@ -405,7 +406,7 @@ async function sendJobChat() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || '未知错误');
-    chat.messages.push({ role: 'assistant', content: data.reply });
+    chat.messages.push({ role: 'assistant', content: data.reply, usage: data.llm_usage_text });
   } catch (e) {
     chat.messages.push({ role: 'assistant', error: true, content: `出错了：${e.message}` });
   } finally {

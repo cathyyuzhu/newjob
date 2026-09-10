@@ -5,13 +5,14 @@ import threading
 
 from flask import Blueprint, abort, jsonify, render_template, request, send_file
 
+import llm
 import resume_store
 from config import load_config
 from job_state import finish_resume_review, resume_review_error, resume_review_generating, start_resume_review
 from models import add_notification, get_latest_resume_review, list_jobs_with_tailored_resume
 from pipeline import build_optimized_resume, run_resume_review
 from resume_store import ResumeMissingError, ResumeUploadError
-from web_helpers import need_resume_response
+from web_helpers import need_resume_response, usage_notification_message
 
 resume_bp = Blueprint("resume", __name__)
 
@@ -79,6 +80,7 @@ def get_resume_review_route():
 
 def _resume_review_background():
     error = None
+    llm.start_usage_tracking()
     try:
         run_resume_review()
     except Exception as e:
@@ -92,7 +94,7 @@ def _resume_review_background():
         review_error = error or (latest or {}).get("error")
         add_notification(
             "resume_review", "简历体检失败" if review_error else "简历体检完成",
-            review_error, level="error" if review_error else "success", link="/resume",
+            usage_notification_message(review_error), level="error" if review_error else "success", link="/resume",
         )
 
 
